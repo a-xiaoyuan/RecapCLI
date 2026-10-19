@@ -1,0 +1,9 @@
+[project]
+name = "archer"
+version = "0.1.0"
+description = "最小 ReAct 只读工具循环"
+requires-python = ">=3.12"
+dependencies = ["openai>=3.35,<4", "python-dotenv>=1.2,<2"]
+
+[dependency-groups]
+dev = ["httpx2"]
