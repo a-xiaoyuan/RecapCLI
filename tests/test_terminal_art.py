@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from main import main
-from terminal_art import cell_width, fit_text, print_banner
+from archer.cli import main
+from archer.ui.terminal_art import cell_width, fit_text, print_banner
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -40,7 +40,7 @@ class BannerTests(unittest.TestCase):
     def render(self, columns=80, lines=24, stream=None, env=None, mode="auto", workspace=None):
         stream = Console() if stream is None else stream
         with patch.dict(os.environ, env or {}, clear=True):
-            with patch("terminal_art.shutil.get_terminal_size", return_value=os.terminal_size((columns, lines))):
+            with patch("archer.ui.terminal_art.shutil.get_terminal_size", return_value=os.terminal_size((columns, lines))):
                 print_banner(stream, workspace=workspace or Path.cwd(), preview=True, mode=mode)
         return stream.getvalue()
 
@@ -63,6 +63,12 @@ class BannerTests(unittest.TestCase):
         self.assertIn("\x1b[38;2;", output)
         self.assertIn("▀", output)
         self.assertIn("项目末尾", output)
+
+    def test_banner_keeps_ghost_compact(self):
+        visible = ANSI.sub("", self.render(80, 24)).splitlines()
+        self.assertIn("▀", "\n".join(visible))
+        # 幽灵最大 16 列：80x24 下占 8 行像素画，整个面板不超过 13 行。
+        self.assertLessEqual(len(visible), 13)
 
     def test_short_window_keeps_character_when_it_can_fit(self):
         self.assertIn("▀", self.render(80, 16))
@@ -110,26 +116,26 @@ class BannerTests(unittest.TestCase):
         self.assertNotIn("\n伪造输出", visible)
 
     def test_missing_version_metadata_does_not_block_startup(self):
-        with patch("terminal_art.tomllib.load", side_effect=KeyError("project")):
+        with patch("archer.ui.terminal_art.tomllib.load", side_effect=KeyError("project")):
             self.assertIn("Archer", self.render())
 
     def test_windows_console_failure_uses_plain_output(self):
-        with patch("terminal_art._windows_ansi", return_value=False):
+        with patch("archer.ui.terminal_art._windows_ansi", return_value=False):
             self.assertNotIn("\x1b", self.render())
 
     def test_windows_console_mode_is_restored_even_when_writing_fails(self):
         restore = Mock()
         output = Console()
-        with patch("terminal_art._windows_ansi", return_value=restore), patch.object(output, "write", side_effect=OSError("closed")):
+        with patch("archer.ui.terminal_art._windows_ansi", return_value=restore), patch.object(output, "write", side_effect=OSError("closed")):
             with self.assertRaises(OSError):
                 self.render(stream=output)
         restore.assert_called_once_with()
 
     def test_cli_preview_never_reads_model_config_or_creates_client(self):
-        with patch("main.dotenv_values") as config, patch("main.OpenAI") as client:
+        with patch("archer.config.dotenv_values") as dotenv, patch("archer.cli.OpenAI") as client:
             with contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(main(["--preview", "--banner", "color"]), 0)
-        config.assert_not_called()
+        dotenv.assert_not_called()
         client.assert_not_called()
         self.assertIn("Archer", output.getvalue())
 

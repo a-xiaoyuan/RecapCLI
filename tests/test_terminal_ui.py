@@ -2,12 +2,13 @@ import contextlib
 import io
 import os
 import re
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from main import main
-from terminal_art import cell_width
-from terminal_ui import TerminalUI
+from archer.cli import main
+from archer.ui.terminal_art import cell_width
+from archer.ui.terminal_ui import TerminalUI
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -81,7 +82,7 @@ class TerminalUITests(unittest.TestCase):
         for columns in [20, 40, 80]:
             with self.subTest(columns=columns):
                 output = io.StringIO()
-                with patch("terminal_ui.shutil.get_terminal_size", return_value=os.terminal_size((columns, 24))):
+                with patch("archer.ui.terminal_ui.shutil.get_terminal_size", return_value=os.terminal_size((columns, 24))):
                     TerminalUI(output, color="always").answer("### 中文标题\n\n```python\n" + code + "\n```")
                 plain = ANSI.sub("", output.getvalue())
                 for line in plain.splitlines():
@@ -89,17 +90,20 @@ class TerminalUITests(unittest.TestCase):
                 self.assertIn(code, "".join(plain.split()))
 
     def test_main_sends_events_and_final_answer_through_colored_ui(self):
-        def run(*args, on_event):
+        from archer.core.agent import TurnResult
+
+        def fake_agent(client, model, prompt, workspace, *, on_event, **kwargs):
             on_event("[工具] read_file")
             on_event("[结果] 成功")
-            return ANSWER
+            return TurnResult(ANSWER, [{"role": "user", "content": prompt},
+                                       {"role": "assistant", "content": ANSWER}])
 
         config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model"}
         output = io.StringIO()
-        with patch.dict(os.environ, {}, clear=True), patch("main.dotenv_values", return_value=config):
-            with patch("main.OpenAI"), patch("main.run_agent", side_effect=run):
-                with contextlib.redirect_stdout(output):
-                    self.assertEqual(main(["你好", "--banner", "off", "--color", "always"]), 0)
+        with patch.dict(os.environ, {}, clear=True), patch("archer.config.dotenv_values", return_value=config):
+            with patch("archer.cli.OpenAI"), patch("archer.cli.run_agent", side_effect=fake_agent):
+                with contextlib.redirect_stdout(output), tempfile.TemporaryDirectory() as workspace:
+                    self.assertEqual(main(["你好", "--workspace", workspace, "--banner", "off", "--color", "always"]), 0)
         text = output.getvalue()
         self.assertIn("你> 你好", ANSI.sub("", text))
         self.assertIn("[工具] read_file", ANSI.sub("", text))

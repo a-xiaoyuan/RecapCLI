@@ -8,6 +8,8 @@ import tomllib
 import unicodedata
 from pathlib import Path
 
+from ..config import PROJECT_ROOT
+
 
 # 圆圆的薄荷白小幽灵、粉色腮红与挥动的小手；每个字符承载上下两个像素。
 GHOST = (
@@ -57,6 +59,8 @@ PALETTE = {
 
 RESET = "\033[0m"
 TEAL = "\033[36m"
+# 启动面板里小幽灵的最大宽度；缩小占比，把空间留给标题、提示与工作区信息。
+GHOST_MAX_WIDTH = 16
 
 
 def cell_width(text):
@@ -142,7 +146,7 @@ def _clean(text):
 
 def _title():
     try:
-        with Path(__file__).with_name("pyproject.toml").open("rb") as file:
+        with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
             version = tomllib.load(file)["project"]["version"]
         return "Archer  v" + _clean(version)
     except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
@@ -211,10 +215,10 @@ def _render_banner(path, preview, columns, height, color):
     body_budget = height - 7  # 两条边框、提示、空行，加三行后续输入区域。
     if body_budget < 8:
         return plain()
-    rows = compact_sprite(max_height=body_budget * 2)
+    rows = compact_sprite(max_width=GHOST_MAX_WIDTH, max_height=body_budget * 2)
     side_by_side = inner - len(rows[0]) - 3 >= 24
     if not side_by_side:
-        rows = compact_sprite(max_width=inner, max_height=(body_budget - 5) * 2)
+        rows = compact_sprite(max_width=min(inner, GHOST_MAX_WIDTH), max_height=(body_budget - 5) * 2)
     if len(rows[0]) < 12:
         return plain()
     art = pixel_lines(rows)

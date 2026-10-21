@@ -1,6 +1,37 @@
+# Python environments
 .venv/
-.idea/
+venv/
+
+# Python caches and test reports
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local editor configuration
+.idea/
+.vscode/
+
+# Local credentials; the example contains placeholders only
 .env
 .env.*
+!.env.example
+
+# Runtime data and logs
+.archer/
+logs/
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini

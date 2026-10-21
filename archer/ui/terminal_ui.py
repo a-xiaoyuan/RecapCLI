@@ -11,7 +11,7 @@ from rich.padding import Padding
 from rich.text import Text
 from rich.theme import Theme
 
-from terminal_art import terminal_output, write_terminal
+from .terminal_art import terminal_output, write_terminal
 
 
 THEME = Theme({
@@ -100,6 +100,9 @@ class TerminalUI:
 
     def error(self, message):
         self._print(message, style="error", error=True)
+
+    def info(self, message):
+        self._print(message, style="muted")
 
     def preview(self):
         self._print("界面预览 · 以下对话与日志均为演示，不请求模型", style="preview")

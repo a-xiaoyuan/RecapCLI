@@ -1,7 +1,7 @@
 [project]
 name = "archer"
-version = "0.1.0"
-description = "最小 ReAct 只读工具循环"
+version = "0.2.0"
+description = "支持多轮对话与持久记忆的终端只读代码 Agent"
 requires-python = ">=3.12"
 dependencies = [
     "openai>=3.35,<4",

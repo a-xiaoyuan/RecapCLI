@@ -1,122 +1,315 @@
 # Archer
 
-第一步：最小 ReAct 循环。只有一个 `read_file` 工具；一次任务的消息保存在内存中。
+Archer 是一个基于 Python 的终端只读代码 Agent。它通过模型工具调用读取本地工作区中的文本文件，并把执行结果回传给模型。当前版本支持**多轮对话、会话保存与恢复、长期记忆**。
 
-```text
-用户问题 → 模型请求工具 → Python 读取文件 → 工具结果加入历史 → 再次请求模型 → 回答
+## 功能
+
+- **多轮对话**：交互模式下可以连续提问，历史在会话内复用；`/new` 开始新会话，`/exit` 保存退出。
+- **会话持久化**：成功轮次完整保存到工作区 `.archer/sessions/<id>.json`；`--continue` 恢复最近一个有内容的会话，`--session ID` 指定会话，`/sessions` 列举会话。
+- **上下文管理**：完整存档独立于模型上下文；按完整对话轮次、消息数和 UTF-8 JSON 大小选取最近历史，保留工具调用与结果的配对。
+- **长期记忆**：`/remember` 添加并去重、`/memory` 查看、`/memory-update` 更新、`/forget` 删除；最近添加或更新的条目优先进入 system prompt，每轮显示选用与省略数量，可用 `--no-memory` 关闭。
+- **模型接入**：使用 OpenAI Python SDK，支持配置 API Key、模型 ID 和兼容服务地址。
+- **工具调用**：支持 `read_file`、`search_text`、`list_directory`，由本地程序校验参数并执行；工具结果和错误按调用 ID 回传。
+- **文件读取**：支持工作区内的 UTF-8 文本，单次读取结果最多 64 KiB；可按行读取大文件片段。
+- **文本搜索与目录浏览**：按字符串搜索并返回文件路径、行号和内容，也可查看有深度和条目上限的目录树。
+- **执行控制**：限制每轮模型请求次数、工具调用数量、工具输出量、消息大小和执行时间；本地扫描另有限额，最后一次模型请求保留给回答。
+- **终端输出**：展示模型与工具状态，支持 Markdown 排版、代码高亮、纯文本输出和窗口尺寸适配。
+- **离线测试**：通过模拟模型接口验证工具循环、多轮历史、会话与记忆、终端显示行为。
+
+## 架构
+
+```mermaid
+flowchart LR
+    Entry["main.py / python -m archer"] --> CLI["archer/cli.py：命令行与交互"]
+    CLI --> Config["archer/config.py：模型配置"]
+    CLI -->|"历史、记忆文本、事件回调"| Agent["archer/core：Agent 循环"]
+    Agent --> Context["archer/core/context.py：上下文选择"]
+    Agent -->|"消息历史与工具定义"| Model["Chat Completions API"]
+    Model -->|"回答或工具请求"| Agent
+    Agent -->|"工具名称与参数"| Tool["archer/tools：工具校验与执行"]
+    Tool -->|"读取、搜索与目录浏览"| Workspace["本地工作区"]
+    Workspace -->|"内容或读取错误"| Tool
+    Tool -->|"结构化执行结果"| Agent
+    CLI -->|"保存与恢复"| Session["archer/storage：SessionStore"]
+    CLI -->|"读取与维护长期记忆"| Session
+    Session --> Data[".archer/sessions, .archer/memory.json"]
+    Agent -->|"回答与状态事件"| CLI
+    CLI --> Output["archer/ui：终端渲染"]
 ```
 
-## 运行
+各模块的职责如下：
 
-使用 Python 3.12+ 和 uv。在 PowerShell 中执行：
+| 模块 | 职责 |
+| --- | --- |
+| `main.py` | 启动 CLI，将返回值作为进程退出码 |
+| `archer/__main__.py` | 支持 `python -m archer` 启动 |
+| `archer/cli.py` | 参数解析、交互循环、用户命令、回答展示与会话保存 |
+| `archer/config.py` | 模型配置加载、必需项校验与项目根目录定位 |
+| `archer/core/agent.py` | ReAct 循环、执行预算、工具结果回传；返回回答与本轮新增消息 |
+| `archer/core/context.py` | 按完整轮次和大小预算选择历史，不修改完整存档 |
+| `archer/tools/registry.py` | 统一登记 schema 与执行函数，从 schema 校验参数并分发工具 |
+| `archer/tools/filesystem.py` | 工作区路径检查、文件读取、文本搜索与目录浏览 |
+| `archer/storage/session.py` | 会话保存/加载/列举、格式兼容、记忆增删改查与上下文选择 |
+| `archer/ui/terminal_ui.py` | 输入提示、状态日志、Markdown 回答与代码高亮 |
+| `archer/ui/terminal_art.py` | 启动面板、窗口尺寸适配、颜色检测与终端兼容处理 |
+| `tests/test_package.py` | 脚本与模块入口、项目配置路径及预览版本信息 |
+| `tests/test_main.py` | 模型协议、工具执行、多轮对话、会话恢复、记忆注入与异常处理 |
+| `tests/test_context.py` | 完整轮次选择、工具配对、UTF-8 大小预算与输入不变性 |
+| `tests/test_tools.py` | 凭据与工作区边界、链接遍历、大文件按行读取及返回大小限制 |
+| `tests/test_session.py` | 会话与记忆存储、非法 ID、损坏文件容错 |
+| `tests/test_terminal_art.py` | 启动面板布局与终端兼容测试 |
+| `tests/test_terminal_ui.py` | 回答渲染、状态配色与输出通道测试 |
+
+### 执行流程
+
+1. 解析参数，加载模型配置；按 `--session` / `--continue` 恢复会话，否则新建。
+2. 进入多轮循环：读取用户消息；`/` 开头的命令由程序处理，其余作为新一轮问题。
+3. CLI 读取记忆并准备历史；核心按预算选择上下文，把 system prompt、最近完整轮次和新问题发给模型。工具调用按 ID 配对执行。
+4. 核心返回有效回答与本轮新增消息；CLI 将消息追加到完整存档，展示回答并保存。失败轮次不会混入历史。
+5. `/exit`、EOF 或 Ctrl+C 退出；`/new` 保存当前会话并开始新会话。空会话不会自动保存，未修改的会话不会重复写入。
+
+一个模型响应中包含多个工具调用时，程序按顺序执行。工具执行失败会作为结构化结果回传，供模型继续处理。
+
+核心循环不依赖终端对象或本地存储对象，不修改调用方传入的历史。工具定义与执行函数使用同一份注册表，新增工具无需另加参数白名单或执行分支；缺少执行函数的注册会明确报错。
+
+回答先显示，再尝试保存。交互模式下保存失败时，对话保留在内存，可用 `/save` 重试，无需再次请求模型；`/exit` 和 `/new` 保存失败时保留当前会话。单次提问或 EOF 退出时若保存失败，程序返回非零退出码。
+
+### 工具
+
+| 工具 | 参数与返回 |
+| --- | --- |
+| `read_file` | `path` 必填；可传 `start_line`、`end_line`，从 1 开始且包含结束行；返回正文，最多 64 KiB |
+| `search_text` | `query` 必填；支持搜索起点 `path`、大小写选项 `case_sensitive`、数量上限 `max_results`；返回路径、行号和匹配行 |
+| `list_directory` | 支持起点 `path`、递归深度 `max_depth`；返回目录树、条目数与截断标记 |
+
+搜索默认最多返回 50 条，最多可指定 200 条；单个匹配行最多显示 300 个字符，跳过超过 1 MiB 的文件和疑似二进制文件。目录树默认最多 300 项，递归深度最多为 5。搜索和目录浏览默认跳过版本库、虚拟环境、依赖及本地运行数据目录，遍历时不跟随符号链接或目录联接。
+
+单次递归遍历最多检查 5,000 个目录子项，搜索最多检查 1,000 个文件、读取约 16 MiB 内容；本地扫描时间预算为 5 秒。按行读取也受扫描字节与时间预算限制，避免为很大的起始行号无限扫描。搜索或目录浏览达到扫描预算时，返回已有结果、`truncated` 与 `limit_reason`；搜索发现超出结果数量上限的额外匹配时也标记 `truncated`，恰好达到上限且搜索完整时不误报。大目录只对预算内的子项排序。
+
+所有工具均校验实际路径，拒绝访问工作区之外的目标和 Archer 自身的 `.env`；递归遍历的子项也执行相同检查。
+
+## 环境要求
+
+- Python 3.12 或更高版本
+- [uv](https://docs.astral.sh/uv/) 项目管理工具
+- 支持 **Chat Completions function tools / tool_calls** 的模型服务
+
+当前实现使用 `client.chat.completions.create()`。仅提供 Responses API 的服务不适用于当前版本。
+
+## 安装与配置
+
+在仓库根目录安装依赖：
+
+```shell
+uv sync --locked
+```
+
+复制配置示例。PowerShell：
 
 ```powershell
-cd C:\Users\26779\Desktop\Archer
-uv sync
+Copy-Item .env.example .env
 ```
 
-在 Archer 项目目录的 `.env` 中填写配置（该文件已被 Git 忽略）：
+macOS / Linux：
+
+```shell
+cp .env.example .env
+```
+
+编辑 `.env`，填写模型服务配置：
 
 ```dotenv
-OPENAI_API_KEY=你的Key
-OPENAI_MODEL=你的模型ID
-OPENAI_BASE_URL=https://你的服务地址/v1
+OPENAI_API_KEY=your-api-key
+OPENAI_MODEL=your-model-id
+
+# 使用兼容服务时设置 API 根地址；使用 SDK 默认地址时可省略。
+# OPENAI_BASE_URL=https://your-provider.example/v1
 ```
 
-然后运行：
+也可以通过环境变量设置以上配置。**环境变量优先于 `.env`**。程序仅读取 Archer 项目根目录中与 `pyproject.toml` 同级的 `.env`，不会加载目标工作区的配置文件。
 
-```powershell
-uv run python main.py "读取 README.md，说明这个项目如何运行"
+`.env` 不应提交到版本库；`.env.example` 仅保存公开的配置模板。实际提问会请求配置的模型服务，用量和费用由该服务计量。
+
+## 使用
+
+单次提问（执行一轮后退出）：
+
+```shell
+uv run python main.py "读取 README.md，概括项目的功能与架构"
 ```
 
-也可以继续通过 PowerShell 环境变量配置；环境变量优先于 `.env`：
+多轮对话（省略问题参数）：
 
-```powershell
-$env:OPENAI_API_KEY = "你的 Key"
-$env:OPENAI_MODEL = "你的模型 ID"
-# 使用第三方兼容服务时设置其 API 根地址，通常以 /v1 结尾：
-$env:OPENAI_BASE_URL = "https://你的服务地址/v1"
-uv run python main.py "读取 README.md，说明这个项目如何运行"
+```shell
+uv run python main.py
 ```
 
-使用 OpenAI 官方地址时不设置 `OPENAI_BASE_URL`。程序只读取 Archer 自身目录的 `.env`，不读取目标工作区的配置。`read_file` 工具禁止读取 Archer 的这份凭据配置。
-模型与端点必须支持 **Chat Completions 的 function tools / tool_calls**；仅支持 Responses 的端点不适用于本版。
-运行上面的提问会真实请求配置的模型服务，可能产生费用。Key 保存在本机 `.env` 或环境变量中，不要提交到 Git。
+也可以使用包入口，参数与 `main.py` 相同：
 
-指定其他工作区：
-
-```powershell
-uv run python main.py "读取 README.md 并概括项目" --workspace C:\你的项目 --max-steps 8
+```shell
+uv run python -m archer
+uv run python -m archer --help
 ```
 
-省略问题时会提示输入。本版每次运行处理一个问题，不提供跨任务会话。
-终端显示模型请求次数、工具名称和成功或失败状态，最后显示回答。
-提问使用薄荷绿、回答标签使用淡紫色，工具状态为青色，成功为绿色、错误为粉红色。
-回答由 Rich 渲染 Markdown：标题、粗体、行内代码和代码块都有对应样式，代码支持
-语法高亮。关闭颜色或重定向输出时保留原始 Markdown 文本。
+恢复最近一次会话并继续：
 
-启动时显示软萌小幽灵：薄荷白身体、豆豆眼、粉色腮红、挥动的小手和小星星。
-可预览启动画面及示例对话，无需配置模型，示例不会读取文件或请求模型：
-
-```powershell
-uv run python main.py --preview
-# 手动开启整个界面的配色：
-uv run python main.py --preview --color always
+```shell
+uv run python main.py --continue
 ```
 
-面板保留青色边框和薄荷白小幽灵，最多 96 列。按窗口的**宽度与高度**选择左右或上下
-布局，空间不足时等比缩小角色，并为后续输入留出空间；极窄、极矮窗口使用简洁文本。
-中文按显示列宽对齐，长工作区路径保留首尾，方便辨认当前项目。
+指定会话 ID 继续：
 
-- **Windows Terminal / PowerShell**：自动检测终端，传统 Windows 控制台会临时启用
-  ANSI 输出，打印结束后恢复原有模式；不支持时回退为纯文本。
-- **PyCharm**：识别 `PYCHARM_HOSTED=1` 的 Run 控制台。需要终端模拟时，在运行配置
-  中启用 **Emulate terminal in output console**；具体选项见
-  [PyCharm 官方运行配置说明](https://www.jetbrains.com/help/pycharm/run-debug-configuration-python.html)。
-- 重定向到文件、设置 `NO_COLOR` 或 `TERM=dumb` 时自动使用纯文本；旧编码不能表示
-  像素字符时也会回退，避免装饰面板阻断任务。
-
-也可以手动指定显示方式，以下命令均不请求模型：
-
-```powershell
-uv run python main.py --preview --color always  # 整个界面始终开启配色，可覆盖 NO_COLOR
-uv run python main.py --preview --color never   # 整个界面使用纯文本
-uv run python main.py --preview --banner off    # 关闭启动面板，仍显示示例对话
+```shell
+uv run python main.py --session 20261021-130000-abcd
 ```
 
-`--banner` 同样适用于正常提问，默认 `auto`。终端提供真实尺寸时自动适配；PyCharm
-等环境无法提供尺寸时默认按 80 列、24 行布局，也可通过 `COLUMNS`、`LINES` 指定。
-`--color auto|always|never` 同时控制对话配色和默认启动面板；显式指定 `--banner`
-可单独覆盖面板显示。配色预览标明演示内容，不代表真实模型或工具调用结果。
+指定工作区、次数上限，或关闭记忆注入：
 
-## 从哪里读代码
+```shell
+uv run python main.py "读取 README.md" --workspace ./path/to/project --max-steps 8
+uv run python main.py --continue --no-memory
+uv run python main.py --max-tool-calls 12 --max-tool-bytes 131072 --context-bytes 262144 --max-seconds 120
+```
 
-按 `main → run_agent → execute_tool → read_file → run_agent` 的顺序读 `main.py`。
-`run_agent` 保存 assistant 工具请求，再用相同的调用 ID 添加 tool 结果，进入下一轮模型请求。
-有多个工具请求时逐一处理；工具失败也会作为结构化结果返回模型。
+关闭启动面板，保留终端回答配色：
 
-学习 Agent 时优先看 `main.py` 的这条调用链。`terminal_art.py` 只负责启动画面的
-像素和终端布局，`terminal_ui.py` 负责提问、状态与回答配色，可以暂时跳过；
-先知道 `print_banner()` 显示面板、`TerminalUI` 显示对话即可。
+```shell
+uv run python main.py "读取 archer/cli.py，概括其职责" --banner off --color always
+```
 
-## 本地验证
+### 交互命令
 
-```powershell
+| 命令 | 说明 |
+| --- | --- |
+| `/exit`、`/quit` | 保存会话并退出 |
+| `/help` | 显示命令帮助 |
+| `/new` | 保存当前会话，开始新会话 |
+| `/save` | 保存当前会话；失败后可重试，不请求模型 |
+| `/session` | 显示当前会话 ID、消息数和保存路径 |
+| `/sessions` | 按更新时间列出已保存的有效会话 |
+| `/history` | 查看最近 10 条消息 |
+| `/memory` | 查看长期记忆 |
+| `/remember 文本` | 添加一条长期记忆；重复内容返回已有条目 |
+| `/memory-update ID 文本` | 更新条目并保留 ID，更新后的条目优先注入 |
+| `/forget ID`、`/forget all` | 删除一条或全部长期记忆 |
+
+### 命令行参数
+
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `prompt` | 单次问题；省略时进入多轮对话 | 无 |
+| `--workspace PATH` | 工具允许读取的工作区，也是 `.archer` 数据目录所在位置 | 当前工作目录 |
+| `--max-steps N` | 每轮的模型请求次数上限 | `8` |
+| `--max-tool-calls N` | 每轮工具调用数量上限 | `16` |
+| `--max-tool-bytes N` | 每轮工具结果正文 UTF-8 字节总上限 | `131072` |
+| `--context-bytes N` | 每次模型请求中消息列表的 UTF-8 JSON 大小上限 | `262144` |
+| `--max-seconds N` | 每轮执行时间预算，秒 | `120` |
+| `--session ID` | 加载指定会话后继续 | 无 |
+| `--continue` | 恢复最近一个有内容的会话；与 `--session` 互斥 | 关闭 |
+| `--no-memory` | 本轮不注入长期记忆 | 关闭 |
+| `--color auto\|always\|never` | 自动检测、强制开启或关闭输出配色 | `auto` |
+| `--banner auto\|color\|plain\|off` | 自动、彩色、纯文本或关闭启动面板 | `auto` |
+| `--preview` | 预览界面与示例输出，不读取任务文件、不请求模型 | 关闭 |
+| `--help` | 显示命令帮助 | — |
+
+`--color` 同时影响对话配色和默认启动面板；显式传入 `--banner` 可单独覆盖启动面板的显示方式。自动模式在重定向输出或终端不支持颜色时使用纯文本。
+
+上下文先保留 system prompt 与当前轮次，剩余预算用于最近的完整历史轮次，最多 80 条历史消息。预算按 UTF-8 JSON 字节计算，包含消息字段和转义开销，并非精确 token 数；工具 schema 不计入该消息预算，具体模型的 token 上限仍需按服务配置选择合适的预算。
+
+工具输出不足时返回对应调用 ID 的结构化错误，并停止后续实际工具执行，让模型基于已有结果回答。一批工具请求超过剩余调用数量时整批拒绝；最后一次模型请求或工具预算用完后会发送 `tool_choice=none`，若服务仍返回工具请求则报错，不执行额外工具。
+
+### 本地数据
+
+| 路径 | 内容 |
+| --- | --- |
+| `.archer/sessions/<id>.json` | 会话元数据与消息历史（含工具结果） |
+| `.archer/memory.json` | 长期记忆条目（用户可读、可删） |
+| `.archer/.gitignore` | 忽略该数据目录内的文件 |
+
+程序在目标工作区的 `.archer/` 内生成独立的 Git 忽略规则，使用 `--workspace` 指向其他仓库时也生效。忽略规则不影响已经被 Git 跟踪的文件；若此前提交过会话或记忆，需要另行从版本控制中移除。
+
+会话与记忆兼容 UTF-8 和带 BOM 的 UTF-8 文件。指定会话恢复时会校验会话 ID、工作区、元数据、消息结构和工具调用配对；`--continue` 跳过无效会话。损坏的记忆文件会报错并保留原内容，需修复后继续使用记忆功能，也可通过 `--no-memory` 暂时关闭注入。
+
+两类 JSON 都使用 `schema_version: 1`。没有版本字段的旧数据按 v0 读取，内存中升级，下一次实际保存时写入新格式；未知版本拒绝读取，不覆盖原文件。旧版本已经从存档中裁掉的消息无法通过格式升级恢复。会话仍绑定原工作区路径，移动项目后需要明确迁移路径信息。
+
+长期记忆按工作区隔离，最多 50 条，每条最多 2,000 字，默认注入预算为 3,000 字符（含说明文字）。最近添加或更新的条目优先，放不下的条目跳过后继续选择其他条目；CLI 显示选用与省略数量。重复判断忽略多余空白，不推断语义是否相同；矛盾记忆需要用户更新或删除。
+
+## 测试
+
+运行全部测试：
+
+```shell
 uv run python -m unittest discover -s tests -v
 ```
 
-测试用 `httpx2.MockTransport` 模拟模型接口，并在临时工作区实际读取文件；不联网，不产生模型费用。
-它验证请求与结果配对、连续工具轮次、错误回传和次数上限，不能代替真实服务接入验证。
-面板测试另外覆盖不同窗口宽高、中文和长路径、PyCharm 输出流、重定向与旧编码回退，
-以及 `--preview` 不读取模型配置、不创建模型客户端。
-对话显示测试覆盖 Markdown/代码高亮、状态配色、中文窄窗口折行、纯文本回退、
-错误输出通道以及 CLI 实际接入显示层。
+模型接口测试使用 `httpx2.MockTransport` 返回模拟响应，并在临时工作区实际执行文件读取。测试不会请求真实模型服务。
 
-## 当前边界
+覆盖范围包括：
 
-只读取工作区中的 UTF-8 文本文件，每个文件最多 64 KiB；越界路径、额外参数和未知工具返回错误。
-路径检查会解析符号链接和 Windows junction，但属于应用层检查，不是 OS 沙箱，也不保证抵御并发替换路径。
-每次模型请求超时 30 秒，自动重试关闭；最多请求 8 次，可通过参数调整。Ctrl+C 中断当前任务；已发送请求的远端状态和用量仍以服务端记录为准。
-本版没有文件编辑、命令执行、持久化、LangChain/LangGraph 或飞书接入。
+- 工具调用与结果的 ID 配对、多个工具调用和连续工具轮次。
+- 脚本与包入口、移动后的项目配置路径、预览模式和版本信息。
+- JSON 参数、工作区路径、文件大小、编码和凭据配置访问校验。
+- 递归搜索的凭据保护、符号链接或 Windows 目录联接边界，以及大文件按行读取。
+- 配置优先级、请求次数上限、空响应及不完整响应处理。
+- 完整存档与有限上下文分离、按完整轮次选取、输入历史不变性。
+- 工具调用数、累计输出、上下文大小、执行时间与本地扫描预算。
+- 多轮历史复用、`--continue` 跳过空会话、会话列表、记忆注入与更新去重。
+- JSON 旧格式升级、未知版本保护、未变更会话避免重复写入。
+- 会话与记忆的保存/加载、BOM 编码、损坏文件保护和恢复校验。
+- 目标工作区的数据忽略规则、保存失败后的回答展示与重试。
+- EOF 或 Ctrl+C 退出时的保存失败状态、会话恢复时的读取错误处理。
+- 终端宽高适配、中文显示、Markdown 与代码高亮、纯文本回退。
 
-工具调用流程参考：[OpenAI Function calling](https://developers.openai.com/api/docs/guides/function-calling)。
+## 项目结构
+
+```text
+Archer/
+├── main.py
+├── archer/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py
+│   ├── config.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── agent.py
+│   │   └── context.py
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── registry.py
+│   │   └── filesystem.py
+│   ├── storage/
+│   │   ├── __init__.py
+│   │   └── session.py
+│   └── ui/
+│       ├── __init__.py
+│       ├── terminal_ui.py
+│       └── terminal_art.py
+├── tests/
+├── .env.example
+├── .gitignore
+├── pyproject.toml
+└── uv.lock
+```
+
+`pyproject.toml` 声明项目与依赖，`uv.lock` 固定解析后的依赖版本；两者均应纳入版本管理。运行时数据写入工作区 `.archer/`，不纳入版本管理。
+
+## 当前限制
+
+- 完整会话存档保留成功轮次，但模型只能看到预算内最近的完整轮次，不做自动摘要或语义检索。
+- 长期记忆需要手动维护，不会自动从对话中总结；记忆按工作区隔离。
+- 会话文件包含完整工具结果，长期使用后可能变大，需要手动清理 `.archer/sessions/`。
+- 本地 JSON 存储面向单进程使用；原子替换防止半写文件，不提供多个进程同时修改时的合并或锁定。
+- 工具仅包含文件读取、文本搜索和目录浏览，不提供文件编辑或命令执行。
+- 工具仅接受工作区内的相对路径。文件读取要求 UTF-8（支持 BOM），全文超过 64 KiB 时需指定行号，所选片段仍受 64 KiB 限制。
+- 文本搜索是逐文件字符串匹配，不包含语义检索或符号索引。
+- 路径校验属于应用层限制，不构成操作系统沙箱，也不保证抵御并发路径替换。
+- SDK HTTP 超时最多为 30 秒，并按剩余执行时间缩短，自动重试关闭。执行与扫描时间预算在操作边界检查，不能强制终止阻塞的操作系统调用，也不等同于硬实时截止时间。
+
+## 后续规划
+
+- 上下文摘要与压缩，提高长会话中较早信息的可用性。
+- 文件名搜索、符号定位与统一的代码引用格式。
+- 文件编辑、命令执行与审批（需先补齐权限和检查点）。
+
+以上功能尚未实现。
