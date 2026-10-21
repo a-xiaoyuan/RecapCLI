@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 from openai import APIError, OpenAI
+from terminal_art import print_banner
+from terminal_ui import TerminalUI
 
 
 MAX_FILE_BYTES = 64 * 1024
@@ -107,7 +109,20 @@ def main(argv=None) -> int:
     parser.add_argument("prompt", nargs="?", help="本次要处理的问题；留空则交互输入")
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="允许读取的工作区")
     parser.add_argument("--max-steps", type=int, default=8, help="模型请求次数上限，默认 8")
+    parser.add_argument("--preview", action="store_true", help="预览小幽灵与示例对话配色，不请求模型")
+    parser.add_argument("--banner", choices=["auto", "color", "plain", "off"], default="auto",
+                        help="启动面板显示：自动检测、彩色、纯文本或关闭（默认 auto）")
+    parser.add_argument("--color", choices=["auto", "always", "never"], default="auto",
+                        help="对话配色：自动、始终开启或关闭（默认 auto）")
     args = parser.parse_args(argv)
+    ui = TerminalUI(color=args.color)
+    banner_mode = args.banner
+    if banner_mode == "auto" and args.color != "auto":
+        banner_mode = "color" if args.color == "always" else "plain"
+    if args.preview:
+        print_banner(workspace=args.workspace, preview=True, mode=banner_mode)
+        ui.preview()
+        return 0
     if args.max_steps < 1:
         parser.error("--max-steps 必须大于 0")
     if not args.workspace.is_dir():
@@ -121,22 +136,25 @@ def main(argv=None) -> int:
         parser.error("请在 Archer 的 .env 或环境变量中设置 OPENAI_API_KEY 和 OPENAI_MODEL")
 
     try:
-        prompt = (args.prompt if args.prompt is not None else input("你> ")).strip()
+        print_banner(workspace=args.workspace, mode=banner_mode)
+        prompt = (args.prompt if args.prompt is not None else ui.read_prompt()).strip()
         if not prompt:
             parser.error("问题不能为空")
+        if args.prompt is not None:
+            ui.user(prompt)
         # 首版只接 Chat Completions 工具调用协议，不自动重试收费请求。
         with OpenAI(api_key=api_key, base_url=base_url, timeout=30.0, max_retries=0) as client:
-            answer = run_agent(client, model, prompt, args.workspace, args.max_steps)
-        print(f"\nArcher> {answer}")
+            answer = run_agent(client, model, prompt, args.workspace, args.max_steps, on_event=ui.event)
+        ui.answer(answer)
         return 0
     except (KeyboardInterrupt, EOFError):
-        print("\n已取消。", file=sys.stderr)
+        ui.error("\n已取消。")
         return 130
     except APIError as error:
-        print(f"模型请求失败（{type(error).__name__}），请检查网络、协议和模型配置。", file=sys.stderr)
+        ui.error(f"模型请求失败（{type(error).__name__}），请检查网络、协议和模型配置。")
         return 1
     except (OSError, ValueError, RuntimeError) as error:
-        print(f"任务停止：{error}", file=sys.stderr)
+        ui.error(f"任务停止：{error}")
         return 1
 
 
