@@ -9,6 +9,7 @@ from unittest.mock import patch
 from archer.tools import execute_tool
 from archer.tools.filesystem import MAX_FILE_BYTES, ScanBudget
 from archer.tools.registry import TOOL_REGISTRY, tool_definitions
+from archer.storage.session import SessionStore
 
 
 class ToolBoundaryTests(unittest.TestCase):
@@ -75,9 +76,15 @@ class ToolBoundaryTests(unittest.TestCase):
             self.assertFalse(self.call("list_directory", path="linked")["ok"])
             searched = self.call("search_text", query="SENTINEL")
             listed = self.call("list_directory")
+            found = self.call("find_files", pattern="*.txt")
         self.assertEqual([match["path"] for match in searched["matches"]], ["public.txt"])
         self.assertNotIn("linked", listed["tree"])
         self.assertNotIn("private.txt", listed["tree"])
+        self.assertEqual(found["files"], ["public.txt"])
+        result = execute_tool("edit_file", {"path": "linked/private.txt", "old_text": "SENTINEL", "new_text": "changed"},
+                              self.workspace, capabilities={"read", "write"})
+        self.assertFalse(result["ok"])
+        self.assertEqual((outside / "private.txt").read_text(encoding="utf-8"), "SENTINEL private")
 
     def test_recursive_tools_skip_links_back_to_workspace(self):
         package = self.workspace / "pkg"
@@ -89,6 +96,19 @@ class ToolBoundaryTests(unittest.TestCase):
         self.assertTrue(searched["ok"])
         self.assertEqual([match["path"] for match in searched["matches"]], ["pkg/code.py"])
         self.assertNotIn("back", listed["tree"])
+
+    def test_operations_reject_linked_state_directory(self):
+        outside = self.root / "outside-state"
+        outside.mkdir()
+        self.link_directory(outside, self.workspace / ".archer")
+        (self.workspace / "file.txt").write_text("old", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            SessionStore(self.workspace)
+        result = execute_tool("edit_file", {"path": "file.txt", "old_text": "old", "new_text": "new"},
+                              self.workspace, capabilities={"read", "write"})
+        self.assertFalse(result["ok"])
+        self.assertEqual((self.workspace / "file.txt").read_text(encoding="utf-8"), "old")
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_large_file_can_be_read_by_line_range(self):
         lines = [f"line {number}" for number in range(1, 20001)]
@@ -106,7 +126,9 @@ class ToolBoundaryTests(unittest.TestCase):
         path = self.workspace / "long_line.txt"
         path.write_text("x" * (MAX_FILE_BYTES * 3) + "\n目标\n最后一行", encoding="utf-8")
         result = self.call("read_file", path=path.name, start_line=2, end_line=3)
-        self.assertEqual(result, {"ok": True, "content": "目标\n最后一行"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["content"], "目标\n最后一行")
+        self.assertEqual(result["reference"], "long_line.txt:2-3")
         self.assertFalse(self.call("read_file", path=path.name, start_line=1, end_line=1)["ok"])
 
     def test_line_range_limit_counts_utf8_bytes(self):
@@ -130,7 +152,9 @@ class ToolBoundaryTests(unittest.TestCase):
             ({"start_line": 2, "end_line": 99}, "乙\n丙"),
         ]:
             with self.subTest(arguments=arguments):
-                self.assertEqual(self.call("read_file", path=path.name, **arguments), {"ok": True, "content": expected})
+                result = self.call("read_file", path=path.name, **arguments)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["content"], expected)
 
     def test_line_range_rejects_invalid_or_missing_lines(self):
         path = self.workspace / "small.txt"
@@ -158,8 +182,10 @@ class ToolBoundaryTests(unittest.TestCase):
         path.touch()
         stream = BoundedReader("x" * (MAX_FILE_BYTES * 3) + "\nselected\n")
         with patch.object(Path, "open", return_value=stream):
-            self.assertEqual(self.call("read_file", path=path.name, start_line=2),
-                             {"ok": True, "content": "selected"})
+            result = self.call("read_file", path=path.name, start_line=2)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["content"], "selected")
+            self.assertEqual(result["reference"], "stream.txt:2")
 
     def test_missing_tool_handler_is_explicit_error_not_directory_fallback(self):
         spec = {"description": "未来工具", "parameters": {"type": "object", "properties": {}}}

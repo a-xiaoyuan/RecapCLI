@@ -1,6 +1,7 @@
 """工作区文件读取、文本搜索、目录浏览及访问检查。"""
 
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 import time
 
@@ -74,20 +75,26 @@ def _checked_target(workspace, target):
     return target
 
 
-def _resolve(workspace, path):
+def _resolve(workspace, path, *, must_exist=True):
     if not isinstance(path, str) or not path.strip():
         raise ToolError("path 必须是非空字符串")
     candidate = Path(path)
     if candidate.is_absolute():
         raise ToolError("path 必须是相对工作区的路径")
     target = _checked_target(workspace, Path(workspace) / candidate)
-    if not target.exists():
+    if must_exist and not target.exists():
         raise ToolError(f"路径不存在：{path}")
     return target
 
 
 def _relative(workspace, target):
     return str(target.relative_to(Path(workspace).resolve())).replace("\\", "/")
+
+
+def file_reference(path, start, end):
+    if not start:
+        return path
+    return f"{path}:{start}" if start == end else f"{path}:{start}-{end}"
 
 
 def _directory_entries(workspace, directory, budget):
@@ -140,6 +147,7 @@ def _read_line_range(target, start, end):
     number = 1
     at_line_start = True
     selected = False
+    last_line = start
     with target.open("r", encoding="utf-8-sig", newline=None) as file:
         while end is None or number <= end:
             # 长行分块读取，跳过或拒绝它时也不把整行装入内存。
@@ -149,6 +157,7 @@ def _read_line_range(target, start, end):
             budget.consume_bytes(len(chunk.encode("utf-8")))
             line_ended = chunk.endswith("\n")
             if number >= start:
+                last_line = number
                 piece = chunk.removesuffix("\n")
                 if at_line_start and selected:
                     piece = "\n" + piece
@@ -162,7 +171,7 @@ def _read_line_range(target, start, end):
                 number += 1
     if not selected:
         raise ToolError("行号范围超出文件内容")
-    return "".join(parts)
+    return "".join(parts), last_line
 
 
 def read_file(path, workspace, start_line=None, end_line=None):
@@ -175,7 +184,12 @@ def read_file(path, workspace, start_line=None, end_line=None):
             content = file.read(MAX_FILE_BYTES + 1)
         if len(content) > MAX_FILE_BYTES:
             raise ToolError("文件超过 64 KiB，请使用行号缩小范围或选择较小的文件")
-        return content.decode("utf-8-sig")
+        text = content.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+        start = 1 if text else 0
+        end = text.count("\n") + int(bool(text) and not text.endswith("\n"))
+        relative = _relative(workspace, target)
+        return {"content": text, "path": relative, "start_line": start, "end_line": end,
+                "reference": file_reference(relative, start, end)}
     if start_line is not None:
         start_line = _validate_line_number(start_line, "start_line")
     if end_line is not None:
@@ -183,7 +197,44 @@ def read_file(path, workspace, start_line=None, end_line=None):
     start = start_line or 1
     if end_line is not None and end_line < start:
         raise ToolError("end_line 不能小于 start_line")
-    return _read_line_range(target, start, end_line)
+    text, actual_end = _read_line_range(target, start, end_line)
+    relative = _relative(workspace, target)
+    return {"content": text, "path": relative, "start_line": start, "end_line": actual_end,
+            "reference": file_reference(relative, start, actual_end)}
+
+
+def find_files(workspace, pattern, path=".", max_results=50):
+    """按名称/相对路径的子串或 glob 查找文件，默认忽略大小写。"""
+    if not isinstance(pattern, str) or not pattern.strip():
+        raise ToolError("pattern 必须是非空字符串")
+    if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
+        raise ToolError("max_results 必须是大于 0 的整数")
+    max_results = min(max_results, 200)
+    pattern = pattern.replace("\\", "/").casefold()
+    glob = any(character in pattern for character in "*?[")
+    root = _resolve(workspace, path)
+    budget = ScanBudget()
+    files = [root] if root.is_file() else _walk_files(workspace, root, budget)
+    matches = []
+    truncated = False
+    try:
+        for file in files:
+            budget.check_time()
+            relative = _relative(workspace, _checked_target(workspace, file))
+            candidate = relative if "/" in pattern else file.name
+            candidate = candidate.casefold()
+            if not (fnmatchcase(candidate, pattern) if glob else pattern in candidate):
+                continue
+            if len(matches) == max_results:
+                truncated = True
+                break
+            matches.append(relative)
+    except ScanLimit:
+        pass
+    result = {"files": matches, "truncated": truncated or bool(budget.reason)}
+    if budget.reason:
+        result["limit_reason"] = budget.reason
+    return result
 
 
 def search_text(workspace, query, path=".", case_sensitive=False, max_results=MAX_SEARCH_RESULTS):
@@ -224,7 +275,7 @@ def search_text(workspace, query, path=".", case_sensitive=False, max_results=MA
             except (OSError, ValueError):
                 skipped += 1
                 continue
-            for number, line in enumerate(text.splitlines(), 1):
+            for number, line in enumerate(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), 1):
                 budget.check_time()
                 haystack = line if case_sensitive else line.lower()
                 if needle in haystack:
@@ -233,6 +284,7 @@ def search_text(workspace, query, path=".", case_sensitive=False, max_results=MA
                         break
                     matches.append({
                         "path": _relative(workspace, file), "line": number,
+                        "reference": file_reference(_relative(workspace, file), number, number),
                         "text": line[:MAX_LINE_LENGTH],
                     })
             if truncated:

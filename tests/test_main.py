@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,7 +66,9 @@ class AgentTests(unittest.TestCase):
         history = requests[1]["messages"]
         self.assertEqual(history[-2]["tool_calls"][0]["id"], "call-1")
         self.assertEqual(history[-1]["tool_call_id"], "call-1")
-        self.assertEqual(json.loads(history[-1]["content"]), {"ok": True, "content": "启动：python app.py"})
+        result = json.loads(history[-1]["content"])
+        self.assertEqual(result["content"], "启动：python app.py")
+        self.assertEqual(result["reference"], "README.md:1")
 
     def test_multiple_calls_and_another_tool_round(self):
         _, requests = self.run_with_replies([
@@ -131,13 +134,13 @@ class AgentTests(unittest.TestCase):
         self.assertEqual([message["content"] for message in self.last_result.messages], ["读取 README.md", "本轮回答"])
 
     def test_context_budget_drops_old_turns_as_tool_results_grow(self):
-        history = [{"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "x" * 1800}]
-        with patch("archer.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 1800}):
+        history = [{"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "x" * 4200}]
+        with patch("archer.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 3500}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("完成")],
-                                              history=history, limits=AgentLimits(max_context_bytes=3000))
+                                              history=history, limits=AgentLimits(max_context_bytes=6500))
         self.assertTrue(any(message.get("content") == "旧问题" for message in requests[0]["messages"]))
         self.assertFalse(any(message.get("content") == "旧问题" for message in requests[1]["messages"]))
-        self.assertTrue(all(json_size(request["messages"]) <= 3000 for request in requests))
+        self.assertTrue(all(json_size(request["messages"]) <= 6500 for request in requests))
 
     def test_oversized_prompt_stops_before_model(self):
         with OpenAI(api_key="offline", base_url="https://offline.invalid/v1") as client, \
@@ -148,15 +151,15 @@ class AgentTests(unittest.TestCase):
     def test_tool_output_also_fits_current_turn_context_budget(self):
         with patch("archer.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 10000}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("请缩小读取范围")],
-                                              limits=AgentLimits(max_context_bytes=2000))
-        self.assertLessEqual(json_size(requests[1]["messages"]), 2000)
+                                              limits=AgentLimits(max_context_bytes=3500))
+        self.assertLessEqual(json_size(requests[1]["messages"]), 3500)
         self.assertFalse(json.loads(requests[1]["messages"][-1]["content"])["ok"])
         self.assertEqual(requests[1]["tool_choice"], "none")
 
     def test_oversized_tool_request_is_rejected_before_execution(self):
         with patch("archer.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "工具请求本身"):
             self.run_with_replies([reply(calls=[tool_call(arguments=json.dumps({"path": "x" * 3000}))])],
-                                  limits=AgentLimits(max_context_bytes=2000))
+                                  limits=AgentLimits(max_context_bytes=3500))
         tool.assert_not_called()
 
     def test_time_budget_stops_after_slow_response_before_tool_execution(self):
@@ -348,6 +351,57 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         system = requests[0]["messages"][0]["content"]
         self.assertIn("项目使用 uv 管理依赖", system)
+
+    def test_find_read_edit_run_and_reference_in_one_agent_turn(self):
+        path = self.workspace / "app.py"
+        path.write_text("print(1)\n", encoding="utf-8")
+        calls = [
+            ("find_files", {"pattern": "app.py"}),
+            ("read_file", {"path": "app.py"}),
+            ("edit_file", {"path": "app.py", "old_text": "print(1)", "new_text": "print(2)"}),
+            ("run_command", {"argv": [sys.executable, "app.py"]}),
+            ("read_file", {"path": "app.py"}),
+        ]
+        replies = [reply(calls=[tool_call(f"call-{number}", name=name, arguments=json.dumps(arguments))])
+                   for number, (name, arguments) in enumerate(calls)]
+        code, requests = self.run_main(
+            ["修改并验证", "--workspace", str(self.workspace), "--allow-write", "--allow-exec", "--banner", "off"],
+            [*replies, reply("`app.py:1` 已改为输出 2，运行退出码为 0。")])
+        self.assertEqual(code, 0, self.errors.getvalue())
+        self.assertEqual(path.read_text(encoding="utf-8"), "print(2)\n")
+        definitions = {item["function"]["name"] for item in requests[0]["tools"]}
+        self.assertTrue({"find_files", "edit_file", "restore_file", "run_command"} <= definitions)
+        results = [json.loads(message["content"]) for message in requests[-1]["messages"] if message["role"] == "tool"]
+        self.assertEqual(results[1]["reference"], "app.py:1")
+        self.assertIn("backup_id", results[2])
+        self.assertEqual(results[3]["returncode"], 0)
+        self.assertEqual(results[3]["output"].strip(), "2")
+        self.assertIn("[差异]", self.output.getvalue())
+        self.assertIn("[命令输出]", self.output.getvalue())
+        self.assertEqual(len(SessionStore(self.workspace).latest()["messages"]), 12)
+
+    def test_model_cannot_enable_disabled_write_tool(self):
+        code, requests = self.run_main(
+            ["你好", "--workspace", str(self.workspace), "--banner", "off"],
+            [reply(calls=[tool_call(name="edit_file", arguments=json.dumps({
+                "path": "new.py", "old_text": "", "new_text": "unexpected"}))]), reply("编辑未开启")])
+        self.assertEqual(code, 0)
+        self.assertFalse((self.workspace / "new.py").exists())
+        self.assertNotIn("edit_file", {item["function"]["name"] for item in requests[0]["tools"]})
+        self.assertFalse(json.loads(requests[1]["messages"][-1]["content"])["ok"])
+
+    def test_edit_receipt_survives_model_failure(self):
+        path = self.workspace / "app.py"
+        path.write_text("old", encoding="utf-8")
+        code, requests = self.run_main(
+            ["修改", "--workspace", str(self.workspace), "--allow-write", "--banner", "off"],
+            [reply(calls=[tool_call(name="edit_file", arguments=json.dumps({
+                "path": "app.py", "old_text": "old", "new_text": "new"}))]), reply("unfinished", finish="length")])
+        self.assertEqual(code, 1)
+        self.assertEqual(path.read_text(encoding="utf-8"), "new")
+        self.assertEqual(len(list((self.workspace / ".archer/backups").glob("*.json"))), 1)
+        self.assertIn("备份 ID", self.output.getvalue())
+        self.assertEqual(list(SessionStore(self.workspace).sessions_dir.glob("*.json")), [])
 
     def test_interactive_multi_turn_and_remember_command(self):
         prompts = ["/remember 项目使用 uv 管理依赖", "第一问", "第二问", "/exit"]

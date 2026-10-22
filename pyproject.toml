@@ -1,7 +1,7 @@
 [project]
 name = "archer"
-version = "0.2.0"
-description = "支持多轮对话与持久记忆的终端只读代码 Agent"
+version = "0.3.0"
+description = "支持多轮对话、项目记忆、文件编辑和命令执行的终端代码 Agent"
 requires-python = ">=3.12"
 dependencies = [
     "openai>=3.35,<4",

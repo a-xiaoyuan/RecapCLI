@@ -1,6 +1,6 @@
 # Archer
 
-Archer 是一个基于 Python 的终端只读代码 Agent。它通过模型工具调用读取本地工作区中的文本文件，并把执行结果回传给模型。当前版本支持**多轮对话、会话保存与恢复、长期记忆**。
+Archer 是一个基于 Python 的终端代码 Agent。它通过模型工具调用定位、读取和修改本地代码，并可执行前台命令完成验证。当前版本支持**多轮对话、会话保存与恢复、项目记忆、代码行号引用，以及可选的文件编辑和命令执行**。默认开放只读工具，通过启动参数分别开启编辑和命令能力。
 
 ## 功能
 
@@ -9,7 +9,10 @@ Archer 是一个基于 Python 的终端只读代码 Agent。它通过模型工�
 - **上下文管理**：完整存档独立于模型上下文；按完整对话轮次、消息数和 UTF-8 JSON 大小选取最近历史，保留工具调用与结果的配对。
 - **长期记忆**：`/remember` 添加并去重、`/memory` 查看、`/memory-update` 更新、`/forget` 删除；最近添加或更新的条目优先进入 system prompt，每轮显示选用与省略数量，可用 `--no-memory` 关闭。
 - **模型接入**：使用 OpenAI Python SDK，支持配置 API Key、模型 ID 和兼容服务地址。
-- **工具调用**：支持 `read_file`、`search_text`、`list_directory`，由本地程序校验参数并执行；工具结果和错误按调用 ID 回传。
+- **工具调用**：支持 `read_file`、`find_files`、`search_text`、`list_directory`、`edit_file`、`restore_file`、`run_command`，由本地程序校验参数和开放能力后执行；结果和错误按调用 ID 回传。
+- **文件定位与引用**：文件名/相对路径支持子串和 glob 搜索；读取、文本搜索结果返回实际路径和行号，供回答使用 `path:line` 或 `path:start-end` 引用。
+- **文件编辑**：精确原文替换、显式批量替换与新文件创建，返回统一 diff；编辑前备份，可按备份 ID 撤销，保留 UTF-8 BOM 和既有 LF/CRLF 换行。
+- **命令执行**：使用参数数组运行前台进程，返回退出码、合并输出和执行记录 ID；限制耗时、输出量，并清理关联子进程。
 - **文件读取**：支持工作区内的 UTF-8 文本，单次读取结果最多 64 KiB；可按行读取大文件片段。
 - **文本搜索与目录浏览**：按字符串搜索并返回文件路径、行号和内容，也可查看有深度和条目上限的目录树。
 - **执行控制**：限制每轮模型请求次数、工具调用数量、工具输出量、消息大小和执行时间；本地扫描另有限额，最后一次模型请求保留给回答。
@@ -27,12 +30,13 @@ flowchart LR
     Agent -->|"消息历史与工具定义"| Model["Chat Completions API"]
     Model -->|"回答或工具请求"| Agent
     Agent -->|"工具名称与参数"| Tool["archer/tools：工具校验与执行"]
-    Tool -->|"读取、搜索与目录浏览"| Workspace["本地工作区"]
+    Tool -->|"查找、读取、编辑与命令 cwd"| Workspace["本地工作区"]
     Workspace -->|"内容或读取错误"| Tool
     Tool -->|"结构化执行结果"| Agent
     CLI -->|"保存与恢复"| Session["archer/storage：SessionStore"]
     CLI -->|"读取与维护长期记忆"| Session
-    Session --> Data[".archer/sessions, .archer/memory.json"]
+    Session --> Data[".archer：会话、记忆、备份、命令记录"]
+    Tool -->|"编辑备份、命令记录"| Data
     Agent -->|"回答与状态事件"| CLI
     CLI --> Output["archer/ui：终端渲染"]
 ```
@@ -43,19 +47,23 @@ flowchart LR
 | --- | --- |
 | `main.py` | 启动 CLI，将返回值作为进程退出码 |
 | `archer/__main__.py` | 支持 `python -m archer` 启动 |
-| `archer/cli.py` | 参数解析、交互循环、用户命令、回答展示与会话保存 |
+| `archer/cli.py` | 参数解析、能力开关、交互循环、用户命令、回答展示与会话保存 |
 | `archer/config.py` | 模型配置加载、必需项校验与项目根目录定位 |
 | `archer/core/agent.py` | ReAct 循环、执行预算、工具结果回传；返回回答与本轮新增消息 |
 | `archer/core/context.py` | 按完整轮次和大小预算选择历史，不修改完整存档 |
-| `archer/tools/registry.py` | 统一登记 schema 与执行函数，从 schema 校验参数并分发工具 |
-| `archer/tools/filesystem.py` | 工作区路径检查、文件读取、文本搜索与目录浏览 |
+| `archer/tools/registry.py` | 统一登记 schema、执行函数和所需能力，校验参数并分发工具 |
+| `archer/tools/filesystem.py` | 工作区路径检查、文件名搜索、文件读取、行号引用与目录浏览 |
+| `archer/tools/editing.py` | 精确替换、创建文件、差异和备份恢复 |
+| `archer/tools/commands.py` | 前台进程、时间/输出预算、进程树回收与执行记录 |
 | `archer/storage/session.py` | 会话保存/加载/列举、格式兼容、记忆增删改查与上下文选择 |
+| `archer/storage/files.py` | 共享 JSON 原子写入和操作记录目录检查 |
 | `archer/ui/terminal_ui.py` | 输入提示、状态日志、Markdown 回答与代码高亮 |
 | `archer/ui/terminal_art.py` | 启动面板、窗口尺寸适配、颜色检测与终端兼容处理 |
 | `tests/test_package.py` | 脚本与模块入口、项目配置路径及预览版本信息 |
 | `tests/test_main.py` | 模型协议、工具执行、多轮对话、会话恢复、记忆注入与异常处理 |
 | `tests/test_context.py` | 完整轮次选择、工具配对、UTF-8 大小预算与输入不变性 |
 | `tests/test_tools.py` | 凭据与工作区边界、链接遍历、大文件按行读取及返回大小限制 |
+| `tests/test_operations.py` | 文件名查找、引用、能力限制、编辑恢复、命令退出/超时/输出与子进程回收 |
 | `tests/test_session.py` | 会话与记忆存储、非法 ID、损坏文件容错 |
 | `tests/test_terminal_art.py` | 启动面板布局与终端兼容测试 |
 | `tests/test_terminal_ui.py` | 回答渲染、状态配色与输出通道测试 |
@@ -74,19 +82,33 @@ flowchart LR
 
 回答先显示，再尝试保存。交互模式下保存失败时，对话保留在内存，可用 `/save` 重试，无需再次请求模型；`/exit` 和 `/new` 保存失败时保留当前会话。单次提问或 EOF 退出时若保存失败，程序返回非零退出码。
 
+编辑与命令执行会立即产生实际效果。后续模型失败或对话保存失败不会自动回滚它们；编辑备份和命令记录独立于会话保存，操作完成后终端直接显示记录 ID、编辑差异或命令输出。可要求 Agent 使用 `restore_file` 和对应备份 ID 撤销一次编辑；命令产生的任意文件变化不纳入编辑备份。
+
 ### 工具
 
 | 工具 | 参数与返回 |
 | --- | --- |
-| `read_file` | `path` 必填；可传 `start_line`、`end_line`，从 1 开始且包含结束行；返回正文，最多 64 KiB |
-| `search_text` | `query` 必填；支持搜索起点 `path`、大小写选项 `case_sensitive`、数量上限 `max_results`；返回路径、行号和匹配行 |
+| `read_file` | `path` 必填；可传 `start_line`、`end_line`；返回 `content`、`path`、实际 `start_line`/`end_line`、`reference`，正文最多 64 KiB |
+| `find_files` | `pattern` 必填；按文件名子串或 glob 查找，含 `/` 时匹配相对路径；支持 `path`、`max_results`，默认忽略大小写 |
+| `search_text` | `query` 必填；支持 `path`、`case_sensitive`、`max_results`；返回路径、行号、匹配行和 `reference` |
 | `list_directory` | 支持起点 `path`、递归深度 `max_depth`；返回目录树、条目数与截断标记 |
+| `edit_file` | 需 `--allow-write`；`path`、`old_text`、`new_text` 必填；现有非空文件要求精确原文，默认唯一匹配；可用 `replace_all`，新建文件的 `old_text` 为空 |
+| `restore_file` | 需 `--allow-write`；传入 `backup_id` 恢复该次编辑前状态；目标有后续修改时拒绝覆盖，撤销新建会删除该文件 |
+| `run_command` | 需 `--allow-exec`；`argv` 为字符串数组；可传 `cwd`、`timeout_seconds`、`max_output_bytes`、`encoding`；返回退出码、合并输出、超时/截断标记和记录 ID |
 
 搜索默认最多返回 50 条，最多可指定 200 条；单个匹配行最多显示 300 个字符，跳过超过 1 MiB 的文件和疑似二进制文件。目录树默认最多 300 项，递归深度最多为 5。搜索和目录浏览默认跳过版本库、虚拟环境、依赖及本地运行数据目录，遍历时不跟随符号链接或目录联接。
 
 单次递归遍历最多检查 5,000 个目录子项，搜索最多检查 1,000 个文件、读取约 16 MiB 内容；本地扫描时间预算为 5 秒。按行读取也受扫描字节与时间预算限制，避免为很大的起始行号无限扫描。搜索或目录浏览达到扫描预算时，返回已有结果、`truncated` 与 `limit_reason`；搜索发现超出结果数量上限的额外匹配时也标记 `truncated`，恰好达到上限且搜索完整时不误报。大目录只对预算内的子项排序。
 
-所有工具均校验实际路径，拒绝访问工作区之外的目标和 Archer 自身的 `.env`；递归遍历的子项也执行相同检查。
+文件读取、搜索、目录浏览和编辑均校验实际路径，拒绝访问工作区之外的目标和 Archer 自身的 `.env`。编辑额外拒绝 `..`、符号链接/目录联接和 `.git`、`.archer` 内部数据路径。
+
+`find_files` 与目录遍历共用条目和时间预算，不读取文件内容；glob 使用字符串匹配，含 `/` 的模式作用于工作区相对路径，不使用 Git ignore 模式语义。读取引用的行号从 1 开始，结束行为实际读到的最后一行；空文件返回 0/0 和不带行号的文件路径。引用位置由工具提供，模型是否正确使用仍需核对回答。
+
+编辑文件最多 1 MiB，差异最多显示 8 KiB；旧原文不匹配或默认匹配多处时不写入。写入前再次检查目标内容，使用同目录临时文件替换；备份记录原始字节，因此撤销保留原编码标记及换行。恢复只允许当前文件仍与该次编辑结果一致的情况。撤销新文件保留已创建的空父目录。
+
+命令默认 30 秒、最多 60 秒，并受本轮剩余时间限制；输出默认 16 KiB、最多 64 KiB，超出时停止进程。stdout/stderr 合并，默认按 UTF-8 解码，旧 Windows 程序可指定 `encoding=gb18030`。命令禁用交互输入，`argv` 默认不经 shell；需要管道、重定向或 shell 内置命令时，应显式选择相应解释器。Windows 使用带启动信号的进程包装与 [Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) 管理进程树，POSIX 使用独立进程组；前台命令结束或中断后回收关联子进程。
+
+`cwd` 仅限制命令的起始目录。**命令以当前用户权限运行，并非操作系统沙箱，可以自行访问其他路径、网络或修改文件。** `--allow-exec` 独立于 `--allow-write`：即使未开启编辑工具，命令自身仍可写文件。子进程不继承名为 `API_KEY` 或以 `_API_KEY` 结尾的环境变量，其他常规环境变量仍保留；这不阻止命令自行读取本地配置。能力开关只对本次启动有效，恢复会话不会自动恢复写入或执行权限，也没有逐条工具确认。
 
 ## 环境要求
 
@@ -171,6 +193,14 @@ uv run python main.py --continue --no-memory
 uv run python main.py --max-tool-calls 12 --max-tool-bytes 131072 --context-bytes 262144 --max-seconds 120
 ```
 
+开启编辑和命令执行：
+
+```shell
+uv run python -m archer --workspace ./path/to/project --allow-write --allow-exec
+```
+
+可连续要求：先按文件名找到目标、引用相关行解释，再修改指定逻辑并运行相关测试。撤销示例：`撤销备份 ID 为 <backup_id> 的那次编辑`。
+
 关闭启动面板，保留终端回答配色：
 
 ```shell
@@ -207,6 +237,8 @@ uv run python main.py "读取 archer/cli.py，概括其职责" --banner off --co
 | `--session ID` | 加载指定会话后继续 | 无 |
 | `--continue` | 恢复最近一个有内容的会话；与 `--session` 互斥 | 关闭 |
 | `--no-memory` | 本轮不注入长期记忆 | 关闭 |
+| `--allow-write` | 开放精确文件编辑、新建与备份恢复 | 关闭 |
+| `--allow-exec` | 开放以当前用户权限运行的前台命令 | 关闭 |
 | `--color auto\|always\|never` | 自动检测、强制开启或关闭输出配色 | `auto` |
 | `--banner auto\|color\|plain\|off` | 自动、彩色、纯文本或关闭启动面板 | `auto` |
 | `--preview` | 预览界面与示例输出，不读取任务文件、不请求模型 | 关闭 |
@@ -224,6 +256,8 @@ uv run python main.py "读取 archer/cli.py，概括其职责" --banner off --co
 | --- | --- |
 | `.archer/sessions/<id>.json` | 会话元数据与消息历史（含工具结果） |
 | `.archer/memory.json` | 长期记忆条目（用户可读、可删） |
+| `.archer/backups/<id>.json` | 编辑前原始字节（Base64）、路径及前后内容指纹 |
+| `.archer/commands/<id>.json` | 命令参数、cwd、状态、退出码和受限输出 |
 | `.archer/.gitignore` | 忽略该数据目录内的文件 |
 
 程序在目标工作区的 `.archer/` 内生成独立的 Git 忽略规则，使用 `--workspace` 指向其他仓库时也生效。忽略规则不影响已经被 Git 跟踪的文件；若此前提交过会话或记忆，需要另行从版本控制中移除。
@@ -252,6 +286,10 @@ uv run python -m unittest discover -s tests -v
 - 递归搜索的凭据保护、符号链接或 Windows 目录联接边界，以及大文件按行读取。
 - 配置优先级、请求次数上限、空响应及不完整响应处理。
 - 完整存档与有限上下文分离、按完整轮次选取、输入历史不变性。
+- 文件名子串/glob、准确引用行号、默认能力过滤及禁用工具的分发拒绝。
+- 精确替换、创建、BOM/CRLF 保留、备份恢复、后续改动保护和差异截断。
+- 命令 cwd、退出码、UTF-8、shell 字符按普通参数传递、超时、输出上限和子进程清理。
+- 模拟模型的一轮“查找 → 读取 → 编辑 → 运行 → 复读 → 回答”及模型失败后的备份保留。
 - 工具调用数、累计输出、上下文大小、执行时间与本地扫描预算。
 - 多轮历史复用、`--continue` 跳过空会话、会话列表、记忆注入与更新去重。
 - JSON 旧格式升级、未知版本保护、未变更会话避免重复写入。
@@ -277,10 +315,13 @@ Archer/
 │   ├── tools/
 │   │   ├── __init__.py
 │   │   ├── registry.py
-│   │   └── filesystem.py
+│   │   ├── filesystem.py
+│   │   ├── editing.py
+│   │   └── commands.py
 │   ├── storage/
 │   │   ├── __init__.py
-│   │   └── session.py
+│   │   ├── session.py
+│   │   └── files.py
 │   └── ui/
 │       ├── __init__.py
 │       ├── terminal_ui.py
@@ -300,16 +341,17 @@ Archer/
 - 长期记忆需要手动维护，不会自动从对话中总结；记忆按工作区隔离。
 - 会话文件包含完整工具结果，长期使用后可能变大，需要手动清理 `.archer/sessions/`。
 - 本地 JSON 存储面向单进程使用；原子替换防止半写文件，不提供多个进程同时修改时的合并或锁定。
-- 工具仅包含文件读取、文本搜索和目录浏览，不提供文件编辑或命令执行。
-- 工具仅接受工作区内的相对路径。文件读取要求 UTF-8（支持 BOM），全文超过 64 KiB 时需指定行号，所选片段仍受 64 KiB 限制。
+- 编辑支持 UTF-8 文本的精确替换和新建，不支持任意格式补丁、二进制编辑或多文件事务。
+- 文件路径参数与命令 `cwd` 接受工作区内的相对路径；命令的可执行文件和参数另按进程语义处理。文件读取要求 UTF-8（支持 BOM），全文超过 64 KiB 时需指定行号，所选片段仍受 64 KiB 限制。
 - 文本搜索是逐文件字符串匹配，不包含语义检索或符号索引。
 - 路径校验属于应用层限制，不构成操作系统沙箱，也不保证抵御并发路径替换。
+- 编辑备份、命令记录需要手动清理；执行命令导致的修改不会自动生成编辑备份，不能统一撤销。
 - SDK HTTP 超时最多为 30 秒，并按剩余执行时间缩短，自动重试关闭。执行与扫描时间预算在操作边界检查，不能强制终止阻塞的操作系统调用，也不等同于硬实时截止时间。
 
 ## 后续规划
 
 - 上下文摘要与压缩，提高长会话中较早信息的可用性。
-- 文件名搜索、符号定位与统一的代码引用格式。
-- 文件编辑、命令执行与审批（需先补齐权限和检查点）。
+- 符号定位与引用交叉校验。
+- 多文件编辑检查点和可选的逐次操作确认。
 
 以上功能尚未实现。

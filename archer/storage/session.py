@@ -7,13 +7,13 @@
 from dataclasses import dataclass
 import hashlib
 import json
-import os
 import re
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-STATE_DIR = ".archer"
+from .files import state_directory, write_json as _write_json
+
 SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_MEMORY_ITEMS = 50
 MAX_MEMORY_TEXT = 2000
@@ -50,19 +50,6 @@ def _validate_session_id(session_id):
     if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
         raise ValueError("会话 ID 只能包含字母、数字、下划线和连字符")
     return session_id
-
-
-def _write_json(path, data):
-    """先写同目录的临时文件，替换成功后才更新原文件。"""
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _validate_messages(messages):
@@ -112,14 +99,10 @@ class SessionStore:
 
     def __init__(self, workspace):
         self.workspace = Path(workspace).resolve()
-        self.root = self.workspace / STATE_DIR
-        self.sessions_dir = self.root / "sessions"
+        self.sessions_dir = state_directory(self.workspace, "sessions")
+        self.root = self.sessions_dir.parent
         self.memory_path = self.root / "memory.json"
         self._saved_signatures = {}
-        self.root.mkdir(parents=True, exist_ok=True)
-        # 忽略规则随数据目录存放，也适用于 --workspace 指向的其他仓库。
-        (self.root / ".gitignore").write_text("*\n", encoding="utf-8")
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- 会话 ----
 

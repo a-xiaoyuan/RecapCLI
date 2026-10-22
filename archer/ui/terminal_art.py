@@ -196,7 +196,7 @@ def _render_banner(path, preview, columns, height, color):
     # 少用最后一列，并给后续输入/输出留三行，避免自动换行或挤掉提示符。
     width = max(1, min(columns - 1, 96))
     title = _title()
-    mode = "模式  " + ("界面预览 · 不请求模型" if preview else "模型问答 · 只读工具")
+    mode = "模式  " + ("界面预览 · 不请求模型" if preview else "模型问答 · 工作区工具")
 
     def workspace_text(available):
         label = "工作区  "

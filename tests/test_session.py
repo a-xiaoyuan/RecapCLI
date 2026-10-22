@@ -249,7 +249,7 @@ class SessionStoreTests(unittest.TestCase):
         updated_at = session["updated_at"]
         session["messages"] = [{"role": "user", "content": "new question"},
                                {"role": "assistant", "content": "new answer"}]
-        with patch("archer.storage.session.os.replace", side_effect=PermissionError("offline write error")), \
+        with patch("archer.storage.files.os.replace", side_effect=PermissionError("offline write error")), \
                 patch("archer.storage.session._now", return_value="2099-01-01T00:00:00+00:00"):
             with self.assertRaises(PermissionError):
                 self.store.save(session)
