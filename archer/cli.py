@@ -65,7 +65,7 @@ def show_memory(ui, store):
 
 
 def run_turn(client, model, workspace, store, ui, session, prompt, *,
-             max_steps=8, memory_enabled=True, limits=None, capabilities=("read",)):
+             max_steps=None, memory_enabled=True, limits=None, capabilities=("read",), mode="react"):
     """CLI 编排存储与展示；核心循环只接收消息及事件回调。"""
     memory_text = ""
     if memory_enabled:
@@ -75,7 +75,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
             ui.info(f"长期记忆：本轮选用 {len(memory.selected_ids)} 条，省略 {memory.omitted_count} 条。")
     result = run_agent(client, model, prompt, workspace, history=session["messages"],
                        memory_text=memory_text, max_steps=max_steps, limits=limits, on_event=ui.event,
-                       capabilities=capabilities)
+                       capabilities=capabilities, mode=mode)
     session["messages"].extend(result.messages)
     session["model"] = model
     return result.answer
@@ -152,7 +152,7 @@ def handle_command(command, ui, store, session, model):
 
 
 def interactive_loop(client, model, workspace, store, ui, session, max_steps, memory_enabled, limits=None,
-                     capabilities=("read",)):
+                     capabilities=("read",), mode="react"):
     ui.info("多轮对话模式：直接输入问题；/help 查看命令，/exit 退出。")
     while True:
         try:
@@ -171,7 +171,7 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
         try:
             answer = run_turn(client, model, workspace, store, ui, session,
                               prompt, max_steps=max_steps, memory_enabled=memory_enabled, limits=limits,
-                              capabilities=capabilities)
+                              capabilities=capabilities, mode=mode)
         except KeyboardInterrupt:
             ui.error("已取消本轮。")
             continue
@@ -187,10 +187,12 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Archer：支持多轮对话、记忆与可选编辑/命令执行的代码 Agent")
+    parser = argparse.ArgumentParser(description="Archer：支持 ReAct 与 Plan and Execute 的终端代码 Agent")
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="允许读取的工作区")
-    parser.add_argument("--max-steps", type=int, default=8, help="每轮模型请求次数上限，默认 8")
+    parser.add_argument("--mode", choices=["react", "plan"], default="react",
+                        help="执行模式：react 边判断边执行；plan 先计划、逐步执行与核对")
+    parser.add_argument("--max-steps", type=int, help="每轮模型请求次数上限，react 默认 8，plan 默认 20")
     parser.add_argument("--max-tool-calls", type=int, default=16, help="每轮工具调用数量上限")
     parser.add_argument("--max-tool-bytes", type=int, default=128 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
     parser.add_argument("--context-bytes", type=int, default=256 * 1024, help="模型消息的 UTF-8 JSON 大小上限")
@@ -225,8 +227,12 @@ def main(argv=None) -> int:
         print_banner(workspace=args.workspace, preview=True, mode=banner_mode)
         ui.preview()
         return 0
+    if args.max_steps is None:
+        args.max_steps = 20 if args.mode == "plan" else 8
     if args.max_steps < 1:
         parser.error("--max-steps 必须大于 0")
+    if args.mode == "plan" and args.max_steps < 4:
+        parser.error("计划模式至少需要 4 次模型请求预算")
     try:
         limits = AgentLimits(max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
                              max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds)
@@ -257,6 +263,7 @@ def main(argv=None) -> int:
 
     try:
         print_banner(workspace=args.workspace, mode=banner_mode)
+        ui.info("执行模式：" + ("Plan and Execute" if args.mode == "plan" else "ReAct"))
         ui.info(f"工具能力：{'、'.join(name for key, name in [('read', '读取'), ('write', '编辑'), ('exec', '命令执行')] if key in capabilities)}")
         # 首版只接 Chat Completions 工具调用协议，不自动重试收费请求。
         with OpenAI(api_key=config.api_key, base_url=config.base_url,
@@ -268,11 +275,11 @@ def main(argv=None) -> int:
                 ui.user(prompt)
                 answer = run_turn(client, config.model, args.workspace, store, ui, session,
                                   prompt, max_steps=args.max_steps, memory_enabled=args.memory, limits=limits,
-                                  capabilities=capabilities)
+                                  capabilities=capabilities, mode=args.mode)
                 ui.answer(answer)
                 return 0 if save_session(store, session, ui) else 1
             return interactive_loop(client, config.model, args.workspace, store, ui, session,
-                                    args.max_steps, args.memory, limits, capabilities)
+                                    args.max_steps, args.memory, limits, capabilities, args.mode)
     except (KeyboardInterrupt, EOFError):
         ui.error("\n已取消。")
         return 130

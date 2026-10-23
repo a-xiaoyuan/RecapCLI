@@ -7,6 +7,7 @@ import time
 import sys
 
 from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, select_history
+from .planning import PlanController
 from ..tools import execute_tool, tool_definitions
 
 BASE_SYSTEM_PROMPT = (
@@ -51,19 +52,26 @@ def build_system_prompt(memory_text=""):
     return BASE_SYSTEM_PROMPT + ("\n\n" + memory_text if memory_text else "")
 
 
-def run_agent(client, model, prompt, workspace, max_steps=8, on_event=print,
-              history=None, memory_text="", limits=None, capabilities=("read",)):
+def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
+              history=None, memory_text="", limits=None, capabilities=("read",), mode="react"):
     """成功时返回完整的一轮；失败时不修改调用方的任何历史。"""
     workspace = Path(workspace).resolve(strict=True)
+    if mode not in ("react", "plan"):
+        raise ValueError("mode 必须是 react 或 plan")
+    if max_steps is None:
+        max_steps = 20 if mode == "plan" else 8
     if not workspace.is_dir() or isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
         raise ValueError("工作区必须是目录，max_steps 必须大于 0")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("问题不能为空")
+    if mode == "plan" and max_steps < 4:
+        raise ValueError("计划模式至少需要 4 次模型请求预算")
     limits = limits or AgentLimits()
     deadline = time.monotonic() + limits.max_seconds
     capabilities = frozenset(capabilities)
     runtime = f"\n当前开放能力：{', '.join(sorted(capabilities))}。Python 解释器：{sys.executable}。"
-    system = {"role": "system", "content": build_system_prompt(memory_text) + runtime}
+    system_text = build_system_prompt(memory_text) + runtime
+    planner = PlanController(on_event) if mode == "plan" else None
     turn = [{"role": "user", "content": prompt}]
     definitions = tool_definitions(capabilities)
     calls_used, output_bytes = 0, 0
@@ -77,14 +85,19 @@ def run_agent(client, model, prompt, workspace, max_steps=8, on_event=print,
 
     for step in range(1, max_steps + 1):
         remaining_time()
+        final_request = step == max_steps or calls_used >= limits.max_tool_calls or output_exhausted
+        if planner is not None and final_request:
+            planner.stop("模型请求或工具预算即将耗尽，保留本次请求汇总已有结果")
+        instruction = "" if planner is None else "\n\n" + planner.instruction()
+        system = {"role": "system", "content": system_text + instruction}
         # 当前轮始终保留；历史随本轮增长重新选择，不回写到完整存档。
         available = limits.max_context_bytes - json_size([system, *turn]) - 1
         if available < 0:
             raise RuntimeError("本轮消息超过上下文大小预算，请缩小问题或工具读取范围")
         selected = select_history(history or [], MAX_HISTORY_MESSAGES, available)
         messages = [system, *selected, *turn]
-        final_request = step == max_steps or calls_used >= limits.max_tool_calls or output_exhausted
-        options = {"tool_choice": "none"} if final_request else {}
+        tools_allowed = not final_request and (planner is None or planner.allows_tools)
+        options = {} if tools_allowed else {"tool_choice": "none"}
         on_event(f"[模型] 第 {step} 次请求")
         response = client.chat.completions.create(
             model=model, messages=messages, tools=definitions,
@@ -101,11 +114,20 @@ def run_agent(client, model, prompt, workspace, max_steps=8, on_event=print,
             if not message.content or not message.content.strip():
                 raise RuntimeError("模型既没有返回正文，也没有请求工具")
             turn.append({"role": "assistant", "content": message.content})
+            if planner is not None:
+                finished = planner.accept(message.content)
+                if not finished:
+                    continue
+                answer = planner.final_answer(message.content)
+                turn[-1]["content"] = answer
+                return TurnResult(answer, turn)
             return TurnResult(message.content, turn)
 
         # 最后一次请求留给总结；服务忽略 tool_choice 时也不再执行工具。
         if final_request:
             raise RuntimeError(f"已达到 {max_steps} 次模型请求上限或工具预算，模型仍请求工具")
+        if not tools_allowed:
+            raise RuntimeError("规划、核对和汇总阶段禁止调用工具，未执行这批调用")
         if len(message.tool_calls) > limits.max_tool_calls - calls_used:
             raise RuntimeError("模型请求的工具数量超过本轮剩余预算，未执行这批调用")
         ids = [call.id for call in message.tool_calls]

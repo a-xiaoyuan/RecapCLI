@@ -1,9 +1,10 @@
 # Archer
 
-Archer 是一个基于 Python 的终端代码 Agent。它通过模型工具调用定位、读取和修改本地代码，并可执行前台命令完成验证。当前版本支持**多轮对话、会话保存与恢复、项目记忆、代码行号引用，以及可选的文件编辑和命令执行**。默认开放只读工具，通过启动参数分别开启编辑和命令能力。
+Archer 是一个基于 Python 的终端代码 Agent。它通过模型工具调用定位、读取和修改本地代码，并可执行前台命令完成验证。当前版本支持 **ReAct 与 Plan and Execute 两种执行模式、多轮对话、会话保存与恢复、项目记忆、代码行号引用，以及可选的文件编辑和命令执行**。默认开放只读工具，通过启动参数分别开启编辑和命令能力。
 
 ## 功能
 
+- **执行模式**：默认 ReAct 模式按模型判断调用工具；可选 Plan and Execute 模式先生成计划，逐步执行、核对结果，必要时重规划剩余步骤，最后汇总。
 - **多轮对话**：交互模式下可以连续提问，历史在会话内复用；`/new` 开始新会话，`/exit` 保存退出。
 - **会话持久化**：成功轮次完整保存到工作区 `.archer/sessions/<id>.json`；`--continue` 恢复最近一个有内容的会话，`--session ID` 指定会话，`/sessions` 列举会话。
 - **上下文管理**：完整存档独立于模型上下文；按完整对话轮次、消息数和 UTF-8 JSON 大小选取最近历史，保留工具调用与结果的配对。
@@ -27,6 +28,7 @@ flowchart LR
     CLI --> Config["archer/config.py：模型配置"]
     CLI -->|"历史、记忆文本、事件回调"| Agent["archer/core：Agent 循环"]
     Agent --> Context["archer/core/context.py：上下文选择"]
+    Agent --> Planning["archer/core/planning.py：计划阶段与步骤状态"]
     Agent -->|"消息历史与工具定义"| Model["Chat Completions API"]
     Model -->|"回答或工具请求"| Agent
     Agent -->|"工具名称与参数"| Tool["archer/tools：工具校验与执行"]
@@ -49,7 +51,8 @@ flowchart LR
 | `archer/__main__.py` | 支持 `python -m archer` 启动 |
 | `archer/cli.py` | 参数解析、能力开关、交互循环、用户命令、回答展示与会话保存 |
 | `archer/config.py` | 模型配置加载、必需项校验与项目根目录定位 |
-| `archer/core/agent.py` | ReAct 循环、执行预算、工具结果回传；返回回答与本轮新增消息 |
+| `archer/core/agent.py` | 两种模式共用的模型/工具循环、执行预算、结果回传；返回回答与本轮新增消息 |
+| `archer/core/planning.py` | 计划生成、逐步执行、核对、重规划和汇总的阶段控制及步骤状态 |
 | `archer/core/context.py` | 按完整轮次和大小预算选择历史，不修改完整存档 |
 | `archer/tools/registry.py` | 统一登记 schema、执行函数和所需能力，校验参数并分发工具 |
 | `archer/tools/filesystem.py` | 工作区路径检查、文件名搜索、文件读取、行号引用与目录浏览 |
@@ -62,6 +65,7 @@ flowchart LR
 | `tests/test_package.py` | 脚本与模块入口、项目配置路径及预览版本信息 |
 | `tests/test_main.py` | 模型协议、工具执行、多轮对话、会话恢复、记忆注入与异常处理 |
 | `tests/test_context.py` | 完整轮次选择、工具配对、UTF-8 大小预算与输入不变性 |
+| `tests/test_planning.py` | 计划执行、结果核对、失败重规划、阶段权限、共享预算和 CLI 会话集成 |
 | `tests/test_tools.py` | 凭据与工作区边界、链接遍历、大文件按行读取及返回大小限制 |
 | `tests/test_operations.py` | 文件名查找、引用、能力限制、编辑恢复、命令退出/超时/输出与子进程回收 |
 | `tests/test_session.py` | 会话与记忆存储、非法 ID、损坏文件容错 |
@@ -72,7 +76,7 @@ flowchart LR
 
 1. 解析参数，加载模型配置；按 `--session` / `--continue` 恢复会话，否则新建。
 2. 进入多轮循环：读取用户消息；`/` 开头的命令由程序处理，其余作为新一轮问题。
-3. CLI 读取记忆并准备历史；核心按预算选择上下文，把 system prompt、最近完整轮次和新问题发给模型。工具调用按 ID 配对执行。
+3. CLI 读取记忆并准备历史；核心按预算选择上下文，把 system prompt、最近完整轮次和新问题发给模型。按所选模式推进，工具调用按 ID 配对执行。
 4. 核心返回有效回答与本轮新增消息；CLI 将消息追加到完整存档，展示回答并保存。失败轮次不会混入历史。
 5. `/exit`、EOF 或 Ctrl+C 退出；`/new` 保存当前会话并开始新会话。空会话不会自动保存，未修改的会话不会重复写入。
 
@@ -207,6 +211,34 @@ uv run python -m archer --workspace ./path/to/project --allow-write --allow-exec
 uv run python main.py "读取 archer/cli.py，概括其职责" --banner off --color always
 ```
 
+### 执行模式
+
+默认使用 ReAct 模式，适合直接问答和较短的工具任务。Plan and Execute 模式适合需要先拆解、再分步处理的任务：
+
+```shell
+# 持续对话，每次提问先规划再执行
+uv run python -m archer --mode plan
+
+# 单次任务，同时开放编辑和命令执行
+uv run python -m archer "找到 app.py，将输出改为 2 并运行验证" --mode plan --allow-write --allow-exec
+
+# 恢复最近会话，在计划模式下处理新的问题
+uv run python -m archer --continue --mode plan
+```
+
+计划模式按以下阶段推进：
+
+1. **Plan**：模型生成 1–5 个步骤，程序校验计划格式并显示。
+2. **Execute**：处理当前步骤，按需调用已开放的工具。
+3. **Review**：模型结合本轮工具记录核对该步骤。完成后进入下一步；信息变化时可替换全部剩余步骤，最多重规划 2 次；无法继续时标记受阻。
+4. **Summary**：汇总实际结果。程序在回答前附上已完成/未完成状态、核对通过的步骤数，受阻或预算不足时说明停止原因。
+
+规划、核对和汇总阶段均禁止执行工具；即使服务忽略 `tool_choice=none`，本地也会拒绝执行。只有 Execute 阶段能够调用工具，且仍受 `--allow-write`、`--allow-exec` 控制。模式在本次启动期间固定，两种模式共享已有工具和存储，不需要额外依赖。
+
+默认模型请求上限为 ReAct 8 次、计划模式 20 次，可通过 `--max-steps` 调整；计划模式至少需要 4 次。该上限包含规划、执行、核对、重规划和汇总的全部请求，其他时间、工具调用及输出预算也按整轮累计，不会在每一步重新计数。最后一次请求保留给汇总，未核对的步骤不会标记完成。时间或上下文大小耗尽、协议错误等情况仍会终止本轮。
+
+计划与核对响应、工具调用及结果、最终回答随同一个用户轮次保存到会话中。`--continue` 恢复已保存的历史，新的提问会重新生成计划；当前不支持从被中断步骤自动续跑。核对结论由模型根据记录判断，不替代实际测试。
+
 ### 交互命令
 
 | 命令 | 说明 |
@@ -229,7 +261,8 @@ uv run python main.py "读取 archer/cli.py，概括其职责" --banner off --co
 | --- | --- | --- |
 | `prompt` | 单次问题；省略时进入多轮对话 | 无 |
 | `--workspace PATH` | 工具允许读取的工作区，也是 `.archer` 数据目录所在位置 | 当前工作目录 |
-| `--max-steps N` | 每轮的模型请求次数上限 | `8` |
+| `--mode react\|plan` | ReAct 或 Plan and Execute 执行模式 | `react` |
+| `--max-steps N` | 每轮全部阶段的模型请求次数上限；计划模式至少为 4 | ReAct `8`，计划模式 `20` |
 | `--max-tool-calls N` | 每轮工具调用数量上限 | `16` |
 | `--max-tool-bytes N` | 每轮工具结果正文 UTF-8 字节总上限 | `131072` |
 | `--context-bytes N` | 每次模型请求中消息列表的 UTF-8 JSON 大小上限 | `262144` |
@@ -281,6 +314,8 @@ uv run python -m unittest discover -s tests -v
 覆盖范围包括：
 
 - 工具调用与结果的 ID 配对、多个工具调用和连续工具轮次。
+- 计划/执行/核对/汇总、失败后重规划、受阻和预算不足时的未完成状态、非执行阶段拒绝工具调用。
+- 计划模式的全轮预算、真实文件编辑/命令执行、会话保存恢复及交互模式记忆注入。
 - 脚本与包入口、移动后的项目配置路径、预览模式和版本信息。
 - JSON 参数、工作区路径、文件大小、编码和凭据配置访问校验。
 - 递归搜索的凭据保护、符号链接或 Windows 目录联接边界，以及大文件按行读取。
@@ -311,7 +346,8 @@ Archer/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── agent.py
-│   │   └── context.py
+│   │   ├── context.py
+│   │   └── planning.py
 │   ├── tools/
 │   │   ├── __init__.py
 │   │   ├── registry.py

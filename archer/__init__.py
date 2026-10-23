@@ -1,1 +1,1 @@
-"""Archer：支持多轮对话、项目记忆与可选编辑/命令执行的终端代码 Agent。"""
+"""Archer：支持 ReAct、Plan and Execute、多轮对话与本地工具的终端代码 Agent。"""
