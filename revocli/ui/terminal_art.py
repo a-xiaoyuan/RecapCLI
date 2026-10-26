@@ -148,9 +148,9 @@ def _title():
     try:
         with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
             version = tomllib.load(file)["project"]["version"]
-        return "Archer  v" + _clean(version)
+        return "RevoCLI  v" + _clean(version)
     except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
-        return "Archer"
+        return "RevoCLI"
 
 
 def _supports_color(stream, mode):

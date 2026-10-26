@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from archer.storage.session import SessionStore
+from revocli.storage.session import SessionStore
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -155,7 +155,7 @@ class SessionStoreTests(unittest.TestCase):
         session = self.store.new_session("test-model")
         path = self.store.save(session)
         original = path.read_bytes()
-        with patch("archer.storage.session._write_json") as write:
+        with patch("revocli.storage.session._write_json") as write:
             self.store.save(session)
             restored = self.store.load(session["id"])
             self.store.save(restored)
@@ -249,8 +249,8 @@ class SessionStoreTests(unittest.TestCase):
         updated_at = session["updated_at"]
         session["messages"] = [{"role": "user", "content": "new question"},
                                {"role": "assistant", "content": "new answer"}]
-        with patch("archer.storage.files.os.replace", side_effect=PermissionError("offline write error")), \
-                patch("archer.storage.session._now", return_value="2099-01-01T00:00:00+00:00"):
+        with patch("revocli.storage.files.os.replace", side_effect=PermissionError("offline write error")), \
+                patch("revocli.storage.session._now", return_value="2099-01-01T00:00:00+00:00"):
             with self.assertRaises(PermissionError):
                 self.store.save(session)
         self.assertEqual(path.read_bytes(), before)

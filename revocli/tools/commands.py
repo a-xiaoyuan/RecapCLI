@@ -65,7 +65,7 @@ def _windows_job(process):
     return lambda: kernel.CloseHandle(handle)
 
 
-def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=16384, encoding="utf-8"):
+def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=16384, encoding="utf-8", *, on_record=None):
     if (not isinstance(argv, list) or not 1 <= len(argv) <= 64
             or any(not isinstance(arg, str) or "\x00" in arg for arg in argv) or not argv[0].strip()):
         raise ToolError("argv 必须是非空字符串数组，最多 64 项，首项为可执行文件")
@@ -91,6 +91,8 @@ def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=1
     record = {"schema_version": 1, "id": command_id, "argv": argv, "cwd": _relative(workspace, directory),
               "started_at": datetime.now().astimezone().isoformat(), "status": "running"}
     write_json(record_path, record)  # 记录不可写时，不启动命令。
+    if on_record is not None:
+        on_record("command", command_id)
     environment = {key: value for key, value in os.environ.items()
                    if key.upper() != "API_KEY" and not key.upper().endswith("_API_KEY")}
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")

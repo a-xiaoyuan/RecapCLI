@@ -1,6 +1,6 @@
-"""加载 Archer 自身的模型配置。
+"""加载 RevoCLI 自身的模型配置。
 
-只读取 Archer 目录下的 `.env`，环境变量优先；不读取目标工作区的配置。
+只读取 RevoCLI 目录下的 `.env`，环境变量优先；不读取目标工作区的配置。
 """
 
 import os
@@ -29,5 +29,5 @@ def load_config():
     model = (values.get("OPENAI_MODEL") or "").strip()
     base_url = (values.get("OPENAI_BASE_URL") or "").strip() or None
     if not api_key or not model:
-        raise ConfigError("请在 Archer 的 .env 或环境变量中设置 OPENAI_API_KEY 和 OPENAI_MODEL")
+        raise ConfigError("请在 RevoCLI 的 .env 或环境变量中设置 OPENAI_API_KEY 和 OPENAI_MODEL")
     return Config(api_key=api_key, model=model, base_url=base_url)

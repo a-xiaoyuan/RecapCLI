@@ -8,9 +8,9 @@ import time
 import unittest
 from unittest.mock import patch
 
-from archer.tools import execute_tool, tool_definitions
-from archer.tools.filesystem import ScanBudget
-from archer.storage.files import write_json
+from revocli.tools import execute_tool, tool_definitions
+from revocli.tools.filesystem import ScanBudget
+from revocli.storage.files import write_json
 
 
 class OperationTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class OperationTests(unittest.TestCase):
                 result = execute_tool(tool, arguments, self.workspace)
                 self.assertFalse(result["ok"])
         self.assertFalse((self.workspace / "new.txt").exists())
-        self.assertFalse((self.workspace / ".archer").exists())
+        self.assertFalse((self.workspace / ".revocli").exists())
 
     def test_find_files_supports_name_glob_path_and_limit(self):
         (self.workspace / "pkg").mkdir()
@@ -47,15 +47,15 @@ class OperationTests(unittest.TestCase):
         self.assertFalse(self.call("find_files", pattern="../*", path="..")["ok"])
 
     def test_find_files_respects_scan_budget_and_skipped_directories(self):
-        hidden = self.workspace / ".archer"
+        hidden = self.workspace / ".revocli"
         hidden.mkdir()
         (hidden / "private.py").touch()
         for number in range(8):
             (self.workspace / f"file{number}.py").touch()
-        with patch("archer.tools.filesystem.ScanBudget", return_value=ScanBudget(max_entries=3)):
+        with patch("revocli.tools.filesystem.ScanBudget", return_value=ScanBudget(max_entries=3)):
             result = self.call("find_files", pattern="*.py")
         self.assertTrue(result["truncated"])
-        self.assertNotIn(".archer/private.py", result["files"])
+        self.assertNotIn(".revocli/private.py", result["files"])
         self.assertLessEqual(len(result["files"]), 3)
 
     def test_read_reference_uses_actual_end_and_counts_blank_lines(self):
@@ -90,7 +90,7 @@ class OperationTests(unittest.TestCase):
         self.assertIn("-old", result["diff"])
         self.assertIn("+new", result["diff"])
         self.assertEqual(path.read_bytes(), "第一行\r\nnew\r\nextra\r\n最后\r\n".encode("utf-8-sig"))
-        backup = json.loads((self.workspace / ".archer/backups" / f"{result['backup_id']}.json").read_text(encoding="utf-8"))
+        backup = json.loads((self.workspace / ".revocli/backups" / f"{result['backup_id']}.json").read_text(encoding="utf-8"))
         self.assertEqual(base64.b64decode(backup["before_base64"]), original)
         self.assertTrue(self.call("restore_file", backup_id=result["backup_id"])["ok"])
         self.assertEqual(path.read_bytes(), original)
@@ -122,7 +122,7 @@ class OperationTests(unittest.TestCase):
 
     def test_corrupt_backup_cannot_delete_target(self):
         result = self.call("edit_file", path="file.py", old_text="", new_text="original")
-        record = self.workspace / ".archer/backups" / f"{result['backup_id']}.json"
+        record = self.workspace / ".revocli/backups" / f"{result['backup_id']}.json"
         data = json.loads(record.read_text(encoding="utf-8"))
         data.pop("before_base64")
         record.write_text(json.dumps(data), encoding="utf-8")
@@ -132,8 +132,8 @@ class OperationTests(unittest.TestCase):
     def test_edit_cannot_escape_or_modify_internal_data_or_credentials(self):
         credentials = self.workspace / ".env"
         credentials.write_text("offline-key", encoding="utf-8")
-        with patch("archer.tools.filesystem.ENV_FILE", credentials):
-            for path in ("../outside.py", ".git/config", ".GIT/config", ".archer/memory.json", ".ARCHER/memory.json", ".env"):
+        with patch("revocli.tools.filesystem.ENV_FILE", credentials):
+            for path in ("../outside.py", ".git/config", ".GIT/config", ".revocli/memory.json", ".REVOCLI/memory.json", ".env"):
                 with self.subTest(path=path):
                     self.assertFalse(self.call("edit_file", path=path, old_text="", new_text="changed")["ok"])
         self.assertEqual(credentials.read_text(encoding="utf-8"), "offline-key")
@@ -146,7 +146,7 @@ class OperationTests(unittest.TestCase):
             write_json(record, data)
             path.write_text("concurrent change", encoding="utf-8")
 
-        with patch("archer.tools.editing.write_json", side_effect=save_and_change):
+        with patch("revocli.tools.editing.write_json", side_effect=save_and_change):
             result = self.call("edit_file", path="file.py", old_text="old", new_text="new")
         self.assertFalse(result["ok"])
         self.assertEqual(path.read_text(encoding="utf-8"), "concurrent change")
@@ -154,7 +154,7 @@ class OperationTests(unittest.TestCase):
     def test_unwritable_backup_prevents_edit(self):
         path = self.workspace / "file.py"
         path.write_text("old", encoding="utf-8")
-        with patch("archer.tools.editing.write_json", side_effect=PermissionError("offline backup failure")):
+        with patch("revocli.tools.editing.write_json", side_effect=PermissionError("offline backup failure")):
             result = self.call("edit_file", path="file.py", old_text="old", new_text="new")
         self.assertFalse(result["ok"])
         self.assertEqual(path.read_text(encoding="utf-8"), "old")
@@ -170,7 +170,7 @@ class OperationTests(unittest.TestCase):
         path.write_text("old", encoding="utf-8")
         result = self.call("edit_file", path="file.py", old_text="old", new_text="old")
         self.assertFalse(result["changed"])
-        self.assertFalse((self.workspace / ".archer/backups").exists())
+        self.assertFalse((self.workspace / ".revocli/backups").exists())
         result = self.call("edit_file", path="file.py", old_text="old", new_text="中" * 4000)
         self.assertTrue(result["diff_truncated"])
         self.assertLessEqual(len(result["diff"].encode("utf-8")), 8192)
@@ -182,7 +182,7 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(result["returncode"], 0)
         self.assertIn("pkg", result["output"])
         self.assertIn("中文", result["output"])
-        record = self.workspace / ".archer/commands" / f"{result['record_id']}.json"
+        record = self.workspace / ".revocli/commands" / f"{result['record_id']}.json"
         self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["status"], "finished")
 
     def test_command_nonzero_and_stderr_are_reported(self):
@@ -228,11 +228,11 @@ class OperationTests(unittest.TestCase):
                    {"argv": [sys.executable], "encoding": "invalid-codec"}]
         for arguments in invalid:
             with self.subTest(arguments=arguments), patch.dict(os.environ, {}, clear=True), \
-                    patch("archer.tools.commands.subprocess.Popen") as start:
+                    patch("revocli.tools.commands.subprocess.Popen") as start:
                 self.assertFalse(self.call("run_command", **arguments)["ok"])
             self.assertEqual(start.call_count, 0)
 
-    def test_command_does_not_inherit_archer_api_key(self):
+    def test_command_does_not_inherit_revocli_api_key(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "offline-private-key", "DEEPSEEK_API_KEY": "offline-provider-key"}):
             result = self.call("run_command", argv=[sys.executable, "-c", "import os; print(os.getenv('OPENAI_API_KEY', 'absent'), os.getenv('DEEPSEEK_API_KEY', 'absent'))"])
         self.assertTrue(result["ok"], result)

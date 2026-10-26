@@ -3,6 +3,7 @@
 venv/
 
 # Python caches and test reports
+_testtmp/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -27,6 +28,7 @@ dist/
 !.env.example
 
 # Runtime data and logs
+.revocli/
 .archer/
 logs/
 *.log

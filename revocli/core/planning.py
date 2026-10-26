@@ -165,7 +165,7 @@ class PlanController:
         completed = sum(step.status == "completed" for step in self.steps)
         finished = bool(self.steps) and completed == len(self.steps) and not self.stop_reason
         state = "已完成" if finished else "未完成"
-        header = f"计划状态：{state}（核对通过 {completed}/{len(self.steps)} 步）。"
+        header = f"计划状态：{state}（模型核对通过 {completed}/{len(self.steps)} 步；任务验收另行记录）。"
         if self.stop_reason:
             header += "\n停止原因：" + self.stop_reason
         return header + "\n\n" + content

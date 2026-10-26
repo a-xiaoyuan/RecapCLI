@@ -6,9 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from archer.cli import main
-from archer.ui.terminal_art import cell_width
-from archer.ui.terminal_ui import TerminalUI
+from revocli.cli import main
+from revocli.ui.terminal_art import cell_width
+from revocli.ui.terminal_ui import TerminalUI
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -26,7 +26,7 @@ class TerminalUITests(unittest.TestCase):
         TerminalUI(output, color="always").answer(ANSWER)
         text = output.getvalue()
         plain = ANSI.sub("", text)
-        self.assertIn("Archer>", plain)
+        self.assertIn("RevoCLI>", plain)
         self.assertIn('value = "hello"', plain)
         self.assertNotIn("###", plain)
         self.assertNotIn("```", plain)
@@ -49,7 +49,7 @@ class TerminalUITests(unittest.TestCase):
             ui.answer("你好")
         self.assertIn("\x1b", output.getvalue())
         self.assertIn("你>", ANSI.sub("", output.getvalue()))
-        self.assertIn("Archer>", ANSI.sub("", output.getvalue()))
+        self.assertIn("RevoCLI>", ANSI.sub("", output.getvalue()))
 
     def test_tool_success_and_failure_have_distinct_styles_and_labels(self):
         styles = []
@@ -82,7 +82,7 @@ class TerminalUITests(unittest.TestCase):
         for columns in [20, 40, 80]:
             with self.subTest(columns=columns):
                 output = io.StringIO()
-                with patch("archer.ui.terminal_ui.shutil.get_terminal_size", return_value=os.terminal_size((columns, 24))):
+                with patch("revocli.ui.terminal_ui.shutil.get_terminal_size", return_value=os.terminal_size((columns, 24))):
                     TerminalUI(output, color="always").answer("### 中文标题\n\n```python\n" + code + "\n```")
                 plain = ANSI.sub("", output.getvalue())
                 for line in plain.splitlines():
@@ -90,7 +90,7 @@ class TerminalUITests(unittest.TestCase):
                 self.assertIn(code, "".join(plain.split()))
 
     def test_main_sends_events_and_final_answer_through_colored_ui(self):
-        from archer.core.agent import TurnResult
+        from revocli.core.agent import TurnResult
 
         def fake_agent(client, model, prompt, workspace, *, on_event, **kwargs):
             on_event("[工具] read_file")
@@ -100,14 +100,14 @@ class TerminalUITests(unittest.TestCase):
 
         config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model"}
         output = io.StringIO()
-        with patch.dict(os.environ, {}, clear=True), patch("archer.config.dotenv_values", return_value=config):
-            with patch("archer.cli.OpenAI"), patch("archer.cli.run_agent", side_effect=fake_agent):
+        with patch.dict(os.environ, {}, clear=True), patch("revocli.config.dotenv_values", return_value=config):
+            with patch("revocli.cli.OpenAI"), patch("revocli.cli.run_agent", side_effect=fake_agent):
                 with contextlib.redirect_stdout(output), tempfile.TemporaryDirectory() as workspace:
                     self.assertEqual(main(["你好", "--workspace", workspace, "--banner", "off", "--color", "always"]), 0)
         text = output.getvalue()
         self.assertIn("你> 你好", ANSI.sub("", text))
         self.assertIn("[工具] read_file", ANSI.sub("", text))
-        self.assertIn("Archer>", ANSI.sub("", text))
+        self.assertIn("RevoCLI>", ANSI.sub("", text))
         self.assertGreaterEqual(len(set(re.findall(r"38;2;\d+;\d+;\d+", text))), 5)
 
 

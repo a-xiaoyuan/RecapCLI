@@ -1,6 +1,6 @@
 import unittest
 
-from archer.core.context import json_size, select_history
+from revocli.core.context import json_size, select_history
 
 
 class ContextTests(unittest.TestCase):

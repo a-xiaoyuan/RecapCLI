@@ -62,6 +62,7 @@ TOOL_REGISTRY = {
     },
     "edit_file": {
         "handler": edit_file,
+        "records_artifacts": True,
         "capability": "write",
         "description": "先读取目标，再精确替换 old_text 为 new_text。默认要求唯一匹配；创建文件时 old_text 为空。返回 diff 和恢复用 backup_id。",
         "parameters": {"type": "object", "properties": {
@@ -81,6 +82,7 @@ TOOL_REGISTRY = {
     },
     "run_command": {
         "handler": run_command,
+        "records_artifacts": True,
         "capability": "exec",
         "timeout_parameter": "timeout_seconds",
         "description": "运行前台命令，argv 是可执行文件和参数数组。默认不经 shell，cwd 在工作区内；返回退出码、合并输出和执行记录 ID。",
@@ -141,7 +143,7 @@ def _parse_arguments(arguments, schema):
     return params
 
 
-def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_remaining=None):
+def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_remaining=None, on_record=None):
     """校验并执行工具；所有失败都转成结构化结果。"""
     try:
         spec = _spec_for(name)
@@ -153,6 +155,8 @@ def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_rem
         timeout = spec.get("timeout_parameter")
         if timeout and time_remaining is not None:
             params[timeout] = min(params.get(timeout, 30), time_remaining)
+        if spec.get("records_artifacts") and on_record is not None:
+            params["on_record"] = on_record
         result = spec["handler"](workspace=Path(workspace).resolve(), **params)
         return {"ok": True, **({"content": result} if isinstance(result, str) else result)}
     except (OSError, ValueError, TypeError) as error:

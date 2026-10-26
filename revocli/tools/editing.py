@@ -29,14 +29,14 @@ def _target(workspace, path):
     candidate = workspace
     for part in relative.parts:
         candidate = candidate / part
-        if part.rstrip(" .").casefold() in {".git", ".archer"}:
-            raise ToolError("禁止直接编辑 Git 元数据或 Archer 运行数据")
+        if part.rstrip(" .").casefold() in {".git", ".revocli", ".archer"}:
+            raise ToolError("禁止直接编辑 Git 元数据或 RevoCLI 运行数据")
         if os.name == "nt" and (":" in part or candidate.is_reserved()):
             raise ToolError("不能编辑 Windows 设备名或备用数据流路径")
         if candidate.is_symlink() or candidate.is_junction():
             raise ToolError("禁止通过符号链接或目录联接编辑文件")
     target = _resolve(workspace, path, must_exist=False)
-    if any(part.casefold() in {".git", ".archer"} for part in target.relative_to(workspace).parts):
+    if any(part.casefold() in {".git", ".revocli", ".archer"} for part in target.relative_to(workspace).parts):
         raise ToolError("禁止编辑内部数据路径")
     if target.exists() and not target.is_file():
         raise ToolError("编辑目标不是普通文件")
@@ -58,7 +58,7 @@ def _hash(content):
 def _replace_file(workspace, path, before, after):
     target = _target(workspace, path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.archer-", dir=target.parent)
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.revocli-", dir=target.parent)
     temporary = Path(temporary)
     try:
         with os.fdopen(fd, "wb") as file:
@@ -90,7 +90,7 @@ def _diff(before, after, path):
     return "".join(chunks), False
 
 
-def edit_file(workspace, path, old_text, new_text, replace_all=False):
+def edit_file(workspace, path, old_text, new_text, replace_all=False, *, on_record=None):
     """现有文件默认只替换唯一匹配；创建文件时 old_text 必须为空。"""
     if not isinstance(old_text, str) or not isinstance(new_text, str):
         raise ToolError("old_text 和 new_text 必须是字符串")
@@ -131,6 +131,8 @@ def edit_file(workspace, path, old_text, new_text, replace_all=False):
               "before_sha256": _hash(before) if before is not None else None,
               "after_sha256": _hash(after)}
     write_json(state_directory(workspace, "backups") / f"{backup_id}.json", backup)
+    if on_record is not None:
+        on_record("backup", backup_id)
     _replace_file(workspace, path, before, after)
     diff, truncated = _diff(text, updated, relative)
     return {"path": relative, "changed": True, "created": before is None, "replacements": count,

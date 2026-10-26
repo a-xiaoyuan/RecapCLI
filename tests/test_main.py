@@ -10,13 +10,13 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from archer.core.agent import AgentLimits, run_agent
-from archer.core.context import json_size, select_history
-from archer.cli import main
-from archer.storage.session import SessionStore
-from archer.ui.terminal_ui import TerminalUI
-from archer.tools import execute_tool
-from archer.tools.filesystem import MAX_FILE_BYTES
+from revocli.core.agent import AgentLimits, run_agent
+from revocli.core.context import json_size, select_history
+from revocli.cli import main
+from revocli.storage.session import SessionStore
+from revocli.ui.terminal_ui import TerminalUI
+from revocli.tools import execute_tool
+from revocli.tools.filesystem import MAX_FILE_BYTES
 
 
 def reply(content=None, calls=None, finish=None):
@@ -95,16 +95,16 @@ class AgentTests(unittest.TestCase):
             self.run_with_replies([reply(calls=[tool_call()])] * 2, max_steps=2)
 
     def test_last_request_reserves_answer_and_does_not_execute_more_tools(self):
-        with patch("archer.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
+        with patch("revocli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("根据文件总结")], max_steps=2)
         self.assertEqual(requests[-1]["tool_choice"], "none")
         self.assertEqual(tool.call_count, 1)
-        with patch("archer.core.agent.execute_tool") as tool, self.assertRaises(RuntimeError):
+        with patch("revocli.core.agent.execute_tool") as tool, self.assertRaises(RuntimeError):
             self.run_with_replies([reply(calls=[tool_call()])], max_steps=1)
         tool.assert_not_called()
 
     def test_tool_count_rejects_oversized_batch_before_any_execution(self):
-        with patch("archer.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "工具数量"):
+        with patch("revocli.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "工具数量"):
             self.run_with_replies([reply(calls=[tool_call("a"), tool_call("b")])],
                                   limits=AgentLimits(max_tool_calls=1))
         tool.assert_not_called()
@@ -116,7 +116,7 @@ class AgentTests(unittest.TestCase):
 
     def test_output_budget_returns_paired_error_and_stops_further_execution(self):
         limits = AgentLimits(max_tool_calls=2, max_tool_bytes=1000)
-        with patch("archer.core.agent.execute_tool", return_value={"ok": True, "content": "中" * 2000}) as tool:
+        with patch("revocli.core.agent.execute_tool", return_value={"ok": True, "content": "中" * 2000}) as tool:
             _, requests = self.run_with_replies(
                 [reply(calls=[tool_call("a"), tool_call("b")]), reply("请缩小读取范围")], limits=limits)
         results = [message for message in requests[-1]["messages"] if message["role"] == "tool"]
@@ -135,7 +135,7 @@ class AgentTests(unittest.TestCase):
 
     def test_context_budget_drops_old_turns_as_tool_results_grow(self):
         history = [{"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "x" * 4200}]
-        with patch("archer.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 3500}):
+        with patch("revocli.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 3500}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("完成")],
                                               history=history, limits=AgentLimits(max_context_bytes=6500))
         self.assertTrue(any(message.get("content") == "旧问题" for message in requests[0]["messages"]))
@@ -149,7 +149,7 @@ class AgentTests(unittest.TestCase):
         create.assert_not_called()
 
     def test_tool_output_also_fits_current_turn_context_budget(self):
-        with patch("archer.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 10000}):
+        with patch("revocli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 10000}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("请缩小读取范围")],
                                               limits=AgentLimits(max_context_bytes=3500))
         self.assertLessEqual(json_size(requests[1]["messages"]), 3500)
@@ -157,13 +157,13 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(requests[1]["tool_choice"], "none")
 
     def test_oversized_tool_request_is_rejected_before_execution(self):
-        with patch("archer.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "工具请求本身"):
+        with patch("revocli.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "工具请求本身"):
             self.run_with_replies([reply(calls=[tool_call(arguments=json.dumps({"path": "x" * 3000}))])],
                                   limits=AgentLimits(max_context_bytes=3500))
         tool.assert_not_called()
 
     def test_time_budget_stops_after_slow_response_before_tool_execution(self):
-        with patch("archer.core.agent.time") as clock, patch("archer.core.agent.execute_tool") as tool:
+        with patch("revocli.core.agent.time") as clock, patch("revocli.core.agent.execute_tool") as tool:
             clock.monotonic.return_value = 0
             with self.assertRaisesRegex(RuntimeError, "时间预算"):
                 self.run_with_replies([reply(calls=[tool_call()])],
@@ -171,7 +171,7 @@ class AgentTests(unittest.TestCase):
         tool.assert_not_called()
 
     def test_duplicate_tool_ids_are_rejected_before_execution(self):
-        with patch("archer.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "调用 ID"):
+        with patch("revocli.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "调用 ID"):
             self.run_with_replies([reply(calls=[tool_call(), tool_call()])])
         tool.assert_not_called()
 
@@ -247,16 +247,16 @@ class AgentTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(execute_tool(name, json.dumps(arguments), self.workspace)["ok"])
 
-    def test_tool_cannot_read_archer_credentials(self):
+    def test_tool_cannot_read_revocli_credentials(self):
         local_config = self.workspace / ".env"
         local_config.write_text("OPENAI_API_KEY=private-test-key\n", encoding="utf-8")
-        with patch("archer.tools.filesystem.ENV_FILE", local_config):
+        with patch("revocli.tools.filesystem.ENV_FILE", local_config):
             result = execute_tool("read_file", '{"path":".env"}', self.workspace)
         self.assertFalse(result["ok"])
         self.assertNotIn("private-test-key", json.dumps(result))
 
     def test_missing_configuration_stops_before_model_request(self):
-        with patch.dict("os.environ", {}, clear=True), patch("archer.config.dotenv_values", return_value={}), patch("archer.cli.OpenAI") as client:
+        with patch.dict("os.environ", {}, clear=True), patch("revocli.config.dotenv_values", return_value={}), patch("revocli.cli.OpenAI") as client:
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
                 main(["你好", "--workspace", str(self.workspace)])
         self.assertEqual(error.exception.code, 2)
@@ -285,7 +285,7 @@ class AgentTests(unittest.TestCase):
             )
 
         with patch.dict("os.environ", {"OPENAI_API_KEY": "environment-test-key"}, clear=True):
-            with patch("archer.config.ENV_FILE", app_config), patch("archer.cli.OpenAI", side_effect=client_factory):
+            with patch("revocli.config.ENV_FILE", app_config), patch("revocli.cli.OpenAI", side_effect=client_factory):
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = main(["你好", "--workspace", str(self.workspace)])
         self.assertEqual(result, 0)
@@ -318,8 +318,8 @@ class ConversationTests(unittest.TestCase):
                           http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
 
         with patch.dict("os.environ", {}, clear=True), \
-                patch("archer.config.dotenv_values", return_value=self.config), \
-                patch("archer.cli.OpenAI", side_effect=factory):
+                patch("revocli.config.dotenv_values", return_value=self.config), \
+                patch("revocli.cli.OpenAI", side_effect=factory):
             with contextlib.redirect_stdout(self.output), contextlib.redirect_stderr(self.errors):
                 code = main(argv)
         return code, requests
@@ -337,7 +337,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("第一答", contents)
         self.assertIn("第二问", contents)
 
-        sessions = list((self.workspace / ".archer" / "sessions").glob("*.json"))
+        sessions = list((self.workspace / ".revocli" / "sessions").glob("*.json"))
         self.assertTrue(sessions)
         saved = json.loads(sessions[0].read_text(encoding="utf-8"))
         self.assertEqual(len(saved["messages"]), 4)
@@ -399,7 +399,7 @@ class ConversationTests(unittest.TestCase):
                 "path": "app.py", "old_text": "old", "new_text": "new"}))]), reply("unfinished", finish="length")])
         self.assertEqual(code, 1)
         self.assertEqual(path.read_text(encoding="utf-8"), "new")
-        self.assertEqual(len(list((self.workspace / ".archer/backups").glob("*.json"))), 1)
+        self.assertEqual(len(list((self.workspace / ".revocli/backups").glob("*.json"))), 1)
         self.assertIn("备份 ID", self.output.getvalue())
         self.assertEqual(list(SessionStore(self.workspace).sessions_dir.glob("*.json")), [])
 
@@ -417,7 +417,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("第一问", second_turn)
         self.assertIn("回答一", second_turn)
         self.assertIn("第二问", second_turn)
-        self.assertTrue((self.workspace / ".archer" / "memory.json").is_file())
+        self.assertTrue((self.workspace / ".revocli" / "memory.json").is_file())
 
     def test_history_trim_does_not_start_with_orphan_tool_message(self):
         messages = [
@@ -465,7 +465,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("省略 1 条", self.output.getvalue())
 
     def test_session_options_are_mutually_exclusive(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit), patch("archer.cli.OpenAI") as client:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit), patch("revocli.cli.OpenAI") as client:
             main(["--continue", "--session", "test"])
         client.assert_not_called()
 
@@ -473,7 +473,7 @@ class ConversationTests(unittest.TestCase):
         for argument, value in [("--max-tool-calls", "0"), ("--max-tool-bytes", "1"),
                                 ("--context-bytes", "0"), ("--max-seconds", "nan")]:
             with self.subTest(argument=argument), contextlib.redirect_stderr(io.StringIO()), \
-                    self.assertRaises(SystemExit), patch("archer.cli.OpenAI") as client:
+                    self.assertRaises(SystemExit), patch("revocli.cli.OpenAI") as client:
                 main(["你好", argument, value])
             client.assert_not_called()
 
@@ -552,7 +552,7 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("会话文件格式不正确", self.errors.getvalue())
 
     def test_store_initialization_error_has_no_traceback(self):
-        with patch("archer.cli.SessionStore", side_effect=PermissionError("offline init error")), \
+        with patch("revocli.cli.SessionStore", side_effect=PermissionError("offline init error")), \
                 self.assertRaises(SystemExit) as error:
             self.run_main(["你好", "--workspace", str(self.workspace), "--banner", "off"], [])
         self.assertEqual(error.exception.code, 2)
@@ -584,7 +584,7 @@ class ConversationTests(unittest.TestCase):
             self.assertIn("已经显示的回答", self.output.getvalue())
             self.assertIn("会话未保存", self.errors.getvalue())
             self.assertIn("/save", self.output.getvalue())
-            self.assertEqual(list((self.workspace / ".archer" / "sessions").glob("*.json")), [])
+            self.assertEqual(list((self.workspace / ".revocli" / "sessions").glob("*.json")), [])
 
     def test_interrupt_during_final_save_is_not_success(self):
         with patch.object(TerminalUI, "read_prompt", side_effect=["第一问", EOFError]), \

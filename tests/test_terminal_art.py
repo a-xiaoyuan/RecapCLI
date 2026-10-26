@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from archer.cli import main
-from archer.ui.terminal_art import cell_width, fit_text, print_banner
+from revocli.cli import main
+from revocli.ui.terminal_art import cell_width, fit_text, print_banner
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -40,7 +40,7 @@ class BannerTests(unittest.TestCase):
     def render(self, columns=80, lines=24, stream=None, env=None, mode="auto", workspace=None):
         stream = Console() if stream is None else stream
         with patch.dict(os.environ, env or {}, clear=True):
-            with patch("archer.ui.terminal_art.shutil.get_terminal_size", return_value=os.terminal_size((columns, lines))):
+            with patch("revocli.ui.terminal_art.shutil.get_terminal_size", return_value=os.terminal_size((columns, lines))):
                 print_banner(stream, workspace=workspace or Path.cwd(), preview=True, mode=mode)
         return stream.getvalue()
 
@@ -74,7 +74,7 @@ class BannerTests(unittest.TestCase):
         self.assertIn("▀", self.render(80, 16))
         output = self.render(80, 10)
         self.assertNotIn("\x1b", output)
-        self.assertIn("Archer", output)
+        self.assertIn("RevoCLI", output)
 
     def test_pycharm_console_can_display_art_without_reporting_tty(self):
         output = self.render(stream=Console(tty=False), env={"PYCHARM_HOSTED": "1"})
@@ -84,7 +84,7 @@ class BannerTests(unittest.TestCase):
     def test_redirected_output_stays_plain_even_with_pycharm_environment(self):
         output = self.render(stream=io.StringIO(), env={"PYCHARM_HOSTED": "1"})
         self.assertNotIn("\x1b", output)
-        self.assertIn("Archer", output)
+        self.assertIn("RevoCLI", output)
 
     def test_disabled_color_and_dumb_terminal_stay_plain(self):
         for env in [{"NO_COLOR": ""}, {"TERM": "dumb"}]:
@@ -98,7 +98,7 @@ class BannerTests(unittest.TestCase):
 
     def test_legacy_ascii_stream_does_not_crash_on_art_or_chinese(self):
         output = self.render(stream=Console(encoding="ascii"), workspace=Path.cwd() / "中文项目")
-        self.assertIn("Archer", output)
+        self.assertIn("RevoCLI", output)
         self.assertTrue(output.isascii())
         self.assertNotIn("\x1b", output)
 
@@ -116,28 +116,28 @@ class BannerTests(unittest.TestCase):
         self.assertNotIn("\n伪造输出", visible)
 
     def test_missing_version_metadata_does_not_block_startup(self):
-        with patch("archer.ui.terminal_art.tomllib.load", side_effect=KeyError("project")):
-            self.assertIn("Archer", self.render())
+        with patch("revocli.ui.terminal_art.tomllib.load", side_effect=KeyError("project")):
+            self.assertIn("RevoCLI", self.render())
 
     def test_windows_console_failure_uses_plain_output(self):
-        with patch("archer.ui.terminal_art._windows_ansi", return_value=False):
+        with patch("revocli.ui.terminal_art._windows_ansi", return_value=False):
             self.assertNotIn("\x1b", self.render())
 
     def test_windows_console_mode_is_restored_even_when_writing_fails(self):
         restore = Mock()
         output = Console()
-        with patch("archer.ui.terminal_art._windows_ansi", return_value=restore), patch.object(output, "write", side_effect=OSError("closed")):
+        with patch("revocli.ui.terminal_art._windows_ansi", return_value=restore), patch.object(output, "write", side_effect=OSError("closed")):
             with self.assertRaises(OSError):
                 self.render(stream=output)
         restore.assert_called_once_with()
 
     def test_cli_preview_never_reads_model_config_or_creates_client(self):
-        with patch("archer.config.dotenv_values") as dotenv, patch("archer.cli.OpenAI") as client:
+        with patch("revocli.config.dotenv_values") as dotenv, patch("revocli.cli.OpenAI") as client:
             with contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(main(["--preview", "--banner", "color"]), 0)
         dotenv.assert_not_called()
         client.assert_not_called()
-        self.assertIn("Archer", output.getvalue())
+        self.assertIn("RevoCLI", output.getvalue())
 
 
 if __name__ == "__main__":

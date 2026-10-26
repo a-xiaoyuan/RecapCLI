@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from archer.tools import execute_tool
-from archer.tools.filesystem import MAX_FILE_BYTES, ScanBudget
-from archer.tools.registry import TOOL_REGISTRY, tool_definitions
-from archer.storage.session import SessionStore
+from revocli.tools import execute_tool
+from revocli.tools.filesystem import MAX_FILE_BYTES, ScanBudget
+from revocli.tools.registry import TOOL_REGISTRY, tool_definitions
+from revocli.storage.session import SessionStore
 
 
 class ToolBoundaryTests(unittest.TestCase):
@@ -35,7 +35,7 @@ class ToolBoundaryTests(unittest.TestCase):
         except OSError as error:
             self.skipTest(f"当前环境不允许创建目录链接：{error}")
 
-    def test_search_never_opens_archer_credentials(self):
+    def test_search_never_opens_revocli_credentials(self):
         credentials = self.workspace / ".env"
         credentials.write_text("OPENAI_API_KEY=offline-private-marker\n", encoding="utf-8")
         (self.workspace / "config_example.py").write_text("OPENAI_API_KEY is required", encoding="utf-8")
@@ -45,7 +45,7 @@ class ToolBoundaryTests(unittest.TestCase):
             self.assertNotEqual(path.resolve(), credentials)
             return real_open(path, *args, **kwargs)
 
-        with patch("archer.tools.filesystem.ENV_FILE", credentials), patch.object(Path, "open", new=guarded_open):
+        with patch("revocli.tools.filesystem.ENV_FILE", credentials), patch.object(Path, "open", new=guarded_open):
             self.assertFalse(self.call("read_file", path=".env")["ok"])
             self.assertFalse(self.call("search_text", query="OPENAI_API_KEY", path=".env")["ok"])
             result = self.call("search_text", query="OPENAI_API_KEY")
@@ -100,7 +100,7 @@ class ToolBoundaryTests(unittest.TestCase):
     def test_operations_reject_linked_state_directory(self):
         outside = self.root / "outside-state"
         outside.mkdir()
-        self.link_directory(outside, self.workspace / ".archer")
+        self.link_directory(outside, self.workspace / ".revocli")
         (self.workspace / "file.txt").write_text("old", encoding="utf-8")
         with self.assertRaises(ValueError):
             SessionStore(self.workspace)
@@ -219,7 +219,7 @@ class ToolBoundaryTests(unittest.TestCase):
     def test_no_match_search_stops_at_file_budget(self):
         for number in range(8):
             (self.workspace / f"{number}.txt").write_text("other text", encoding="utf-8")
-        with patch("archer.tools.filesystem.ScanBudget", return_value=ScanBudget(max_files=2)):
+        with patch("revocli.tools.filesystem.ScanBudget", return_value=ScanBudget(max_files=2)):
             result = self.call("search_text", query="missing")
         self.assertTrue(result["ok"])
         self.assertTrue(result["truncated"])
@@ -246,7 +246,7 @@ class ToolBoundaryTests(unittest.TestCase):
                 yielded.append(item)
                 yield item
 
-        with patch("archer.tools.filesystem.ScanBudget", return_value=ScanBudget(max_entries=5)), \
+        with patch("revocli.tools.filesystem.ScanBudget", return_value=ScanBudget(max_entries=5)), \
                 patch.object(Path, "iterdir", new=counting_iterdir):
             result = self.call("list_directory")
         self.assertTrue(result["truncated"])
@@ -257,14 +257,14 @@ class ToolBoundaryTests(unittest.TestCase):
     def test_search_stops_at_byte_and_time_budgets(self):
         (self.workspace / "file.txt").write_text("x" * 2000, encoding="utf-8")
         for budget, reason in [(ScanBudget(max_bytes=1000), "字节"), (ScanBudget(max_seconds=0), "时间")]:
-            with self.subTest(reason=reason), patch("archer.tools.filesystem.ScanBudget", return_value=budget):
+            with self.subTest(reason=reason), patch("revocli.tools.filesystem.ScanBudget", return_value=budget):
                 result = self.call("search_text", query="missing")
             self.assertTrue(result["truncated"])
             self.assertIn(reason, result["limit_reason"])
 
     def test_line_range_cannot_scan_unbounded_prefix(self):
         (self.workspace / "file.txt").write_text("x\n" * 2000, encoding="utf-8")
-        with patch("archer.tools.filesystem.ScanBudget", return_value=ScanBudget(max_bytes=1000)):
+        with patch("revocli.tools.filesystem.ScanBudget", return_value=ScanBudget(max_bytes=1000)):
             result = self.call("read_file", path="file.txt", start_line=1900)
         self.assertFalse(result["ok"])
         self.assertIn("字节上限", result["error"])

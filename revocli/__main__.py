@@ -1,4 +1,4 @@
-"""通过 python -m archer 启动命令行。"""
+"""通过 python -m revocli 启动命令行。"""
 
 import sys
 
