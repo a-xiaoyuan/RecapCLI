@@ -345,7 +345,7 @@ class ConversationTests(unittest.TestCase):
     def test_memory_is_injected_into_system_prompt(self):
         SessionStore(self.workspace).add_memory("项目使用 uv 管理依赖")
         code, requests = self.run_main(
-            ["你好", "--workspace", str(self.workspace), "--banner", "off", "--color", "never"],
+            ["uv 依赖怎么管理", "--workspace", str(self.workspace), "--banner", "off", "--color", "never"],
             [reply("好的")],
         )
         self.assertEqual(code, 0)
@@ -404,7 +404,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(list(SessionStore(self.workspace).sessions_dir.glob("*.json")), [])
 
     def test_interactive_multi_turn_and_remember_command(self):
-        prompts = ["/remember 项目使用 uv 管理依赖", "第一问", "第二问", "/exit"]
+        prompts = ["/remember preference 项目使用 uv 管理依赖", "第一问", "第二问", "/exit"]
         with patch.object(TerminalUI, "read_prompt", side_effect=prompts):
             code, requests = self.run_main(
                 ["--workspace", str(self.workspace), "--banner", "off", "--color", "never"],
@@ -435,7 +435,7 @@ class ConversationTests(unittest.TestCase):
             {"role": "user", "content": f"问题{number}"}, {"role": "assistant", "content": f"回答{number}"})]
         store.save(session)
         code, requests = self.run_main(
-            ["新问题", "--continue", "--workspace", str(self.workspace), "--banner", "off", "--color", "never"],
+            ["新问题", "--continue", "--no-auto-compact", "--workspace", str(self.workspace), "--banner", "off", "--color", "never"],
             [reply("新回答")])
         self.assertEqual(code, 0)
         saved = store.load(session["id"])
@@ -452,15 +452,15 @@ class ConversationTests(unittest.TestCase):
 
     def test_memory_update_and_omission_are_visible(self):
         store = SessionStore(self.workspace)
-        store.add_memory("A" * 2000)
-        item = store.add_memory("B" * 2000)
+        store.add_memory("A" * 2000, kind="preference")
+        item = store.add_memory("B" * 2000, kind="preference")
         with patch.object(TerminalUI, "read_prompt", side_effect=[
             f"/memory-update {item['id']} 最新事实", "/sessions", "你好", "/exit"]):
             code, requests = self.run_main(["--workspace", str(self.workspace), "--banner", "off"], [reply("你好")])
         self.assertEqual(code, 0)
         self.assertIn("最新事实", requests[0]["messages"][0]["content"])
         self.assertIn("已更新记忆", self.output.getvalue())
-        store.add_memory("C" * 2000)
+        store.add_memory("C" * 2000, kind="preference")
         self.run_main(["你好", "--workspace", str(self.workspace), "--banner", "off"], [reply("你好")])
         self.assertIn("省略 1 条", self.output.getvalue())
 

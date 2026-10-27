@@ -1,7 +1,7 @@
 [project]
 name = "revocli"
-version = "0.5.0"
-description = "支持 ReAct、Plan and Execute、任务追溯和本地工具的终端代码 Agent"
+version = "0.6.0"
+description = "支持历史压缩、长期记忆检索、任务追溯和本地工具的终端代码 Agent"
 requires-python = ">=3.12"
 dependencies = [
     "openai>=3.35,<4",

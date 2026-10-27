@@ -10,6 +10,7 @@ from openai import APIError, OpenAI
 
 from .config import ConfigError, load_config
 from .core.agent import AgentLimits, run_agent
+from .core.memory import active
 from .storage.session import SessionStore
 from .storage.tasks import TaskStore, project_version
 from .ui.terminal_art import print_banner
@@ -23,12 +24,21 @@ HELP_TEXT = """命令：
   /session        显示当前会话 ID、消息数与保存路径
   /sessions       列出已保存的会话
   /history        查看最近消息
+  /compact        压缩较早的完整轮次（请求模型，原文保留）
+  /summary        查看摘要、覆盖范围和来源任务
   /tasks          列出最近任务（含失败与取消）
   /task ID        查看任务事实、命令结果与模型核对
   /task-verify ID passed|failed 命令ID 说明  登记有命令证据的人工验收
   /memory         查看长期记忆
-  /remember 文本   添加一条长期记忆
+  /remember [preference|fact] 文本  添加偏好或项目事实，默认 fact
   /memory-update ID 文本  更新记忆，保留原 ID
+  /memory-search 问题  检索当前有效记忆及来源
+  /memory-expire ID  将记忆标为失效
+  /memory-activate ID  恢复失效记忆
+  /memory-candidates  查看任务经验候选
+  /memory-propose 任务ID [文本]  从已结束任务提炼候选
+  /memory-accept ID  接纳经验候选
+  /memory-reject ID  拒绝候选
   /forget ID|all  删除一条或全部长期记忆"""
 
 
@@ -61,27 +71,38 @@ def show_history(ui, session):
         ui.info(f"  {role}: {preview}")
 
 
-def show_memory(ui, store):
-    items = store.memory_items()
+def show_memory(ui, store, *, query=None, candidates=False):
+    items = store.search_memory(query) if query is not None else store.memory_items()
+    if candidates:
+        items = [item for item in items if item.get("status") == "candidate"]
     if not items:
         ui.info("暂无长期记忆。用 /remember 文本 添加。")
         return
     ui.info(f"长期记忆（{len(items)} 条）：")
     for item in items:
-        ui.info(f"  {item['id']}  {item['text']}")
+        state = item.get("status", "active")
+        if state == "active" and not active(item):
+            state = "expired"
+        ui.info(f"  {item['id']} · {item.get('kind', 'fact')} · {state} · {item['text']}")
+        ui.info("    来源：" + json.dumps(item.get("source", {"type": "legacy"}), ensure_ascii=False)
+                + f" · 更新：{item.get('updated_at', '未知')} · 失效时间：{item.get('expires_at') or '无'}")
 
 
 def run_turn(client, model, workspace, store, ui, session, prompt, *,
-             max_steps=None, memory_enabled=True, limits=None, capabilities=("read",), mode="react"):
+             max_steps=None, memory_enabled=True, limits=None, capabilities=("read",), mode="react",
+             auto_compact=True, compact_only=False):
     """先落任务，再执行；失败轨迹独立于成功会话，核心不依赖存储。"""
     limits = limits or AgentLimits()
     capabilities = tuple(sorted(capabilities))
     tasks = TaskStore(workspace)
-    task_id = tasks.start(session["id"], prompt, model, mode, {
+    if compact_only:
+        max_steps = 1
+    task_id = tasks.start(session["id"], prompt, model, "compact" if compact_only else mode, {
         "history_messages": len(session["messages"]), "capabilities": capabilities,
         "limits": asdict(limits), "max_steps": max_steps if max_steps is not None else (20 if mode == "plan" else 8),
         "provider_host": str(getattr(getattr(client, "base_url", None), "host", "unknown")),
         "experience_versions": [], "skill_versions": [],
+        "auto_compact": auto_compact, "summary_covered_messages": (session.get("summary") or {}).get("covered_messages", 0),
     })
     started = time.monotonic()
 
@@ -96,16 +117,19 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         trace("project_version", project_version(Path(workspace).resolve()))
         memory_text = ""
         memory_ids = []
-        if memory_enabled:
-            memory = store.memory_context()
+        memory_sources = []
+        if memory_enabled and not compact_only:
+            memory = store.memory_context(limit=min(3000, limits.max_context_bytes // 12), query=prompt)
             memory_text = memory.text
             memory_ids = list(memory.selected_ids)
+            memory_sources = list(memory.sources)
             if memory.selected_ids or memory.omitted_count:
                 ui.info(f"长期记忆：本轮选用 {len(memory.selected_ids)} 条，省略 {memory.omitted_count} 条。")
-        trace("context", {"memory_ids": memory_ids, "memory_text": memory_text})
+        trace("context", {"memory_ids": memory_ids, "memory_text": memory_text, "memory_sources": memory_sources})
         result = run_agent(client, model, prompt, workspace, history=session["messages"],
                            memory_text=memory_text, max_steps=max_steps, limits=limits, on_event=ui.event,
-                           capabilities=capabilities, mode=mode, on_trace=trace)
+                           capabilities=capabilities, mode=mode, on_trace=trace,
+                           summary=session.get("summary"), auto_compact=auto_compact, compact_only=compact_only)
     except BaseException as error:
         status = "cancelled" if isinstance(error, KeyboardInterrupt) else "failed"
         reason = f"模型请求失败（{type(error).__name__}）" if isinstance(error, APIError) else f"{type(error).__name__}: {error}"
@@ -122,6 +146,8 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         ui.error(f"任务 {task_id} 的终态未保存：{error}；回答仍保留，请勿重复执行。")
     session["messages"].extend(result.messages)
     session["model"] = model
+    if result.summary is not None:
+        session["summary"] = {**result.summary, "task_id": task_id}
     return result.answer
 
 
@@ -167,6 +193,8 @@ def show_tasks(ui, tasks, task_id=None, *, as_json=False):
             ui.info(f"操作记录（不代表已完成）：{root_name}/{folder}/{entry['record_id']}.json")
         elif kind in ("error", "recovery", "tool_interrupted", "verification"):
             ui.info(kind + "：" + json.dumps(entry, ensure_ascii=False))
+        elif kind in ("compaction", "compaction_failed", "compaction_skipped", "summary_omitted"):
+            ui.info(kind + "：" + json.dumps(entry, ensure_ascii=False))
     for action_id in starts.keys() - finished:
         ui.info(f"动作 {action_id}：结果未知，需核对备份/命令记录；不会自动重试。")
     if task["answer"]:
@@ -209,6 +237,9 @@ def handle_command(command, ui, store, session, model):
             ui.error(f"命令执行失败：{error}")
     elif name == "/history":
         show_history(ui, session)
+    elif name == "/summary":
+        summary = session.get("summary")
+        ui.info(json.dumps(summary, ensure_ascii=False, indent=2) if summary else "当前会话尚无摘要。")
     elif name in {"/tasks", "/task"}:
         try:
             if name == "/task" and not argument:
@@ -221,22 +252,55 @@ def handle_command(command, ui, store, session, model):
             arguments = argument.split(maxsplit=3)
             if len(arguments) != 4:
                 raise ValueError("用法：/task-verify 任务ID passed|failed 命令ID 验收范围与依据")
-            TaskStore(store.workspace, create=False).verify(*arguments)
+            tasks = TaskStore(store.workspace, create=False)
+            tasks.verify(*arguments)
             ui.info("人工验收已记录，执行终态保持原值；此结论仅覆盖填写的验收范围。")
+            try:
+                candidate = store.propose_task_memory(tasks.get(arguments[0]))
+                ui.info(f"已生成经验候选 {candidate['id']}；/memory-candidates 查看，/memory-accept ID 接纳。")
+            except (OSError, ValueError) as error:
+                ui.error(f"人工验收已保存，经验候选未生成：{error}")
         except (OSError, ValueError) as error:
             ui.error(f"命令执行失败：{error}")
-    elif name == "/memory":
+    elif name in {"/memory", "/memory-search", "/memory-candidates"}:
         try:
-            show_memory(ui, store)
+            if name == "/memory-search" and not argument:
+                raise ValueError("用法：/memory-search 问题")
+            show_memory(ui, store, query=argument if name == "/memory-search" else None,
+                        candidates=name == "/memory-candidates")
         except (OSError, ValueError) as error:
             ui.error(f"命令执行失败：{error}")
     elif name == "/remember":
         try:
-            item = store.add_memory(argument)
+            kind, separator, text = argument.partition(" ")
+            if kind in {"preference", "fact"} and separator:
+                item = store.add_memory(text, kind=kind)
+            else:
+                item = store.add_memory(argument)
         except (OSError, ValueError) as error:
             ui.error(f"命令执行失败：{error}")
         else:
             ui.info(f"已记住（{item['id']}）：{item['text']}")
+    elif name in {"/memory-expire", "/memory-activate", "/memory-accept", "/memory-reject"}:
+        try:
+            status = {"/memory-expire": "expired", "/memory-activate": "active",
+                      "/memory-accept": "active", "/memory-reject": "rejected"}[name]
+            if name == "/memory-accept":
+                candidate = next((item for item in store.memory_items() if item["id"] == argument), None)
+                if candidate is None or candidate.get("status") != "candidate":
+                    raise ValueError("只能接纳存在的经验候选")
+            item = store.set_memory_status(argument, status)
+            ui.info(f"记忆 {item['id']} 状态：{item['status']}；来源与验收范围保留。")
+        except (OSError, ValueError) as error:
+            ui.error(f"命令执行失败：{error}")
+    elif name == "/memory-propose":
+        try:
+            task_id, _, text = argument.partition(" ")
+            task = TaskStore(store.workspace, create=False).get(task_id)
+            item = store.propose_task_memory(task, text or None)
+            ui.info(f"经验候选 {item['id']} 已保存，尚未进入模型上下文。")
+        except (OSError, ValueError) as error:
+            ui.error(f"命令执行失败：{error}")
     elif name == "/memory-update":
         try:
             key, separator, text = argument.partition(" ")
@@ -260,7 +324,7 @@ def handle_command(command, ui, store, session, model):
 
 
 def interactive_loop(client, model, workspace, store, ui, session, max_steps, memory_enabled, limits=None,
-                     capabilities=("read",), mode="react"):
+                     capabilities=("read",), mode="react", auto_compact=True):
     ui.info("多轮对话模式：直接输入问题；/help 查看命令，/exit 退出。")
     while True:
         try:
@@ -271,7 +335,11 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
         prompt = (line or "").strip()
         if not prompt:
             continue
-        if prompt.startswith("/"):
+        compact_only = prompt.split()[0].lower() == "/compact"
+        if compact_only and prompt.lower() != "/compact":
+            ui.error("用法：/compact（不需要参数）")
+            continue
+        if prompt.startswith("/") and not compact_only:
             session = handle_command(prompt, ui, store, session, model)
             if session is None:
                 return 0
@@ -279,7 +347,8 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
         try:
             answer = run_turn(client, model, workspace, store, ui, session,
                               prompt, max_steps=max_steps, memory_enabled=memory_enabled, limits=limits,
-                              capabilities=capabilities, mode=mode)
+                              capabilities=capabilities, mode=mode,
+                              auto_compact=auto_compact, compact_only=compact_only)
         except KeyboardInterrupt:
             ui.error("已取消本轮。")
             continue
@@ -313,6 +382,8 @@ def build_parser():
     tasks.add_argument("--task", metavar="ID", help="查看指定任务的事实和结果，不请求模型")
     parser.add_argument("--json", action="store_true", help="配合 --tasks/--task 输出完整 JSON 事实")
     parser.add_argument("--no-memory", dest="memory", action="store_false", help="本次不注入长期记忆")
+    parser.add_argument("--no-auto-compact", dest="auto_compact", action="store_false", help="关闭自动历史压缩，仍可使用 /compact")
+    parser.add_argument("--compact", action="store_true", help="压缩所恢复会话的旧轮次后退出；需要 --continue 或 --session")
     parser.add_argument("--allow-write", action="store_true", help="开放文件编辑与按备份恢复")
     parser.add_argument("--allow-exec", action="store_true", help="开放前台命令执行（以当前用户权限运行）")
     parser.add_argument("--preview", action="store_true", help="预览小幽灵与示例对话配色，不请求模型")
@@ -340,7 +411,7 @@ def main(argv=None) -> int:
         ui.preview()
         return 0
     if args.tasks or args.task:
-        if args.prompt is not None or args.session or args.continue_:
+        if args.prompt is not None or args.session or args.continue_ or args.compact:
             parser.error("任务查看参数不能与提问或会话恢复同时使用")
         if not args.workspace.is_dir():
             parser.error("--workspace 必须是存在的目录")
@@ -353,11 +424,13 @@ def main(argv=None) -> int:
             parser.error(str(error))
     if args.json:
         parser.error("--json 需要配合 --tasks 或 --task ID")
+    if args.compact and (args.prompt is not None or not (args.session or args.continue_)):
+        parser.error("--compact 需要 --continue 或 --session，且不能同时提问")
     if args.max_steps is None:
         args.max_steps = 20 if args.mode == "plan" else 8
     if args.max_steps < 1:
         parser.error("--max-steps 必须大于 0")
-    if args.mode == "plan" and args.max_steps < 4:
+    if args.mode == "plan" and args.max_steps < 4 and not args.compact:
         parser.error("计划模式至少需要 4 次模型请求预算")
     try:
         limits = AgentLimits(max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
@@ -398,18 +471,19 @@ def main(argv=None) -> int:
         # 首版只接 Chat Completions 工具调用协议，不自动重试收费请求。
         with OpenAI(api_key=config.api_key, base_url=config.base_url,
                     timeout=30.0, max_retries=0) as client:
-            if args.prompt is not None:
-                prompt = args.prompt.strip()
+            if args.prompt is not None or args.compact:
+                prompt = "/compact" if args.compact else args.prompt.strip()
                 if not prompt:
                     parser.error("问题不能为空")
                 ui.user(prompt)
                 answer = run_turn(client, config.model, args.workspace, store, ui, session,
                                   prompt, max_steps=args.max_steps, memory_enabled=args.memory, limits=limits,
-                                  capabilities=capabilities, mode=args.mode)
+                                  capabilities=capabilities, mode=args.mode,
+                                  auto_compact=args.auto_compact, compact_only=args.compact)
                 ui.answer(answer)
                 return 0 if save_session(store, session, ui) else 1
             return interactive_loop(client, config.model, args.workspace, store, ui, session,
-                                    args.max_steps, args.memory, limits, capabilities, args.mode)
+                                    args.max_steps, args.memory, limits, capabilities, args.mode, args.auto_compact)
     except (KeyboardInterrupt, EOFError):
         ui.error("\n已取消。")
         return 130

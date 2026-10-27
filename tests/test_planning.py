@@ -288,7 +288,7 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(len(SessionStore(self.workspace).latest()["messages"]), 17)
 
     def test_interactive_mode_and_memory_are_used_on_each_turn(self):
-        SessionStore(self.workspace).add_memory("使用中文解释")
+        SessionStore(self.workspace).add_memory("使用中文解释", kind="preference")
         replies = []
         for _ in range(2):
             replies.extend([document(steps=["回答问题"]), reply("说明"), completed(), reply("回答")])
