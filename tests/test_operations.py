@@ -24,7 +24,7 @@ class OperationTests(unittest.TestCase):
 
     def test_capabilities_filter_definitions_and_enforce_dispatch(self):
         names = lambda capabilities: {item["function"]["name"] for item in tool_definitions(capabilities)}
-        self.assertEqual(names({"read"}), {"read_file", "search_text", "list_directory", "find_files"})
+        self.assertEqual(names({"read"}), {"read_file", "search_text", "list_directory", "find_files", "search_symbols", "search_code_index"})
         self.assertIn("edit_file", names({"read", "write"}))
         self.assertNotIn("run_command", names({"read", "write"}))
         for tool, arguments in [("edit_file", {"path": "new.txt", "old_text": "", "new_text": "hello"}),

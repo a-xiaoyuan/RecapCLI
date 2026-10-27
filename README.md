@@ -5,6 +5,7 @@
 ## 核心能力
 
 - **代码操作**：查找文件、搜索文本、按行读取、编辑与备份恢复。
+- **持久代码索引**：Python AST 符号定位与 SQLite FTS5 关键词短语检索，返回可按行读取的引用。
 - **两种模式**：ReAct 直接处理任务，Plan and Execute 先计划再分步执行。
 - **持续对话**：保存和恢复会话，支持历史摘要与自动压缩。
 - **长期记忆**：保存偏好与项目事实，按问题检索，审阅并接纳任务经验。
@@ -57,6 +58,12 @@ uv run python -m revocli --mode plan --allow-write --allow-exec
 ```
 
 默认只读。编辑与执行权限分别由 `--allow-write`、`--allow-exec` 开启；命令以当前用户权限运行，可以修改文件，并非系统沙箱。
+
+### 代码索引
+
+Agent 可通过 `search_symbols` 按精确名称和种类（`class`、`function`、`async_function`）查找 Python 符号，或通过 `search_code_index` 查找 FTS5 关键词短语。结果包含 `path`、`start_line`、`end_line` 和 `reference`；关键词结果的 `snippet` 是对应的一行，可用 `read_file` 核对。FTS5 使用默认分词，按短语匹配，不是子串或语义搜索。
+
+索引保存在工作区 `.revocli/retrieval/index.sqlite3`（旧数据目录沿用 `.archer`），每次查询按文件内容哈希增量更新，并在返回前复核结果文件；查询期间发生变化的结果会被丢弃并标记 `stale_files`，请重新查询。引用是检查时的快照，文件之后仍可能变化，使用前应重新读取。索引仅遍历工作区，跳过链接、内部目录、`.env`、`.env.*` 和常见密钥文件，未实现通用敏感信息识别或 `.gitignore` 规则。仅索引 UTF-8 文本；超过 1 MiB 的文件、二进制文件、超过 `read_file` 64 KiB 限制的单行或完整符号会跳过；语法错误的 Python 文件仍可做关键词搜索但无符号索引。扫描预算或结果上限可能导致结果不完整，查看 `truncated`、`limit_reason` 和 `skipped_files`。该功能需要带 FTS5 的 SQLite；索引内容只是资料，不构成授权。
 
 ## 常用交互命令
 

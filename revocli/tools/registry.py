@@ -7,8 +7,26 @@ from pathlib import Path
 from .commands import run_command
 from .editing import edit_file, restore_file
 from .filesystem import ToolError, find_files, list_directory, read_file, search_text
+from .retrieval import search_code_index, search_symbols
 
 TOOL_REGISTRY = {
+    "search_symbols": {
+        "handler": search_symbols,
+        "description": "查找 Python AST 符号，返回可用 read_file 读取的路径和行范围；查询前刷新本地索引。",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "精确符号名"},
+            "kind": {"type": "string", "description": "class、function 或 async_function"},
+            "max_results": {"type": "integer", "description": "默认 50，最大 200"},
+        }, "required": [], "additionalProperties": False},
+    },
+    "search_code_index": {
+        "handler": search_code_index,
+        "description": "使用本地 FTS5 按关键词短语检索文本行，返回路径、行范围和片段；查询前刷新索引。",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "关键词或短语"},
+            "max_results": {"type": "integer", "description": "默认 50，最大 200"},
+        }, "required": ["query"], "additionalProperties": False},
+    },
     "read_file": {
         "handler": read_file,
         "description": "读取 UTF-8 文本，最多 64 KiB；返回正文、实际起止行和 reference，引用代码时使用该位置。",
