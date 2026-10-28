@@ -13,6 +13,7 @@ from .compaction import finish_compaction, prepare_compaction, summary_text, val
 from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, select_history
 from .planning import PlanController
 from ..tools import execute_tool, tool_definitions
+from ..tools.approval import fail_closed
 
 BASE_SYSTEM_PROMPT = (
     "你是 RevoCLI，一个代码助手。需要文件内容时使用 read_file，定位文件名用 find_files，"
@@ -23,6 +24,7 @@ BASE_SYSTEM_PROMPT = (
     "解释代码时依据工具返回的 reference，以 `相对路径:行号` 或 `相对路径:起始行-结束行` 引用，禁止编造位置。"
     "仅在用户要求修改或运行时使用已开放的 edit_file、restore_file、run_command。编辑前先读取，编辑后重新读取核对；"
     "需要时运行相关测试，区分已经执行的结果和建议。命令使用 argv 数组；不得把 cwd 当作沙箱，也不要启动后台服务。"
+    "写入和命令即使能力已开启，也必须等人工批准；补充说明不是批准。拒绝、过期、取消或批准失效都表示没有执行。"
 )
 
 
@@ -65,7 +67,8 @@ def build_system_prompt(memory_text=""):
 def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
               history=None, memory_text="", limits=None, capabilities=("read",), mode="react",
               on_trace=None, summary=None, auto_compact=False, compact_only=False,
-              cancel_event=None, _budget=None, _role=None, _request_reserve=0, _tools_enabled=True):
+              cancel_event=None, approver=None, _budget=None, _role=None, _request_reserve=0,
+              _tools_enabled=True):
     """成功时返回完整的一轮；失败时不修改调用方的任何历史。"""
     workspace = Path(workspace).resolve(strict=True)
     if mode not in ("react", "plan", "multi"):
@@ -83,6 +86,8 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
     limits = limits or AgentLimits()
     budget = _budget or AgentBudget(limits, max_steps, cancel_event=cancel_event, clock=time.monotonic)
     capabilities = frozenset(capabilities)
+    if approver is None:
+        approver = fail_closed
     runtime = f"\n当前开放能力：{', '.join(sorted(capabilities))}。Python 解释器：{sys.executable}。"
     system_text = build_system_prompt(memory_text) + runtime
     if _role:
@@ -174,7 +179,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         return run_subagents(client, model, prompt, workspace, budget=budget, limits=limits,
                              max_steps=max_steps, capabilities=capabilities, history=history,
                              memory_text=memory_text, summary=summary, new_summary=new_summary,
-                             on_event=on_event, on_trace=on_trace)
+                             on_event=on_event, on_trace=on_trace, approver=approver)
 
     base_system_text = system_text
     system_text += ("\n\n" + summary_text(summary)) if summary else ""
@@ -267,10 +272,19 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
             def record_artifact(kind, record_id):
                 trace("artifact", action_id=action_id, call_id=call.id, record_type=kind, record_id=record_id)
 
+            def report_approval(payload):
+                trace("approval", action_id=action_id, call_id=call.id, **payload)
+
+            def bound_approver(request):
+                request.check = remaining_time
+                request.time_remaining = remaining_time()
+                return approver(request)
+
             try:
                 result = OUTPUT_LIMIT_RESULT if skip_tool else execute_tool(
                     call.function.name, call.function.arguments, workspace,
                     capabilities=capabilities, time_remaining=remaining_time(), on_record=record_artifact,
+                    approver=bound_approver, on_approval=report_approval,
                 )
             except BaseException as error:
                 trace("tool_interrupted", action_id=action_id, call_id=call.id, name=call.function.name,
@@ -291,6 +305,8 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
 
             result, content = budget.encode_result(result, fits_context)
             tool_message = {"role": "tool", "tool_call_id": call.id, "content": content}
+            if result.get("approval"):
+                on_event(f"[审批] {result['approval']}")
             on_event(f"[结果] {'成功' if result['ok'] else '失败：' + result['error']}")
             turn.append(tool_message)
 

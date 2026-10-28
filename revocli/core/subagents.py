@@ -25,7 +25,7 @@ HEADER = "只读协作结果：analysis/review 为模型分析与审查意见；
 
 
 def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps, capabilities,
-                  history, memory_text, summary, new_summary, on_event, on_trace):
+                  history, memory_text, summary, new_summary, on_event, on_trace, approver=None):
     from .agent import TraceError, TurnResult, run_agent
 
     # 即使父任务开放 write/exec，也不授予此切片中的子代理。
@@ -58,7 +58,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
                 capabilities=readonly, history=deepcopy(history), summary=deepcopy(summary),
                 memory_text=memory_text, on_event=lambda text: event(role, text),
                 on_trace=lambda kind, data: trace(role, kind, data),
-                _budget=budget, _role=role, _request_reserve=1,
+                approver=approver, _budget=budget, _role=role, _request_reserve=1,
             )
             report = {"role": role, "status": result.status, "answer": result.answer,
                       "stop_reason": result.stop_reason}
@@ -118,7 +118,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
             capabilities=(), history=deepcopy(history), summary=deepcopy(summary), memory_text=memory_text,
             on_event=lambda text: event("aggregate", text),
             on_trace=lambda kind, data: trace("aggregate", kind, data),
-            _budget=budget, _role="aggregate", _tools_enabled=False,
+            approver=approver, _budget=budget, _role="aggregate", _tools_enabled=False,
         )
         body = aggregate.answer
     except TraceError:

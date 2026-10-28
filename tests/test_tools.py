@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from revocli.tools import execute_tool
+from revocli.tools.approval import approve_all
 from revocli.tools.filesystem import MAX_FILE_BYTES, ScanBudget
 from revocli.tools.registry import TOOL_REGISTRY, tool_definitions
 from revocli.storage.session import SessionStore
@@ -82,7 +83,7 @@ class ToolBoundaryTests(unittest.TestCase):
         self.assertNotIn("private.txt", listed["tree"])
         self.assertEqual(found["files"], ["public.txt"])
         result = execute_tool("edit_file", {"path": "linked/private.txt", "old_text": "SENTINEL", "new_text": "changed"},
-                              self.workspace, capabilities={"read", "write"})
+                              self.workspace, capabilities={"read", "write"}, approver=approve_all)
         self.assertFalse(result["ok"])
         self.assertEqual((outside / "private.txt").read_text(encoding="utf-8"), "SENTINEL private")
 
@@ -105,7 +106,7 @@ class ToolBoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             SessionStore(self.workspace)
         result = execute_tool("edit_file", {"path": "file.txt", "old_text": "old", "new_text": "new"},
-                              self.workspace, capabilities={"read", "write"})
+                              self.workspace, capabilities={"read", "write"}, approver=approve_all)
         self.assertFalse(result["ok"])
         self.assertEqual((self.workspace / "file.txt").read_text(encoding="utf-8"), "old")
         self.assertEqual(list(outside.iterdir()), [])

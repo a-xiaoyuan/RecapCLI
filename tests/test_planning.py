@@ -268,7 +268,7 @@ class PlanningTests(unittest.TestCase):
             call("run_command", {"argv": [sys.executable, "app.py"]}, "run"),
             reply("进程输出 2，退出码 0"), completed(), reply("已修改并通过实际运行验证：app.py:1"),
         ]
-        code, output, errors = self.run_cli(["修改并验证", "--mode", "plan", "--allow-write", "--allow-exec"], replies)
+        code, output, errors = self.run_cli(["修改并验证", "--mode", "plan", "--allow-write", "--allow-exec", "--yes"], replies)
         self.assertEqual(code, 0, errors)
         self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(2)\n")
         self.assertIn("[计划]", output)

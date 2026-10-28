@@ -90,8 +90,8 @@ def _diff(before, after, path):
     return "".join(chunks), False
 
 
-def edit_file(workspace, path, old_text, new_text, replace_all=False, *, on_record=None):
-    """现有文件默认只替换唯一匹配；创建文件时 old_text 必须为空。"""
+def _plan_edit(workspace, path, old_text, new_text, replace_all=False):
+    """计算一次精确替换，不写文件、不建备份。"""
     if not isinstance(old_text, str) or not isinstance(new_text, str):
         raise ToolError("old_text 和 new_text 必须是字符串")
     if not isinstance(replace_all, bool):
@@ -122,8 +122,21 @@ def edit_file(workspace, path, old_text, new_text, replace_all=False, *, on_reco
     if len(after) > MAX_EDIT_BYTES:
         raise ToolError("编辑后的文件不能超过 1 MiB")
     relative = _relative(workspace, target)
-    if after == before:
+    diff, truncated = ("", False)
+    if after != before:
+        diff, truncated = _diff(text, updated, relative)
+    return {"path": relative, "before": before, "after": after, "changed": after != before,
+            "created": before is None, "replacements": count, "diff": diff, "diff_truncated": truncated,
+            "fingerprint": _hash(before) if before is not None else "absent"}
+
+
+def edit_file(workspace, path, old_text, new_text, replace_all=False, *, on_record=None):
+    """现有文件默认只替换唯一匹配；创建文件时 old_text 必须为空。"""
+    planned = _plan_edit(workspace, path, old_text, new_text, replace_all)
+    relative = planned["path"]
+    if not planned["changed"]:
         return {"path": relative, "changed": False, "summary": f"{relative} 内容未变化"}
+    before, after = planned["before"], planned["after"]
     backup_id = uuid.uuid4().hex
     backup = {"schema_version": 1, "id": backup_id, "path": relative,
               "created_at": datetime.now().astimezone().isoformat(),
@@ -134,9 +147,8 @@ def edit_file(workspace, path, old_text, new_text, replace_all=False, *, on_reco
     if on_record is not None:
         on_record("backup", backup_id)
     _replace_file(workspace, path, before, after)
-    diff, truncated = _diff(text, updated, relative)
-    return {"path": relative, "changed": True, "created": before is None, "replacements": count,
-            "backup_id": backup_id, "diff": diff, "diff_truncated": truncated,
+    return {"path": relative, "changed": True, "created": planned["created"], "replacements": planned["replacements"],
+            "backup_id": backup_id, "diff": planned["diff"], "diff_truncated": planned["diff_truncated"],
             "summary": f"已修改 {relative}，备份 ID：{backup_id}"}
 
 

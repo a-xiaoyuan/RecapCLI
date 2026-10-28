@@ -77,7 +77,7 @@ class TerminalUI:
     def event(self, event):
         if event.startswith("[结果]"):
             style = "success" if event.startswith("[结果] 成功") else "error"
-        elif event.startswith("[工具]"):
+        elif event.startswith("[工具]") or event.startswith("[审批]"):
             style = "tool"
         else:
             style = "model"
@@ -103,6 +103,9 @@ class TerminalUI:
 
     def info(self, message):
         self._print(message, style="muted")
+
+    def show_approval(self, message):
+        self._print(message, style="preview")
 
     def preview(self):
         self._print("界面预览 · 以下对话与日志均为演示，不请求模型", style="preview")

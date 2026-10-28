@@ -10,6 +10,7 @@ from revocli.cli import main
 from revocli.storage.session import SessionStore
 from revocli.storage.tasks import TaskStore
 from revocli.tools import execute_tool
+from revocli.tools.approval import approve_all
 
 
 class LegacyStorageTests(unittest.TestCase):
@@ -45,12 +46,12 @@ class LegacyStorageTests(unittest.TestCase):
         source = self.workspace / "app.py"
         source.write_text("print(1)\n", encoding="utf-8")
         result = execute_tool("edit_file", {"path": "app.py", "old_text": "print(1)", "new_text": "print(2)"},
-                              self.workspace, capabilities=("read", "write"))
+                              self.workspace, capabilities=("read", "write"), approver=approve_all)
         self.assertTrue(result["ok"], result)
         backup = self.legacy / "backups" / f"{result['backup_id']}.json"
         self.assertTrue(backup.is_file())
         restored = execute_tool("restore_file", {"backup_id": result["backup_id"]}, self.workspace,
-                                capabilities=("read", "write"))
+                                capabilities=("read", "write"), approver=approve_all)
         self.assertTrue(restored["ok"], restored)
         self.assertEqual(source.read_text(), "print(1)\n")
         self.assertFalse((self.workspace / ".revocli").exists())
@@ -91,7 +92,7 @@ class LegacyStorageTests(unittest.TestCase):
         self.assertEqual(searched["matches"], [])
         for folder in (".archer", ".ARCHER", ".revocli", ".REVOCLI"):
             result = execute_tool("edit_file", {"path": f"{folder}/private.txt", "old_text": "private", "new_text": "changed"},
-                                  self.workspace, capabilities=("read", "write"))
+                                  self.workspace, capabilities=("read", "write"), approver=approve_all)
             self.assertFalse(result["ok"], result)
 
 

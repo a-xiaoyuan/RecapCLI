@@ -365,7 +365,7 @@ class ConversationTests(unittest.TestCase):
         replies = [reply(calls=[tool_call(f"call-{number}", name=name, arguments=json.dumps(arguments))])
                    for number, (name, arguments) in enumerate(calls)]
         code, requests = self.run_main(
-            ["修改并验证", "--workspace", str(self.workspace), "--allow-write", "--allow-exec", "--banner", "off"],
+            ["修改并验证", "--workspace", str(self.workspace), "--allow-write", "--allow-exec", "--yes", "--banner", "off"],
             [*replies, reply("`app.py:1` 已改为输出 2，运行退出码为 0。")])
         self.assertEqual(code, 0, self.errors.getvalue())
         self.assertEqual(path.read_text(encoding="utf-8"), "print(2)\n")
@@ -394,7 +394,7 @@ class ConversationTests(unittest.TestCase):
         path = self.workspace / "app.py"
         path.write_text("old", encoding="utf-8")
         code, requests = self.run_main(
-            ["修改", "--workspace", str(self.workspace), "--allow-write", "--banner", "off"],
+            ["修改", "--workspace", str(self.workspace), "--allow-write", "--yes", "--banner", "off"],
             [reply(calls=[tool_call(name="edit_file", arguments=json.dumps({
                 "path": "app.py", "old_text": "old", "new_text": "new"}))]), reply("unfinished", finish="length")])
         self.assertEqual(code, 1)
