@@ -90,7 +90,7 @@ def show_memory(ui, store, *, query=None, candidates=False):
 
 def run_turn(client, model, workspace, store, ui, session, prompt, *,
              max_steps=None, memory_enabled=True, limits=None, capabilities=("read",), mode="react",
-             auto_compact=True, compact_only=False):
+             auto_compact=True, compact_only=False, cancel_event=None):
     """先落任务，再执行；失败轨迹独立于成功会话，核心不依赖存储。"""
     limits = limits or AgentLimits()
     capabilities = tuple(sorted(capabilities))
@@ -99,7 +99,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         max_steps = 1
     task_id = tasks.start(session["id"], prompt, model, "compact" if compact_only else mode, {
         "history_messages": len(session["messages"]), "capabilities": capabilities,
-        "limits": asdict(limits), "max_steps": max_steps if max_steps is not None else (20 if mode == "plan" else 8),
+        "limits": asdict(limits), "max_steps": max_steps if max_steps is not None else (20 if mode in ("plan", "multi") else 8),
         "provider_host": str(getattr(getattr(client, "base_url", None), "host", "unknown")),
         "experience_versions": [], "skill_versions": [],
         "auto_compact": auto_compact, "summary_covered_messages": (session.get("summary") or {}).get("covered_messages", 0),
@@ -129,7 +129,8 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         result = run_agent(client, model, prompt, workspace, history=session["messages"],
                            memory_text=memory_text, max_steps=max_steps, limits=limits, on_event=ui.event,
                            capabilities=capabilities, mode=mode, on_trace=trace,
-                           summary=session.get("summary"), auto_compact=auto_compact, compact_only=compact_only)
+                           summary=session.get("summary"), auto_compact=auto_compact, compact_only=compact_only,
+                           cancel_event=cancel_event)
     except BaseException as error:
         status = "cancelled" if isinstance(error, KeyboardInterrupt) else "failed"
         reason = f"模型请求失败（{type(error).__name__}）" if isinstance(error, APIError) else f"{type(error).__name__}: {error}"
@@ -195,6 +196,8 @@ def show_tasks(ui, tasks, task_id=None, *, as_json=False):
             ui.info(kind + "：" + json.dumps(entry, ensure_ascii=False))
         elif kind in ("compaction", "compaction_failed", "compaction_skipped", "summary_omitted"):
             ui.info(kind + "：" + json.dumps(entry, ensure_ascii=False))
+        elif kind.startswith("subagent_"):
+            ui.info("子代理记录（模型意见不等于验收）：" + json.dumps(entry, ensure_ascii=False))
     for action_id in starts.keys() - finished:
         ui.info(f"动作 {action_id}：结果未知，需核对备份/命令记录；不会自动重试。")
     if task["answer"]:
@@ -364,12 +367,12 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="RevoCLI：支持 ReAct 与 Plan and Execute 的终端代码 Agent")
+    parser = argparse.ArgumentParser(description="RevoCLI：支持 ReAct、Plan and Execute 与只读子代理的终端代码 Agent")
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="允许读取的工作区")
-    parser.add_argument("--mode", choices=["react", "plan"], default="react",
-                        help="执行模式：react 边判断边执行；plan 先计划、逐步执行与核对")
-    parser.add_argument("--max-steps", type=int, help="每轮模型请求次数上限，react 默认 8，plan 默认 20")
+    parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
+                        help="执行模式：react 直接执行；plan 先计划再执行；multi 并发只读分析与审查")
+    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 8，plan/multi 默认 20")
     parser.add_argument("--max-tool-calls", type=int, default=16, help="每轮工具调用数量上限")
     parser.add_argument("--max-tool-bytes", type=int, default=128 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
     parser.add_argument("--context-bytes", type=int, default=256 * 1024, help="模型消息的 UTF-8 JSON 大小上限")
@@ -427,11 +430,13 @@ def main(argv=None) -> int:
     if args.compact and (args.prompt is not None or not (args.session or args.continue_)):
         parser.error("--compact 需要 --continue 或 --session，且不能同时提问")
     if args.max_steps is None:
-        args.max_steps = 20 if args.mode == "plan" else 8
+        args.max_steps = 20 if args.mode in ("plan", "multi") else 8
     if args.max_steps < 1:
         parser.error("--max-steps 必须大于 0")
     if args.mode == "plan" and args.max_steps < 4 and not args.compact:
         parser.error("计划模式至少需要 4 次模型请求预算")
+    if args.mode == "multi" and args.max_steps < 3 and not args.compact:
+        parser.error("多代理模式至少需要 3 次模型请求预算")
     try:
         limits = AgentLimits(max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
                              max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds)
@@ -466,8 +471,9 @@ def main(argv=None) -> int:
 
     try:
         print_banner(workspace=args.workspace, mode=banner_mode)
-        ui.info("执行模式：" + ("Plan and Execute" if args.mode == "plan" else "ReAct"))
-        ui.info(f"工具能力：{'、'.join(name for key, name in [('read', '读取'), ('write', '编辑'), ('exec', '命令执行')] if key in capabilities)}")
+        ui.info("执行模式：" + {"react": "ReAct", "plan": "Plan and Execute", "multi": "只读子代理（分析 + 审查）"}[args.mode])
+        effective = capabilities & {"read"} if args.mode == "multi" else capabilities
+        ui.info(f"工具能力：{'、'.join(name for key, name in [('read', '读取'), ('write', '编辑'), ('exec', '命令执行')] if key in effective)}")
         # 首版只接 Chat Completions 工具调用协议，不自动重试收费请求。
         with OpenAI(api_key=config.api_key, base_url=config.base_url,
                     timeout=30.0, max_retries=0) as client:

@@ -8,6 +8,7 @@ import sys
 
 from openai import APIError
 
+from .budget import AgentBudget, OUTPUT_LIMIT_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text, validate_summary
 from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, select_history
 from .planning import PlanController
@@ -23,7 +24,6 @@ BASE_SYSTEM_PROMPT = (
     "仅在用户要求修改或运行时使用已开放的 edit_file、restore_file、run_command。编辑前先读取，编辑后重新读取核对；"
     "需要时运行相关测试，区分已经执行的结果和建议。命令使用 argv 数组；不得把 cwd 当作沙箱，也不要启动后台服务。"
 )
-OUTPUT_LIMIT_RESULT = {"ok": False, "error": "本轮工具输出预算不足，请缩小范围后重试。"}
 
 
 @dataclass(frozen=True)
@@ -64,33 +64,38 @@ def build_system_prompt(memory_text=""):
 
 def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
               history=None, memory_text="", limits=None, capabilities=("read",), mode="react",
-              on_trace=None, summary=None, auto_compact=False, compact_only=False):
+              on_trace=None, summary=None, auto_compact=False, compact_only=False,
+              cancel_event=None, _budget=None, _role=None, _request_reserve=0, _tools_enabled=True):
     """成功时返回完整的一轮；失败时不修改调用方的任何历史。"""
     workspace = Path(workspace).resolve(strict=True)
-    if mode not in ("react", "plan"):
-        raise ValueError("mode 必须是 react 或 plan")
+    if mode not in ("react", "plan", "multi"):
+        raise ValueError("mode 必须是 react、plan 或 multi")
     if max_steps is None:
-        max_steps = 1 if compact_only else (20 if mode == "plan" else 8)
+        max_steps = 1 if compact_only else (20 if mode in ("plan", "multi") else 8)
     if not workspace.is_dir() or isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
         raise ValueError("工作区必须是目录，max_steps 必须大于 0")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("问题不能为空")
     if mode == "plan" and max_steps < 4 and not compact_only:
         raise ValueError("计划模式至少需要 4 次模型请求预算")
+    if mode == "multi" and max_steps < 3 and not compact_only:
+        raise ValueError("多代理模式至少需要 3 次模型请求预算")
     limits = limits or AgentLimits()
-    deadline = time.monotonic() + limits.max_seconds
+    budget = _budget or AgentBudget(limits, max_steps, cancel_event=cancel_event, clock=time.monotonic)
     capabilities = frozenset(capabilities)
     runtime = f"\n当前开放能力：{', '.join(sorted(capabilities))}。Python 解释器：{sys.executable}。"
     system_text = build_system_prompt(memory_text) + runtime
+    if _role:
+        from .subagents import ROLE_INSTRUCTIONS
+        system_text += "\n\n" + ROLE_INSTRUCTIONS[_role]
     planner = PlanController(on_event) if mode == "plan" else None
     turn = [{"role": "user", "content": prompt}]
-    definitions = tool_definitions(capabilities)
-    calls_used, output_bytes = 0, 0
-    output_exhausted = False
+    definitions = tool_definitions(capabilities) if _tools_enabled else []
     history = history or []
     validate_summary(summary, history)
     new_summary = None
     requests_used = 0
+    local_tool_calls = 0
 
     def trace(kind, **data):
         if on_trace is not None:
@@ -107,10 +112,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
                           "model_review": item.evidence} for item in planner.steps])
 
     def remaining_time():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise RuntimeError("本轮执行时间预算已耗尽")
-        return remaining
+        return budget.remaining_time()
 
     def request_model(messages, phase, *, tools=None, tools_allowed=False, history_messages=0):
         nonlocal requests_used
@@ -119,11 +121,12 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         remaining_time()
         if json_size(messages) > limits.max_context_bytes:
             raise ValueError("模型消息超过上下文预算")
+        request_index = budget.request(_request_reserve)
         requests_used += 1
-        trace("model_request", index=requests_used, phase=phase,
+        trace("model_request", index=request_index, phase=phase,
               history_messages=history_messages, context_bytes=json_size(messages), tools_allowed=tools_allowed,
               messages=messages, tools=[item["function"]["name"] for item in (tools or [])])
-        on_event(f"[模型] 第 {requests_used} 次请求" + ("（历史压缩）" if phase == "compact" else ""))
+        on_event(f"[模型] 第 {request_index} 次请求" + ("（历史压缩）" if phase == "compact" else ""))
         options = {} if tools_allowed else {"tool_choice": "none"}
         if tools:
             options["tools"] = tools
@@ -140,7 +143,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
     needs_compaction = (len(uncovered) > MAX_HISTORY_MESSAGES
                         or json_size([{"role": "system", "content": system_text + summary_text(summary)},
                                       *uncovered, *turn]) > limits.max_context_bytes * 0.75)
-    reserve = 4 if mode == "plan" else 1
+    reserve = {"plan": 4, "multi": 3}.get(mode, 1)
     if compact_only or (auto_compact and needs_compaction and max_steps > reserve):
         try:
             compact_messages, end = prepare_compaction(history, summary, limits.max_context_bytes)
@@ -166,12 +169,19 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         return TurnResult("历史压缩完成，原始消息完整保留；/summary 查看摘要与覆盖范围。", [],
                           summary=new_summary)
 
+    if mode == "multi":
+        from .subagents import run_subagents
+        return run_subagents(client, model, prompt, workspace, budget=budget, limits=limits,
+                             max_steps=max_steps, capabilities=capabilities, history=history,
+                             memory_text=memory_text, summary=summary, new_summary=new_summary,
+                             on_event=on_event, on_trace=on_trace)
+
     base_system_text = system_text
     system_text += ("\n\n" + summary_text(summary)) if summary else ""
     history_for_model = history[summary["covered_messages"]:] if summary else history
     for step in range(requests_used + 1, max_steps + 1):
         remaining_time()
-        final_request = step == max_steps or calls_used >= limits.max_tool_calls or output_exhausted
+        final_request = step == max_steps or budget.should_summarize(_request_reserve)
         if planner is not None and final_request:
             planner.stop("模型请求或工具预算即将耗尽，保留本次请求汇总已有结果")
             plan_snapshot()
@@ -190,7 +200,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
             raise RuntimeError("本轮消息超过上下文大小预算，请缩小问题或工具读取范围")
         selected = select_history(history_for_model, MAX_HISTORY_MESSAGES, available)
         messages = [system, *selected, *turn]
-        tools_allowed = not final_request and (planner is None or planner.allows_tools)
+        tools_allowed = _tools_enabled and not final_request and (planner is None or planner.allows_tools)
         response = request_model(messages, planner.phase if planner else "react", tools=definitions,
                                  tools_allowed=tools_allowed, history_messages=len(selected))
         if not response.choices:
@@ -220,7 +230,8 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
                 else:
                     status = "incomplete"
                 return TurnResult(answer, turn, status, planner.stop_reason or "计划已由模型核对；任务验收未验证", new_summary)
-            exhausted = calls_used >= limits.max_tool_calls or output_exhausted or (step == max_steps and calls_used > 0)
+            exhausted = (budget.tool_calls >= limits.max_tool_calls or budget.output_exhausted
+                         or (step == max_steps and local_tool_calls > 0))
             status = "incomplete" if exhausted else "returned"
             reason = "模型或工具预算耗尽后返回回答；任务验收未验证" if exhausted else "模型已返回回答；任务验收未验证"
             return TurnResult(message.content, turn, status, reason, new_summary)
@@ -230,8 +241,6 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
             raise RuntimeError(f"已达到 {max_steps} 次模型请求上限或工具预算，模型仍请求工具")
         if not tools_allowed:
             raise RuntimeError("规划、核对和汇总阶段禁止调用工具，未执行这批调用")
-        if len(message.tool_calls) > limits.max_tool_calls - calls_used:
-            raise RuntimeError("模型请求的工具数量超过本轮剩余预算，未执行这批调用")
         ids = [call.id for call in message.tool_calls]
         if len(set(ids)) != len(ids) or any(not call_id for call_id in ids):
             raise RuntimeError("模型返回了缺失或重复的工具调用 ID")
@@ -245,19 +254,21 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
                      for call in message.tool_calls]
         if json_size([system, *turn, *fallbacks]) > limits.max_context_bytes:
             raise RuntimeError("工具请求本身超过上下文预算，未执行这批调用")
+        budget.reserve_tools(len(message.tool_calls))
         for index, call in enumerate(message.tool_calls):
             remaining_time()
-            calls_used += 1
-            action_id = f"{step}:{index}:{call.id}"
+            local_tool_calls += 1
+            skip_tool = budget.output_exhausted
+            action_id = f"{_role + ':' if _role else ''}{step}:{index}:{call.id}"
             trace("tool_start", action_id=action_id, call_id=call.id, name=call.function.name,
-                  arguments=call.function.arguments, skipped=output_exhausted)
+                  arguments=call.function.arguments, skipped=skip_tool)
             on_event(f"[工具] {call.function.name}")
 
             def record_artifact(kind, record_id):
                 trace("artifact", action_id=action_id, call_id=call.id, record_type=kind, record_id=record_id)
 
             try:
-                result = OUTPUT_LIMIT_RESULT if output_exhausted else execute_tool(
+                result = OUTPUT_LIMIT_RESULT if skip_tool else execute_tool(
                     call.function.name, call.function.arguments, workspace,
                     capabilities=capabilities, time_remaining=remaining_time(), on_record=record_artifact,
                 )
@@ -274,19 +285,12 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
             if result.get("output"):
                 on_event("[命令输出]\n" + result["output"])
             remaining_time()
-            # 为尚未执行的调用保留可配对的错误结果，累计正文始终不超过预算。
-            reserve = (limits.max_tool_calls - calls_used) * json_size(OUTPUT_LIMIT_RESULT)
-            if json_size(result) > limits.max_tool_bytes - output_bytes - reserve:
-                result = OUTPUT_LIMIT_RESULT
-                output_exhausted = True
-            content = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            def fits_context(content):
+                tool_message = {"role": "tool", "tool_call_id": call.id, "content": content}
+                return json_size([system, *turn, tool_message, *fallbacks[index + 1:]]) <= limits.max_context_bytes
+
+            result, content = budget.encode_result(result, fits_context)
             tool_message = {"role": "tool", "tool_call_id": call.id, "content": content}
-            if json_size([system, *turn, tool_message, *fallbacks[index + 1:]]) > limits.max_context_bytes:
-                result = OUTPUT_LIMIT_RESULT
-                content = fallback_content
-                tool_message = fallbacks[index]
-                output_exhausted = True
-            output_bytes += len(content.encode("utf-8"))
             on_event(f"[结果] {'成功' if result['ok'] else '失败：' + result['error']}")
             turn.append(tool_message)
 
