@@ -122,3 +122,12 @@ uv run python -m unittest discover -s tests
 ```
 
 测试按执行核心、存储、工具、集成和界面分组。模型接口使用模拟响应，不请求真实模型或搜索服务。
+
+## 极简终端预览
+
+```shell
+uv sync --locked --extra tui
+uv run --extra tui python -m recapcli.tui --demo
+```
+
+去掉 `--demo` 可查看本地配置和会话信息。此壳是只读界面预览，输入不会请求模型或执行工具；正式任务仍使用 `python -m recapcli`。Enter 发送预览，Ctrl+L 清屏，Ctrl+B 隐藏图标轨，Ctrl+Q 退出。

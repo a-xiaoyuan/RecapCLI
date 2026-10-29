@@ -9,5 +9,10 @@ dependencies = [
     "rich>=14,<15",
 ]
 
+[project.optional-dependencies]
+tui = [
+    "textual>=8,<9",
+]
+
 [dependency-groups]
 dev = ["httpx2"]
