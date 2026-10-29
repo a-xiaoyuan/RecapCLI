@@ -105,19 +105,23 @@ class SubagentTests(unittest.TestCase):
         self.assertIn("analysis-only", aggregate["messages"][-1]["content"])
         self.assertIn("review-only", aggregate["messages"][-1]["content"])
 
-    def test_child_permissions_never_include_write_or_exec_even_when_parent_grants_them(self):
+    def test_child_permissions_exclude_write_exec_network_even_when_parent_grants_them(self):
         def respond(role, count, data):
             if role == "aggregate" or count > 1:
                 return reply("权限拒绝，未修改未执行")
             names = {item["function"]["name"] for item in data["tools"]}
             self.assertNotIn("edit_file", names)
             self.assertNotIn("run_command", names)
+            self.assertNotIn("read_url", names)
+            self.assertNotIn("web_search", names)
             return reply(calls=[tool("edit_file", path="app.py", old_text="print(1)", new_text="print(2)"),
-                                {**tool("run_command", argv=["python", "app.py"]), "id": "exec"}])
-        self.run_multi(respond, capabilities=("read", "write", "exec"))
+                                {**tool("run_command", argv=["python", "app.py"]), "id": "exec"},
+                                {**tool("read_url", url="https://example.com"), "id": "url"},
+                                {**tool("web_search", query="Python"), "id": "search"}])
+        self.run_multi(respond, capabilities=("read", "write", "exec", "network"))
         self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(1)\n")
         results = [data["result"] for kind, data in self.traces if kind == "tool_result"]
-        self.assertEqual(len(results), 4)
+        self.assertEqual(len(results), 8)
         self.assertTrue(all(not item["ok"] for item in results))
         self.assertFalse((self.workspace / ".revocli" / "commands").exists())
 

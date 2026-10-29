@@ -6,6 +6,7 @@ import hashlib
 import json
 
 from .context import json_size
+from ..llm import portable_messages
 
 SUMMARY_FIELDS = ("goal", "constraints", "decisions", "actions", "verification", "pending")
 KEEP_RECENT_TURNS = 2
@@ -108,8 +109,9 @@ def prepare_compaction(messages, previous, max_bytes, keep_turns=KEEP_RECENT_TUR
     request = None
     end = covered
     for candidate in eligible:
+        # 协议私有的加密状态用于原端点续轮，不作为摘要或长期记忆材料。
         payload = {"previous_summary": previous["content"] if previous else None,
-                   "turns": messages[covered:candidate]}
+                   "turns": portable_messages(messages[covered:candidate])}
         proposed = [{"role": "system", "content": COMPACT_PROMPT},
                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}]
         if json_size(proposed) > max_bytes:

@@ -26,6 +26,7 @@ dist/
 .env
 .env.*
 !.env.example
+models.toml
 
 # Runtime data and logs
 .revocli/

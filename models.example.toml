@@ -1,0 +1,17 @@
+# Copy to models.toml in the RevoCLI directory. The legacy .env config is "default".
+default = "default"
+
+[models.backup]
+protocol = "chat_completions"
+model = "your-compatible-model-id"
+base_url = "https://your-provider.example/v1"
+api_key_env = "BACKUP_API_KEY"
+tools = true
+context_bytes = 262144
+
+[models.responses]
+protocol = "responses"
+model = "your-responses-model-id"
+api_key_env = "OPENAI_API_KEY"
+tools = true
+context_bytes = 262144

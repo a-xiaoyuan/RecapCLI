@@ -1,14 +1,15 @@
 """命令行入口、交互循环与用户命令。"""
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import time
 
 from openai import APIError, OpenAI
 
-from .config import ConfigError, load_config
+from .config import ConfigError, list_model_profiles, load_config
+from .models import ModelClient
 from .core.agent import AgentLimits, run_agent
 from .core.memory import active
 from .storage.session import SessionStore
@@ -24,6 +25,8 @@ HELP_TEXT = """命令：
   /session        显示当前会话 ID、消息数与保存路径
   /sessions       列出已保存的会话
   /history        查看最近消息
+  /models         列出本地模型配置（不请求接口）
+  /model [名称]   查看当前模型，或切换下一轮使用的配置
   /compact        压缩较早的完整轮次（请求模型，原文保留）
   /summary        查看摘要、覆盖范围和来源任务
   /tasks          列出最近任务（含失败与取消）
@@ -93,6 +96,9 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
              auto_compact=True, compact_only=False, cancel_event=None):
     """先落任务，再执行；失败轨迹独立于成功会话，核心不依赖存储。"""
     limits = limits or AgentLimits()
+    model_config = client.metadata() if isinstance(client, ModelClient) else None
+    if model_config is not None:
+        limits = replace(limits, max_context_bytes=min(limits.max_context_bytes, model_config["context_bytes"]))
     capabilities = tuple(sorted(capabilities))
     tasks = TaskStore(workspace)
     if compact_only:
@@ -103,6 +109,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         "provider_host": str(getattr(getattr(client, "base_url", None), "host", "unknown")),
         "experience_versions": [], "skill_versions": [],
         "auto_compact": auto_compact, "summary_covered_messages": (session.get("summary") or {}).get("covered_messages", 0),
+        "model_config": model_config,
     })
     started = time.monotonic()
 
@@ -147,6 +154,8 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         ui.error(f"任务 {task_id} 的终态未保存：{error}；回答仍保留，请勿重复执行。")
     session["messages"].extend(result.messages)
     session["model"] = model
+    if model_config is not None:
+        session["model_profile"] = model_config["profile"]
     if result.summary is not None:
         session["summary"] = {**result.summary, "task_id": task_id}
     return result.answer
@@ -326,6 +335,14 @@ def handle_command(command, ui, store, session, model):
     return session
 
 
+def show_models(ui, current=None):
+    for spec in list_model_profiles():
+        marker = "当前" if spec["name"] == current else ("默认" if spec["default"] else "可选")
+        ready = "已配置" if spec["configured"] else "缺少模型或密钥配置"
+        ui.info(f"{marker} · {spec['name']} · {spec['protocol']} · {spec['model'] or '未设置模型'} · {ready}")
+        ui.info(f"  能力声明：工具={spec['tools']}、图片={spec['images']}、流式={spec['streaming']}；上下文 JSON 字节上限={spec['context_bytes']}")
+
+
 def interactive_loop(client, model, workspace, store, ui, session, max_steps, memory_enabled, limits=None,
                      capabilities=("read",), mode="react", auto_compact=True):
     ui.info("多轮对话模式：直接输入问题；/help 查看命令，/exit 退出。")
@@ -337,6 +354,31 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
             return 0 if save_session(store, session, ui) else 1
         prompt = (line or "").strip()
         if not prompt:
+            continue
+        if prompt.split()[0].lower() in {"/models", "/model"}:
+            parts = prompt.split()
+            try:
+                if not isinstance(client, ModelClient):
+                    raise ValueError("当前 Python 客户端未启用配置切换；请从 CLI 启动")
+                if parts[0].lower() == "/models":
+                    if len(parts) != 1:
+                        raise ValueError("用法：/models")
+                    show_models(ui, getattr(client.config, "profile", "default"))
+                elif len(parts) == 1:
+                    info = client.metadata()
+                    ui.info(f"当前模型：{info['profile']} · {info['protocol']} · {info['model']}")
+                elif len(parts) == 2:
+                    client.switch(parts[1])
+                    model = client.model
+                    session["model"] = model
+                    session["model_profile"] = getattr(client.config, "profile", "default")
+                    ui.info(f"已切换：{parts[1]} · {getattr(client.config, 'protocol', 'chat_completions')} · {model}；尚未请求接口。")
+                    ui.info("历史问答与工具事实继续保留；协议私有状态仅回送原配置，切换不代表新端点已经验证可用。")
+                    save_session(store, session, ui)
+                else:
+                    raise ValueError("用法：/model [配置名称]")
+            except (OSError, ValueError, RuntimeError) as error:
+                ui.error(str(error))
             continue
         compact_only = prompt.split()[0].lower() == "/compact"
         if compact_only and prompt.lower() != "/compact":
@@ -369,6 +411,8 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
 def build_parser():
     parser = argparse.ArgumentParser(description="RevoCLI：支持 ReAct、Plan and Execute 与只读子代理的终端代码 Agent")
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
+    parser.add_argument("--profile", metavar="名称", help="选择 models.toml 中的模型配置；恢复会话时默认沿用上次配置")
+    parser.add_argument("--models", action="store_true", help="列出本地模型配置，不请求模型、不要求密钥齐全")
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="允许读取的工作区")
     parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
                         help="执行模式：react 直接执行；plan 先计划再执行；multi 并发只读分析与审查")
@@ -389,6 +433,7 @@ def build_parser():
     parser.add_argument("--compact", action="store_true", help="压缩所恢复会话的旧轮次后退出；需要 --continue 或 --session")
     parser.add_argument("--allow-write", action="store_true", help="开放文件编辑与按备份恢复")
     parser.add_argument("--allow-exec", action="store_true", help="开放前台命令执行（以当前用户权限运行）")
+    parser.add_argument("--allow-network", action="store_true", help="开放搜索 API 与公网 URL 读取（搜索需 TAVILY_API_KEY）")
     parser.add_argument("--preview", action="store_true", help="预览小幽灵与示例对话配色，不请求模型")
     parser.add_argument("--banner", choices=["auto", "color", "plain", "off"], default="auto",
                         help="启动面板显示：自动检测、彩色、纯文本或关闭（默认 auto）")
@@ -405,6 +450,8 @@ def main(argv=None) -> int:
         capabilities.add("write")
     if args.allow_exec:
         capabilities.add("exec")
+    if args.allow_network:
+        capabilities.add("network")
     ui = TerminalUI(color=args.color)
     banner_mode = args.banner
     if banner_mode == "auto" and args.color != "auto":
@@ -412,6 +459,14 @@ def main(argv=None) -> int:
     if args.preview:
         print_banner(workspace=args.workspace, preview=True, mode=banner_mode)
         ui.preview()
+        return 0
+    if args.models:
+        if args.prompt is not None or args.session or args.continue_ or args.compact or args.task or args.tasks or args.json:
+            parser.error("--models 不能与提问、会话或任务查看参数同时使用")
+        try:
+            show_models(ui, args.profile)
+        except ConfigError as error:
+            parser.error(str(error))
         return 0
     if args.tasks or args.task:
         if args.prompt is not None or args.session or args.continue_ or args.compact:
@@ -444,11 +499,12 @@ def main(argv=None) -> int:
         parser.error(str(error))
     if not args.workspace.is_dir():
         parser.error("--workspace 必须是存在的目录")
-    try:
-        config = load_config()
-    except ConfigError as error:
-        parser.error(str(error))
-
+    config = None
+    if not args.continue_ and not args.session:
+        try:
+            config = load_config(args.profile) if args.profile is not None else load_config()
+        except ConfigError as error:
+            parser.error(str(error))
     try:
         store = SessionStore(args.workspace)
         task_store = TaskStore(args.workspace)
@@ -465,18 +521,28 @@ def main(argv=None) -> int:
         elif args.session:
             session = store.load(args.session)
         else:
-            session = store.new_session(config.model)
+            session = None
     except (OSError, ValueError) as error:
+        parser.error(str(error))
+
+    try:
+        profile = args.profile if args.profile is not None else (session or {}).get("model_profile")
+        if config is None:
+            config = load_config(profile) if profile is not None else load_config()
+        if session is None:
+            session = store.new_session(config.model)
+    except ConfigError as error:
         parser.error(str(error))
 
     try:
         print_banner(workspace=args.workspace, mode=banner_mode)
         ui.info("执行模式：" + {"react": "ReAct", "plan": "Plan and Execute", "multi": "只读子代理（分析 + 审查）"}[args.mode])
         effective = capabilities & {"read"} if args.mode == "multi" else capabilities
-        ui.info(f"工具能力：{'、'.join(name for key, name in [('read', '读取'), ('write', '编辑'), ('exec', '命令执行')] if key in effective)}")
-        # 首版只接 Chat Completions 工具调用协议，不自动重试收费请求。
-        with OpenAI(api_key=config.api_key, base_url=config.base_url,
-                    timeout=30.0, max_retries=0) as client:
+        ui.info(f"工具能力：{'、'.join(name for key, name in [('read', '读取'), ('write', '编辑'), ('exec', '命令执行'), ('network', '联网')] if key in effective)}")
+        if args.allow_network and args.mode == "multi":
+            ui.info("当前 Multi 子代理仅开放本地读取；联网请使用 react 或 plan 模式。")
+        ui.info(f"模型配置：{getattr(config, 'profile', 'default')} · {getattr(config, 'protocol', 'chat_completions')} · {config.model}")
+        with ModelClient(config, client_factory=OpenAI) as client:
             if args.prompt is not None or args.compact:
                 prompt = "/compact" if args.compact else args.prompt.strip()
                 if not prompt:

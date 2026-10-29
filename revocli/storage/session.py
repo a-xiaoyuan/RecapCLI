@@ -63,6 +63,11 @@ def _validate_messages(messages):
         if not isinstance(message, dict):
             raise ValueError("每条消息必须是对象")
         role = message.get("role")
+        if "provider_state" in message:
+            from ..llm import validate_provider_state
+            if role != "assistant":
+                raise ValueError("只有 assistant 消息可以携带模型私有状态")
+            validate_provider_state(message["provider_state"])
         if not isinstance(role, str) or role not in {"user", "assistant", "tool"}:
             raise ValueError("历史消息角色必须是 user、assistant 或 tool")
         if pending and role != "tool":
@@ -134,6 +139,9 @@ class SessionStore:
             raise ValueError("会话不属于当前工作区")
         if not isinstance(data.get("model"), str) or not data["model"].strip():
             raise ValueError("会话缺少模型名称")
+        if "model_profile" in data and (not isinstance(data["model_profile"], str)
+                                       or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", data["model_profile"])):
+            raise ValueError("会话的模型配置名称格式不正确")
         for field in ("created_at", "updated_at"):
             if not isinstance(data.get(field), str):
                 raise ValueError(f"会话缺少时间字段：{field}")
