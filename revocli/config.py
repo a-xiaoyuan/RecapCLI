@@ -23,8 +23,13 @@ class Config:
         self.base_url = base_url
 
 
+def load_values():
+    """只读取 RevoCLI 的 .env 和环境变量，后者优先。"""
+    return {**dotenv_values(ENV_FILE), **os.environ}
+
+
 def load_config():
-    values = {**dotenv_values(ENV_FILE), **os.environ}
+    values = load_values()
     api_key = (values.get("OPENAI_API_KEY") or "").strip()
     model = (values.get("OPENAI_MODEL") or "").strip()
     base_url = (values.get("OPENAI_BASE_URL") or "").strip() or None
