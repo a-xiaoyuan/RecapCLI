@@ -1,7 +1,8 @@
-"""极简终端预览：炭黑底、等宽文字、薰衣草提示符和一条输入线。
+"""炭黑底、等宽文字、薰衣草提示符。输入交给现有 Agent。"""
 
-沿用只读 ShellState；不接管 Agent、工具、审批或会话写入。
-"""
+import asyncio
+import queue
+import threading
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -11,8 +12,9 @@ from textual.message import Message
 from textual.theme import Theme
 from textual.widgets import Input, Static
 
+from .driver import Presenter, ShellDriver, ShellOptions, describe_runtime
 from .state import ShellState
-from .theme import PALETTE, dot, spaced
+from .theme import PALETTE, dot, render_line, spaced
 
 
 VIOLET_STUDIO = Theme(
@@ -21,7 +23,7 @@ VIOLET_STUDIO = Theme(
     surface=PALETTE["base"], panel=PALETTE["stage"], success=PALETTE["online"],
     error=PALETTE["error"], dark=True,
 )
-PREVIEW_NOTE = "这是界面预览，输入未发送给模型。正式对话请运行 uv run python -m recapcli。"
+DEMO_NOTE = "这是界面演示，输入未发送给模型。"
 DEMO_PROMPT = "Can you summarize the key architectural decisions in the last session?"
 DEMO_REPLY = (
     "Yes. In the last session we focused on three key decisions:\n\n"
@@ -29,13 +31,27 @@ DEMO_REPLY = (
     "  - Replacing the custom loader with an explicit registry pattern.\n\n"
     "  - Treating configuration as code, with validation at parse time."
 )
+MISSING_CONFIG = "模型配置未齐。发送前请在 RecapCLI 的 .env 或环境变量中设置 OPENAI_API_KEY 和 OPENAI_MODEL。"
 
 
-def model_label(state, demo=False):
-    profile = state.active_profile or {}
-    name = "gpt-4o-mini · preview" if demo else (profile.get("model") or "未配置模型")
+def model_label(state, demo=False, profile_name=None):
+    if demo:
+        text = Text("gpt-4o-mini · preview  ", style=PALETTE["muted"], no_wrap=True, overflow="ellipsis")
+        text.append_text(dot(True))
+        return text
+    profile = None
+    if profile_name:
+        profile = next((item for item in state.profiles if item.get("name") == profile_name), None)
+        if profile is None:
+            text = Text(f"{profile_name}  ", style=PALETTE["muted"], no_wrap=True, overflow="ellipsis")
+            text.append_text(dot(False))
+            return text
+    else:
+        profile = state.active_profile or {}
+    name = (profile or {}).get("model") or "未配置模型"
+    ready = bool(profile and profile.get("configured"))
     text = Text(name + "  ", style=PALETTE["muted"], no_wrap=True, overflow="ellipsis")
-    text.append_text(dot(True if demo else state.ready))
+    text.append_text(dot(ready))
     return text
 
 
@@ -62,7 +78,7 @@ class GlyphButton(Static):
 
 
 class RecapShell(App):
-    """只读预览壳；demo 内容固定，不产生模型请求。"""
+    """终端壳。--demo 只演示界面；其余输入走现有 run_agent。"""
 
     CSS_PATH = "violet.tcss"
     TITLE = "RecapCLI"
@@ -70,18 +86,31 @@ class RecapShell(App):
     BINDINGS = [Binding("ctrl+b", "toggle_rail", "图标轨"), Binding("ctrl+l", "clear", "清屏"),
                 Binding("ctrl+q", "quit", "退出", priority=True)]
 
-    def __init__(self, state: ShellState, *, demo=False):
+    def __init__(self, state: ShellState, *, demo=False, options: ShellOptions | None = None, client_factory=None):
         super().__init__()
         self.state = state
         self.demo = demo
+        self.options = options or ShellOptions(workspace=state.workspace)
+        self.client_factory = client_factory
         self._cursor_visible = True
+        self._busy = False
+        self._approval = False
+        self.ui_thread = None
+        self.approval_queue = queue.Queue()
+        self.driver = None
+        if not demo:
+            from openai import OpenAI
+            self.driver = ShellDriver(
+                Presenter(self), self.options,
+                client_factory=client_factory or OpenAI, ready=state.ready,
+            )
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="shell"):
             with Vertical(id="rail"):
-                for glyph, action, tooltip in (("~", "home", "回到对话"), ("+", "new", "新预览对话"),
-                                                ("✓", "tasks", "任务入口"), ("◷", "history", "已保存会话"),
-                                                ("…", "help", "快捷键与预览说明")):
+                for glyph, action, tooltip in (("~", "home", "回到对话"), ("+", "new", "新会话"),
+                                                ("✓", "tasks", "任务记录"), ("◷", "history", "已保存会话"),
+                                                ("…", "help", "命令与快捷键")):
                     yield GlyphButton(glyph, action, tooltip, id=f"rail-{action}", classes="rail-button")
             with Vertical(id="stage"):
                 with Horizontal(id="topbar"):
@@ -89,30 +118,46 @@ class RecapShell(App):
                     brand.tooltip = str(self.state.workspace)
                     yield brand
                     yield Static(Text(spaced("VIOLET STUDIO"), style=PALETTE["faint"]), id="studio")
-                    status = Static(model_label(self.state, self.demo), id="model")
-                    status.tooltip = "本地配置就绪，不代表接口已探测；preview 为固定演示"
+                    status = Static(model_label(self.state, self.demo, None if self.demo else self.options.profile), id="model")
+                    status.tooltip = "演示数据" if self.demo else "本地配置齐全时为绿点，不代表接口已探测"
                     yield status
                 with VerticalScroll(id="conversation"):
                     yield Vertical(id="transcript")
                 with Horizontal(id="composer"):
                     yield Static(">", id="input-prefix", markup=False)
-                    yield Input(placeholder="输入问题…（界面预览，不发送请求）", id="prompt")
-                    yield GlyphButton("➤", "send", "发送预览（Enter）", id="send")
+                    placeholder = "界面演示，不发送请求" if self.demo else "输入问题…"
+                    yield Input(placeholder=placeholder, id="prompt")
+                    yield GlyphButton("➤", "send", "发送（Enter）", id="send")
 
     async def on_mount(self):
+        self.ui_thread = threading.get_ident()
         self.register_theme(VIOLET_STUDIO)
         self.theme = "violet-studio"
         self._apply_width(self.size.width)
         if self.demo:
-            await self._append(DEMO_PROMPT)
-            await self._append(DEMO_REPLY, assistant=True)
+            await self._append(DEMO_PROMPT, "user")
+            await self._append(DEMO_REPLY, "assistant")
             await self.query_one("#transcript").mount(Static(self._cursor_text(), id="stream-cursor"))
             self.set_interval(0.6, self._blink_cursor)
+            for note in self.state.notes:
+                await self._append(note, "assistant")
         else:
-            await self._append("界面预览。输入仅在本地展示；Ctrl+Q 退出。", assistant=True)
-        for note in self.state.notes:
-            await self._append(note, assistant=True)
+            await self._append(describe_runtime(self.options), "assistant")
+            if not self.state.ready and not any("模型配置" in note for note in self.state.notes):
+                await self._append(MISSING_CONFIG, "info")
+            for note in self.state.notes:
+                await self._append(note, "info")
+            for note in self.driver.prepare():
+                await self._append(note, "info")
+            if self.driver.session and self.driver.session.get("model"):
+                self.apply_model(self.driver.session["model"], self.state.ready)
+            for kind, text in self.driver.transcript_rows():
+                await self._append(text, kind)
         self.query_one("#prompt", Input).focus()
+
+    def on_unmount(self):
+        if self.driver is not None:
+            self.driver.close()
 
     def on_resize(self, event):
         self._apply_width(event.size.width)
@@ -131,25 +176,115 @@ class RecapShell(App):
             self._cursor_visible = not self._cursor_visible
             self.query_one("#stream-cursor", Static).update(self._cursor_text())
 
-    async def _append(self, content, assistant=False):
-        text = Text("> ", style=PALETTE["lavender"] if assistant else PALETTE["muted"])
-        text.append(content, style=PALETTE["text"])
-        await self.query_one("#transcript").mount(Static(text, classes="turn", markup=False))
+    def _static(self, content, kind):
+        return Static(render_line(content, kind), classes="turn", markup=False)
+
+    async def _append(self, content, kind="user"):
+        await self.query_one("#transcript").mount(self._static(content, kind))
         self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
+
+    def append_line(self, content, kind):
+        self.query_one("#transcript").mount(self._static(content, kind))
+        self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
+
+    async def clear_transcript_sync(self):
+        await self.query_one("#transcript").remove_children()
+
+    async def replace_transcript_sync(self, rows):
+        transcript = self.query_one("#transcript")
+        await transcript.remove_children()
+        for kind, text in rows:
+            await transcript.mount(self._static(text, kind))
+        self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
+
+    def apply_model(self, model, ready):
+        text = Text(str(model) + "  ", style=PALETTE["muted"], no_wrap=True, overflow="ellipsis")
+        text.append_text(dot(True if ready else False))
+        self.query_one("#model", Static).update(text)
+
+    def begin_approval(self, message):
+        self.append_line(message, "event")
+        self._approval = True
+        prompt = self.query_one("#prompt", Input)
+        prompt.disabled = False
+        prompt.placeholder = "approve、reject 或 cancel"
+        prompt.focus()
+
+    def end_approval(self):
+        self._approval = False
+        if self._busy:
+            prompt = self.query_one("#prompt", Input)
+            prompt.disabled = True
+            prompt.placeholder = "正在处理…"
+
+    def _lock(self):
+        self._busy = True
+        self._approval = False
+        prompt = self.query_one("#prompt", Input)
+        prompt.disabled = True
+        prompt.placeholder = "正在处理…"
+
+    def _unlock(self):
+        self._busy = False
+        self._approval = False
+        while True:
+            try:
+                self.approval_queue.get_nowait()
+            except queue.Empty:
+                break
+        prompt = self.query_one("#prompt", Input)
+        prompt.disabled = False
+        prompt.placeholder = "界面演示，不发送请求" if self.demo else "输入问题…"
+        prompt.focus()
+
+    def _submit_value(self, value):
+        if self.demo:
+            if value in {"/exit", "/quit"}:
+                self.exit()
+            elif value == "/clear":
+                self.query_one("#transcript").remove_children()
+            elif value:
+                self.append_line(value, "user")
+                self.append_line(DEMO_NOTE, "assistant")
+            return
+        if self._approval:
+            if value:
+                self.approval_queue.put(value)
+            return
+        if self._busy:
+            if value:
+                self.append_line("上一条还在处理。", "info")
+            return
+        if not value:
+            return
+        if not value.startswith("/"):
+            self.append_line(value, "user")
+        self._lock()
+        self.run_worker(self._worker_line(value), name="turn", group="agent", exit_on_error=False)
+
+    async def _worker_line(self, line):
+        action = None
+        try:
+            action = await asyncio.to_thread(self.driver.handle_line, line)
+        except Exception as error:
+            self.append_line(f"界面处理失败：{type(error).__name__}: {error}", "error")
+        finally:
+            if self.driver is None or not self.driver.quitting:
+                self._unlock()
+        if self.driver is not None and self.driver.quitting and action != "exit":
+            self.driver.save_if_needed()
+        if action == "exit" or (self.driver is not None and self.driver.quitting):
+            self.exit()
 
     async def _submit(self):
         prompt = self.query_one("#prompt", Input)
         value = prompt.value.strip()
-        prompt.value = ""
-        if not value:
+        if self._busy and not self._approval and not self.demo:
+            if value:
+                self.append_line("上一条还在处理。", "info")
             return
-        if value in {"/exit", "/quit"}:
-            self.exit()
-        elif value == "/clear":
-            await self.action_clear()
-        else:
-            await self._append(value)
-            await self._append(PREVIEW_NOTE, assistant=True)
+        prompt.value = ""
+        self._submit_value(value)
         prompt.focus()
 
     async def on_input_submitted(self, event: Input.Submitted):
@@ -159,20 +294,47 @@ class RecapShell(App):
         if event.action == "send":
             await self._submit()
         elif event.action == "new":
-            await self.action_clear()
+            if self.demo:
+                await self.clear_transcript_sync()
+            elif self._busy:
+                self.append_line("上一条还在处理。", "info")
+            else:
+                self._submit_value("/new")
         elif event.action == "history":
-            lines = [f"{item.get('id', '?')}  ·  {item.get('messages', 0)} 条消息" for item in self.state.sessions]
-            await self._append("已保存会话\n" + ("\n".join(lines) or "暂无会话。"), assistant=True)
+            if self._busy and not self.demo:
+                self.append_line("上一条还在处理。", "info")
+            elif self.demo:
+                lines = [f"{item.get('id', '?')}  ·  {item.get('messages', 0)} 条消息" for item in self.state.sessions]
+                self.append_line("已保存会话\n" + ("\n".join(lines) or "暂无会话。"), "assistant")
+            else:
+                self.driver.show_sessions()
         elif event.action == "tasks":
-            await self._append("任务记录请在正式 CLI 使用 /tasks 或 /task ID 查看。", assistant=True)
+            if self._busy and not self.demo:
+                self.append_line("上一条还在处理。", "info")
+            elif self.demo:
+                self.append_line("任务记录在正式会话中用 /tasks 或 /task ID 查看。", "assistant")
+            else:
+                self.driver.show_tasks()
         elif event.action == "help":
-            await self._append("Enter 发送预览 · Ctrl+L 清屏 · Ctrl+B 图标轨 · Ctrl+Q 退出。\n" + PREVIEW_NOTE, assistant=True)
+            if self.demo:
+                self.append_line("Enter 发送演示 · Ctrl+L 清屏 · Ctrl+B 图标轨 · Ctrl+Q 退出。\n" + DEMO_NOTE, "assistant")
+            else:
+                self.driver.show_help()
         else:
             self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
         self.query_one("#prompt", Input).focus()
 
     async def action_clear(self):
-        await self.query_one("#transcript").remove_children()
+        await self.clear_transcript_sync()
+        self.query_one("#prompt", Input).focus()
 
     def action_toggle_rail(self):
         self.query_one("#rail").toggle_class("-hidden")
+
+    def action_quit(self):
+        if self.driver is not None and self._busy:
+            self.driver.request_stop()
+            return
+        if self.driver is not None:
+            self.driver.save_if_needed()
+        self.exit()
