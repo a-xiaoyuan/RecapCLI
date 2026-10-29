@@ -134,7 +134,7 @@ def _request(url, *, deadline, method="GET", body=None, headers=None,
         response = None
         try:
             connection.request(method, target, body=body, headers={
-                "User-Agent": "RevoCLI/0.6 (+static-text-reader)",
+                "User-Agent": "RecapCLI/0.6 (+static-text-reader)",
                 "Accept": ", ".join(sorted(allowed_types)), "Accept-Encoding": "identity",
                 **(headers or {}),
             })

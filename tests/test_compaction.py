@@ -9,12 +9,12 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from revocli.cli import handle_command, main, run_turn
-from revocli.core.agent import AgentLimits, run_agent
-from revocli.core.compaction import prepare_compaction, turn_ends
-from revocli.storage.session import SessionStore
-from revocli.storage.tasks import TaskStore
-from revocli.ui.terminal_ui import TerminalUI
+from recapcli.cli import handle_command, main, run_turn
+from recapcli.core.agent import AgentLimits, run_agent
+from recapcli.core.compaction import prepare_compaction, turn_ends
+from recapcli.storage.session import SessionStore
+from recapcli.storage.tasks import TaskStore
+from recapcli.ui.terminal_ui import TerminalUI
 
 
 CONTENT = {"goal": "修复会话保存", "constraints": "使用 uv；保留原始历史",
@@ -233,7 +233,7 @@ class CompactionTests(unittest.TestCase):
     def test_compaction_time_counts_against_the_same_deadline(self):
         clock = [0.0]
         with self.client([reply(json.dumps(CONTENT))], on_request=lambda: clock.__setitem__(0, 11.0)) as client, \
-                patch("revocli.core.agent.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("recapcli.core.agent.time.monotonic", side_effect=lambda: clock[0]), \
                 self.assertRaisesRegex(RuntimeError, "时间预算"):
             run_agent(client, "test-model", "继续", self.workspace, history=self.session["messages"],
                       auto_compact=True, max_steps=2, limits=AgentLimits(max_context_bytes=5000, max_seconds=10),
@@ -270,8 +270,8 @@ class CompactionTests(unittest.TestCase):
     def test_cli_compact_continue_and_summary_command(self):
         self.store.save(self.session)
         with self.client([reply(json.dumps(CONTENT))]) as client, \
-                patch("revocli.cli.load_config", return_value=type("Config", (), {"api_key": "offline", "model": "test-model", "base_url": None})()), \
-                patch("revocli.cli.OpenAI", return_value=client), \
+                patch("recapcli.cli.load_config", return_value=type("Config", (), {"api_key": "offline", "model": "test-model", "base_url": None})()), \
+                patch("recapcli.cli.OpenAI", return_value=client), \
                 patch("sys.stdout", self.output):
             self.assertEqual(main(["--workspace", str(self.workspace), "--continue", "--compact", "--banner", "off"]), 0)
         loaded = self.store.latest()

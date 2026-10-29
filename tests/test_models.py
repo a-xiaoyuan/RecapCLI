@@ -14,14 +14,14 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from revocli.cli import main, run_turn
-from revocli.config import ConfigError, list_model_profiles, load_config
-from revocli.core.agent import AgentLimits
-from revocli.core.compaction import history_hash, validate_summary
-from revocli.models import ModelClient
-from revocli.storage.session import SessionStore
-from revocli.storage.tasks import TaskStore
-from revocli.ui.terminal_ui import TerminalUI
+from recapcli.cli import main, run_turn
+from recapcli.config import ConfigError, list_model_profiles, load_config
+from recapcli.core.agent import AgentLimits
+from recapcli.core.compaction import history_hash, validate_summary
+from recapcli.models import ModelClient
+from recapcli.storage.session import SessionStore
+from recapcli.storage.tasks import TaskStore
+from recapcli.ui.terminal_ui import TerminalUI
 
 
 PROFILES = '''
@@ -91,8 +91,8 @@ class ModelTestCase(unittest.TestCase):
         self.models_file.write_text(PROFILES, encoding="utf-8")
         stack = self.enterContext(ExitStack())
         stack.enter_context(patch.dict(os.environ, {}, clear=True))
-        stack.enter_context(patch("revocli.config.ENV_FILE", self.env_file))
-        stack.enter_context(patch("revocli.config.MODELS_FILE", self.models_file))
+        stack.enter_context(patch("recapcli.config.ENV_FILE", self.env_file))
+        stack.enter_context(patch("recapcli.config.MODELS_FILE", self.models_file))
         self.requests = []
         self.replies = []
         self.output, self.errors = io.StringIO(), io.StringIO()
@@ -117,7 +117,7 @@ class ModelTestCase(unittest.TestCase):
 
     def run_cli(self, *arguments, prompts=None):
         args = [*arguments, "--workspace", str(self.workspace), "--banner", "off", "--color", "never"]
-        with patch("revocli.cli.OpenAI", side_effect=self.sdk_factory), \
+        with patch("recapcli.cli.OpenAI", side_effect=self.sdk_factory), \
                 redirect_stdout(self.output), redirect_stderr(self.errors):
             if prompts is None:
                 return main(args)
@@ -191,7 +191,7 @@ class ModelConfigTests(ModelTestCase):
 
     def test_missing_key_and_unknown_profile_make_no_sdk_client(self):
         for profile in ("missingkey", "unknown"):
-            with self.subTest(profile=profile), patch("revocli.cli.OpenAI") as factory, \
+            with self.subTest(profile=profile), patch("recapcli.cli.OpenAI") as factory, \
                     redirect_stderr(self.errors), self.assertRaises(SystemExit) as error:
                 main(["你好", "--profile", profile, "--workspace", str(self.workspace), "--banner", "off"])
             self.assertEqual(error.exception.code, 2)
@@ -199,12 +199,12 @@ class ModelConfigTests(ModelTestCase):
 
     def test_models_listing_needs_no_keys_and_creates_no_client_or_state(self):
         self.env_file.write_text("", encoding="utf-8")
-        with patch("revocli.cli.OpenAI") as factory, redirect_stdout(self.output):
+        with patch("recapcli.cli.OpenAI") as factory, redirect_stdout(self.output):
             self.assertEqual(main(["--models", "--workspace", str(self.workspace), "--color", "never"]), 0)
         factory.assert_not_called()
         self.assertIn("reasoning", self.output.getvalue())
         self.assertIn("responses", self.output.getvalue())
-        self.assertFalse((self.workspace / ".revocli").exists())
+        self.assertFalse((self.workspace / ".recapcli").exists())
 
 
 class ModelCLITests(ModelTestCase):

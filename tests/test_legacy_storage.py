@@ -6,11 +6,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from revocli.cli import main
-from revocli.storage.session import SessionStore
-from revocli.storage.tasks import TaskStore
-from revocli.tools import execute_tool
-from revocli.tools.approval import approve_all
+from recapcli.cli import main
+from recapcli.storage.session import SessionStore
+from recapcli.storage.tasks import TaskStore
+from recapcli.tools import execute_tool
+from recapcli.tools.approval import approve_all
 
 
 class LegacyStorageTests(unittest.TestCase):
@@ -40,6 +40,7 @@ class LegacyStorageTests(unittest.TestCase):
         self.assertEqual(store.memory_items()[0]["text"], "旧项目记忆")
         store.add_memory("新增记忆")
         self.assertEqual(len(store.memory_items()), 2)
+        self.assertFalse((self.workspace / ".recapcli").exists())
         self.assertFalse((self.workspace / ".revocli").exists())
 
     def test_legacy_backup_can_still_be_created_and_restored(self):
@@ -54,6 +55,7 @@ class LegacyStorageTests(unittest.TestCase):
                                 capabilities=("read", "write"), approver=approve_all)
         self.assertTrue(restored["ok"], restored)
         self.assertEqual(source.read_text(), "print(1)\n")
+        self.assertFalse((self.workspace / ".recapcli").exists())
         self.assertFalse((self.workspace / ".revocli").exists())
 
     def test_legacy_task_database_and_artifact_links_are_read_without_model_configuration(self):
@@ -62,7 +64,7 @@ class LegacyStorageTests(unittest.TestCase):
         tasks.append(task_id, "artifact", {"action_id": "one", "call_id": "call", "record_type": "backup", "record_id": "a" * 32})
         tasks.finish(task_id, "cancelled", "旧任务已取消")
         output = io.StringIO()
-        with patch("revocli.cli.load_config") as config, patch("revocli.cli.OpenAI") as client, \
+        with patch("recapcli.cli.load_config") as config, patch("recapcli.cli.OpenAI") as client, \
                 contextlib.redirect_stdout(output):
             self.assertEqual(main(["--workspace", str(self.workspace), "--task", task_id]), 0)
         config.assert_not_called()
@@ -70,27 +72,62 @@ class LegacyStorageTests(unittest.TestCase):
         self.assertIn(".archer/backups/", output.getvalue())
         self.assertIn("cancelled", output.getvalue())
         self.assertEqual(tasks.path.parent.parent, self.legacy)
+        self.assertFalse((self.workspace / ".recapcli").exists())
         self.assertFalse((self.workspace / ".revocli").exists())
+
+    def test_previous_revocli_store_is_reused_without_creating_recapcli(self):
+        self.legacy.rmdir()
+        previous = self.workspace / ".revocli"
+        sessions = previous / "sessions"
+        sessions.mkdir(parents=True)
+        session = {
+            "id": "legacy-session", "workspace": str(self.workspace), "model": "offline-model",
+            "created_at": "2026-10-26T09:00:00+08:00", "updated_at": "2026-10-26T09:00:00+08:00",
+            "messages": [{"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "旧回答"}],
+        }
+        (sessions / "legacy-session.json").write_text(json.dumps(session, ensure_ascii=False), encoding="utf-8")
+        store = SessionStore(self.workspace)
+        self.assertEqual(store.root, previous)
+        self.assertEqual(store.latest()["messages"][0]["content"], "旧问题")
+        store.add_memory("沿用旧目录")
+        self.assertTrue((previous / "memory.json").is_file())
+        self.assertFalse((self.workspace / ".recapcli").exists())
+        self.assertFalse(self.legacy.exists())
 
     def test_two_data_roots_are_rejected_without_overwriting_either(self):
         memory = self.legacy / "memory.json"
         memory.write_text("original legacy data", encoding="utf-8")
-        (self.workspace / ".revocli").mkdir()
-        for factory in (SessionStore, TaskStore, lambda workspace: TaskStore(workspace, create=False)):
-            with self.subTest(factory=factory), self.assertRaisesRegex(ValueError, "同时存在"):
-                factory(self.workspace)
-        self.assertEqual(memory.read_text(), "original legacy data")
-        self.assertEqual(list((self.workspace / ".revocli").iterdir()), [])
+        for extra_name in (".revocli", ".recapcli"):
+            extra = self.workspace / extra_name
+            extra.mkdir()
+            for factory in (SessionStore, TaskStore, lambda workspace: TaskStore(workspace, create=False)):
+                with self.subTest(extra=extra_name, factory=factory), self.assertRaisesRegex(ValueError, "同时存在"):
+                    factory(self.workspace)
+            self.assertEqual(memory.read_text(), "original legacy data")
+            self.assertEqual(list(extra.iterdir()), [])
+            extra.rmdir()
 
-    def test_both_names_are_hidden_from_search_and_protected_from_editing(self):
-        for folder in (self.legacy, self.workspace / ".revocli"):
+    def test_recapcli_and_revocli_together_are_rejected(self):
+        self.legacy.rmdir()
+        previous = self.workspace / ".revocli"
+        previous.mkdir()
+        (previous / "memory.json").write_text("keep", encoding="utf-8")
+        current = self.workspace / ".recapcli"
+        current.mkdir()
+        with self.assertRaisesRegex(ValueError, "同时存在"):
+            SessionStore(self.workspace)
+        self.assertEqual((previous / "memory.json").read_text(), "keep")
+        self.assertEqual(list(current.iterdir()), [])
+
+    def test_data_directories_are_hidden_from_search_and_protected_from_editing(self):
+        for folder in (self.legacy, self.workspace / ".revocli", self.workspace / ".recapcli"):
             folder.mkdir(exist_ok=True)
             (folder / "private.txt").write_text("private marker", encoding="utf-8")
         found = execute_tool("find_files", {"pattern": "private"}, self.workspace)
         searched = execute_tool("search_text", {"query": "private marker"}, self.workspace)
         self.assertEqual(found["files"], [])
         self.assertEqual(searched["matches"], [])
-        for folder in (".archer", ".ARCHER", ".revocli", ".REVOCLI"):
+        for folder in (".archer", ".ARCHER", ".revocli", ".REVOCLI", ".recapcli", ".RECAPCLI"):
             result = execute_tool("edit_file", {"path": f"{folder}/private.txt", "old_text": "private", "new_text": "changed"},
                                   self.workspace, capabilities=("read", "write"), approver=approve_all)
             self.assertFalse(result["ok"], result)

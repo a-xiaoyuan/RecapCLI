@@ -426,7 +426,7 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="RevoCLI：支持 ReAct、Plan and Execute 与只读子代理的终端代码 Agent")
+    parser = argparse.ArgumentParser(description="RecapCLI：支持 ReAct、Plan and Execute 与只读子代理的终端代码 Agent")
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
     parser.add_argument("--profile", metavar="名称", help="选择 models.toml 中的模型配置；恢复会话时默认沿用上次配置")
     parser.add_argument("--models", action="store_true", help="列出本地模型配置，不请求模型、不要求密钥齐全")

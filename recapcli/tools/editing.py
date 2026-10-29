@@ -17,6 +17,7 @@ from .filesystem import ToolError, _relative, _resolve
 
 MAX_EDIT_BYTES = 1024 * 1024
 MAX_DIFF_BYTES = 8192
+PROTECTED_DIR_NAMES = {".git", ".recapcli", ".revocli", ".archer"}
 
 
 def _target(workspace, path):
@@ -29,14 +30,14 @@ def _target(workspace, path):
     candidate = workspace
     for part in relative.parts:
         candidate = candidate / part
-        if part.rstrip(" .").casefold() in {".git", ".revocli", ".archer"}:
-            raise ToolError("禁止直接编辑 Git 元数据或 RevoCLI 运行数据")
+        if part.rstrip(" .").casefold() in PROTECTED_DIR_NAMES:
+            raise ToolError("禁止直接编辑 Git 元数据或 RecapCLI 运行数据")
         if os.name == "nt" and (":" in part or candidate.is_reserved()):
             raise ToolError("不能编辑 Windows 设备名或备用数据流路径")
         if candidate.is_symlink() or candidate.is_junction():
             raise ToolError("禁止通过符号链接或目录联接编辑文件")
     target = _resolve(workspace, path, must_exist=False)
-    if any(part.casefold() in {".git", ".revocli", ".archer"} for part in target.relative_to(workspace).parts):
+    if any(part.casefold() in PROTECTED_DIR_NAMES for part in target.relative_to(workspace).parts):
         raise ToolError("禁止编辑内部数据路径")
     if target.exists() and not target.is_file():
         raise ToolError("编辑目标不是普通文件")
@@ -58,7 +59,7 @@ def _hash(content):
 def _replace_file(workspace, path, before, after):
     target = _target(workspace, path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.revocli-", dir=target.parent)
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.recapcli-", dir=target.parent)
     temporary = Path(temporary)
     try:
         with os.fdopen(fd, "wb") as file:

@@ -15,12 +15,12 @@ from unittest.mock import patch
 import httpx2
 from openai import APIError, OpenAI
 
-from revocli.cli import handle_command, main, run_turn, show_tasks
-from revocli.tools.approval import approve_all
-from revocli.core.agent import AgentLimits
-from revocli.storage.session import SessionStore
-from revocli.storage.tasks import TaskStore, _process_identity, project_version
-from revocli.ui.terminal_ui import TerminalUI
+from recapcli.cli import handle_command, main, run_turn, show_tasks
+from recapcli.tools.approval import approve_all
+from recapcli.core.agent import AgentLimits
+from recapcli.storage.session import SessionStore
+from recapcli.storage.tasks import TaskStore, _process_identity, project_version
+from recapcli.ui.terminal_ui import TerminalUI
 
 
 def reply(text=None, *, name=None, arguments=None, call_id="call", usage=None):
@@ -69,7 +69,7 @@ class TaskStoreTests(unittest.TestCase):
         self.assertIsNone(loaded["usage"])
         self.assertEqual(loaded["duration_seconds"], 1.25)
         self.assertEqual(loaded["events"][0]["data"]["call_id"], "call")
-        self.assertFalse((self.workspace / ".revocli" / "sessions").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "sessions").exists())
         with self.assertRaises(ValueError):
             self.tasks.append(task_id, "message", {})
 
@@ -77,17 +77,17 @@ class TaskStoreTests(unittest.TestCase):
         task_id = self.start()
         self.assertNotIn(_process_identity(os.getpid()), (None, "unknown"))
         self.assertEqual(self.tasks.recover_interrupted(), [])
-        with patch("revocli.storage.tasks._process_identity", return_value="unknown"):
+        with patch("recapcli.storage.tasks._process_identity", return_value="unknown"):
             self.assertEqual(self.tasks.recover_interrupted(), [])
         self.assertEqual(self.tasks.get(task_id)["status"], "running")
-        with patch("revocli.storage.tasks._process_identity", return_value=None):
+        with patch("recapcli.storage.tasks._process_identity", return_value=None):
             self.assertEqual(self.tasks.recover_interrupted(), [task_id])
             self.assertEqual(self.tasks.recover_interrupted(), [])
         self.assertEqual(self.tasks.get(task_id)["status"], "unknown")
 
     def test_reused_pid_cannot_keep_an_abandoned_task_running(self):
         task_id = self.start()
-        with patch("revocli.storage.tasks._process_identity", return_value="different-process-birth"):
+        with patch("recapcli.storage.tasks._process_identity", return_value="different-process-birth"):
             self.assertEqual(self.tasks.recover_interrupted(), [task_id])
         self.assertEqual(self.tasks.get(task_id)["verification_status"], "unverified")
 
@@ -116,7 +116,7 @@ class TaskStoreTests(unittest.TestCase):
     def test_copying_database_to_another_workspace_requires_explicit_migration(self):
         other = self.workspace / "other"
         other.mkdir()
-        copied = other / ".revocli" / "tasks" / "tasks.sqlite3"
+        copied = other / ".recapcli" / "tasks" / "tasks.sqlite3"
         copied.parent.mkdir(parents=True)
         shutil.copyfile(self.tasks.path, copied)
         with self.assertRaises(ValueError):
@@ -131,7 +131,7 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(self.tasks.list_tasks(), [])
 
     def test_non_git_directory_records_unknown_version(self):
-        with patch("revocli.storage.tasks.subprocess.run", side_effect=FileNotFoundError):
+        with patch("recapcli.storage.tasks.subprocess.run", side_effect=FileNotFoundError):
             snapshot = project_version(self.workspace)
         self.assertIsNone(snapshot["head"])
         self.assertIsNone(snapshot["fingerprint"])
@@ -145,7 +145,7 @@ class TaskStoreTests(unittest.TestCase):
                            capture_output=True, timeout=10)
 
         git("init", "--quiet")
-        (self.workspace / ".gitignore").write_text(".revocli/\n", encoding="utf-8")
+        (self.workspace / ".gitignore").write_text(".recapcli/\n", encoding="utf-8")
         source = self.workspace / "app.py"
         source.write_text("print(1)\n", encoding="utf-8")
         git("add", "app.py", ".gitignore")
@@ -216,7 +216,7 @@ class TaskRuntimeTests(unittest.TestCase):
         self.assertIn("checked", result["output"])
         artifact = next(event["data"] for event in task["events"] if event["kind"] == "artifact")
         self.assertEqual(artifact["record_id"], result["record_id"])
-        self.assertTrue((self.workspace / ".revocli" / "commands" / f"{artifact['record_id']}.json").is_file())
+        self.assertTrue((self.workspace / ".recapcli" / "commands" / f"{artifact['record_id']}.json").is_file())
         self.assertEqual(task["metadata"]["provider_host"], "offline.invalid")
         self.assertNotIn("offline-secret-key", json.dumps(task))
 
@@ -340,7 +340,7 @@ class TaskRuntimeTests(unittest.TestCase):
         self.run_replies([reply("已回答")])
         task_id = self.task()["id"]
         output = io.StringIO()
-        with patch("revocli.cli.load_config") as config, patch("revocli.cli.OpenAI") as client, \
+        with patch("recapcli.cli.load_config") as config, patch("recapcli.cli.OpenAI") as client, \
                 contextlib.redirect_stdout(output):
             code = main(["--workspace", str(self.workspace), "--task", task_id, "--json"])
         self.assertEqual(code, 0)
@@ -355,18 +355,18 @@ class TaskRuntimeTests(unittest.TestCase):
     def test_empty_task_view_does_not_create_runtime_files(self):
         empty = self.workspace / "empty"
         empty.mkdir()
-        with patch("revocli.cli.load_config") as config, contextlib.redirect_stdout(io.StringIO()):
+        with patch("recapcli.cli.load_config") as config, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(["--workspace", str(empty), "--tasks"]), 0)
         config.assert_not_called()
-        self.assertFalse((empty / ".revocli").exists())
+        self.assertFalse((empty / ".recapcli").exists())
 
     def test_process_crash_after_real_edit_is_recovered_as_unknown_without_replaying(self):
         script = r'''
 import json, os, sys
 from pathlib import Path
-from revocli.storage.tasks import TaskStore
-from revocli.tools import execute_tool
-from revocli.tools.approval import approve_all
+from recapcli.storage.tasks import TaskStore
+from recapcli.tools import execute_tool
+from recapcli.tools.approval import approve_all
 workspace = Path(sys.argv[1])
 tasks = TaskStore(workspace)
 task_id = tasks.start("crashed-session", "修改文件", "test-model", "react", {})
@@ -382,7 +382,7 @@ os._exit(0)
                                  capture_output=True, timeout=20)
         self.assertEqual(process.returncode, 0, process.stderr.decode("utf-8", errors="replace"))
         output = io.StringIO()
-        with contextlib.redirect_stdout(output), patch("revocli.cli.load_config") as config:
+        with contextlib.redirect_stdout(output), patch("recapcli.cli.load_config") as config:
             self.assertEqual(main(["--workspace", str(self.workspace), "--tasks", "--json"]), 0)
         config.assert_not_called()
         self.assertEqual(json.loads(output.getvalue())[0]["status"], "unknown")

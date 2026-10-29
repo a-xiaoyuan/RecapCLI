@@ -71,7 +71,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
         trace(role, "subagent_result", report)
         return report
 
-    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="revocli-subagent")
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="recapcli-subagent")
     futures = []
     failure = None
     try:

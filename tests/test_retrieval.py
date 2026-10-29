@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from revocli.tools import execute_tool, tool_definitions
-from revocli.tools import retrieval
-from revocli.tools.filesystem import ScanBudget
+from recapcli.tools import execute_tool, tool_definitions
+from recapcli.tools import retrieval
+from recapcli.tools.filesystem import ScanBudget
 
 
 class RetrievalTests(unittest.TestCase):
@@ -46,7 +46,7 @@ class RetrievalTests(unittest.TestCase):
         match = first["matches"][0]
         self.assertEqual(match["reference"], "code.py:2")
         self.assertEqual(self.read_match(match), match["snippet"])
-        db = self.workspace / ".revocli/retrieval/index.sqlite3"
+        db = self.workspace / ".recapcli/retrieval/index.sqlite3"
         self.assertTrue(db.is_file())
         connection = sqlite3.connect(db)
         try:
@@ -126,7 +126,7 @@ class RetrievalTests(unittest.TestCase):
             except OSError as error:
                 self.skipTest(f"无法创建符号链接：{error}")
             self.assertEqual(self.call("search_symbols", name="outside")["matches"], [])
-            index = self.workspace / ".revocli/retrieval/index.sqlite3"
+            index = self.workspace / ".recapcli/retrieval/index.sqlite3"
             index.unlink()
             index.symlink_to(outside)
             result = self.call("search_symbols", name="outside")
@@ -134,7 +134,7 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(outside.read_text(encoding="utf-8"), "def outside():\n    pass\n")
 
     def test_refuses_index_link_even_without_symlink_creation_privilege(self):
-        index = self.workspace / ".revocli/retrieval/index.sqlite3"
+        index = self.workspace / ".recapcli/retrieval/index.sqlite3"
         original = Path.is_symlink
         with patch.object(Path, "is_symlink", lambda path: path == index or original(path)):
             result = self.call("search_symbols", name="x")

@@ -1,7 +1,8 @@
 """会话与长期记忆的本地持久化。
 
-会话保存为工作区下的 `.revocli/sessions/<id>.json`，记忆保存为
-`.revocli/memory.json`；数据目录自带 Git 忽略规则。
+会话保存在工作区数据目录的 `sessions/<id>.json`，记忆保存在
+`memory.json`。新工作区使用 `.recapcli`；已有 `.revocli` 或 `.archer`
+则原位沿用。数据目录自带 Git 忽略规则。
 """
 
 from dataclasses import dataclass

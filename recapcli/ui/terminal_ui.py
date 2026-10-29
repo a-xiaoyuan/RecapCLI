@@ -88,7 +88,7 @@ class TerminalUI:
 
         def draw(console, color):
             console.print()
-            console.print(Text("RevoCLI>", style="assistant"))
+            console.print(Text("RecapCLI>", style="assistant"))
             if color:
                 console.print(Padding(Markdown(answer, code_theme="monokai", hyperlinks=False), (0, 0, 0, 2)))
             else:
@@ -115,7 +115,7 @@ class TerminalUI:
         self.event("[结果] 成功")
         self.event("[模型] 第 2 次请求")
         self.answer(
-            "### 运行 RevoCLI\n\n"
+            "### 运行 RecapCLI\n\n"
             "先安装依赖，再发送一次提问：\n\n"
             "```powershell\nuv sync\nuv run python main.py \"读取 README.md\"\n```\n\n"
             "- **只读工具**：使用 `read_file` 读取工作区文件。\n"

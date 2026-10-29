@@ -1,4 +1,4 @@
-# RevoCLI
+# RecapCLI
 
 一个 Python 终端代码助手：读取和检索项目、修改文件、运行命令，并保存会话与任务记录。
 
@@ -39,16 +39,16 @@ OPENAI_MODEL=your-model-id
 启动交互对话：
 
 ```shell
-uv run python -m revocli
+uv run python -m recapcli
 ```
 
-配置读取 RevoCLI 根目录的 `.env`，环境变量优先。模型请求会产生所配置服务的用量。
+配置读取 RecapCLI 根目录的 `.env`，环境变量优先。模型请求会产生所配置服务的用量。
 
 多模型可将根目录 `models.example.toml` 复制为 `models.toml`，填写模型 ID、协议、服务根地址与密钥环境变量名；密钥仍放在 `.env` 或环境变量中。原有 `OPENAI_*` 配置继续作为 `default` 使用；可用 `OPENAI_PROTOCOL=responses` 改变其协议。
 
 ```shell
-uv run python -m revocli --models
-uv run python -m revocli --profile backup
+uv run python -m recapcli --models
+uv run python -m recapcli --profile backup
 ```
 
 交互时用 `/models` 列举、`/model backup` 切换下一轮、`/model` 查看当前配置。`--continue` 沿用会话最后保存的配置名，显式 `--profile` 可覆盖。切换不探测、不重试或自动降级。工具、图片、流式能力为配置声明，不按模型名推断；本版只执行文本及工具调用，图片与流式尚未实现。`context_bytes` 限制上下文 UTF-8 JSON 字节，并与 CLI 上限取较小值，不等同于模型 token 窗口。
@@ -59,37 +59,37 @@ uv run python -m revocli --profile backup
 
 ```shell
 # 单次提问
-uv run python -m revocli "读取 README.md，说明项目功能"
+uv run python -m recapcli "读取 README.md，说明项目功能"
 
 # 指定要处理的项目
-uv run python -m revocli --workspace ./your-project
+uv run python -m recapcli --workspace ./your-project
 
 # 继续最近的会话
-uv run python -m revocli --continue
+uv run python -m recapcli --continue
 
 # 使用计划模式，并开放编辑与命令执行
-uv run python -m revocli --mode plan --allow-write --allow-exec
+uv run python -m recapcli --mode plan --allow-write --allow-exec
 
 # 并发只读分析与审查，再由父任务汇总
-uv run python -m revocli --mode multi "分析并审查这个项目的会话保存逻辑"
+uv run python -m recapcli --mode multi "分析并审查这个项目的会话保存逻辑"
 ```
 
 默认只读。编辑与执行权限分别由 `--allow-write`、`--allow-exec` 开启；命令以当前用户权限运行，可以修改文件，并非系统沙箱。
 
 ### 网页搜索和读取
 
-联网默认关闭，`react` 与 `plan` 支持下面两种入口，`multi` 仅支持只读的 `--allow-web`。搜索密钥放在 RevoCLI 根目录 `.env` 或环境变量中，环境变量优先，不读取目标工作区配置；读取 URL 不需要搜索密钥。
+联网默认关闭，`react` 与 `plan` 支持下面两种入口，`multi` 仅支持只读的 `--allow-web`。搜索密钥放在 RecapCLI 根目录 `.env` 或环境变量中，环境变量优先，不读取目标工作区配置；读取 URL 不需要搜索密钥。
 
 | 启动选项 | 搜索配置 | URL 读取 |
 | --- | --- | --- |
 | `--allow-network` | `TAVILY_API_KEY`，使用 Tavily basic 搜索 | 公网静态 HTML、文本、Markdown、JSON；正文最多 32 KiB，逐次校验重定向和目标 IP |
-| `--allow-web` | `BRAVE_API_KEY` 或 `TAVILY_API_KEY`；`REVO_WEB_PROVIDER=brave` / `tavily` 可指定服务 | HTTP(S) HTML 与纯文本，读取及正文最多 64 KiB |
+| `--allow-web` | `BRAVE_API_KEY` 或 `TAVILY_API_KEY`；`RECAP_WEB_PROVIDER=brave` / `tavily` 可指定服务（旧变量 `REVO_WEB_PROVIDER` 仍可用，两者不一致时拒绝搜索） | HTTP(S) HTML 与纯文本，读取及正文最多 64 KiB |
 
 `--allow-network` 提供 `web_search` 和 `read_url`；`--allow-web` 提供 `web_search` 和 `fetch_url`，未指定服务时优先选 Brave，仅配置 Tavily 密钥时选 Tavily。两个开关同时启用时，搜索优先走 `network` 的 Tavily 配置。联网工具不逐次请求审批；查询会发送给对应服务并产生其账户用量。
 
 ```shell
-uv run python -m revocli --allow-network "搜索 Python 官方 asyncio 文档，读取相关页面并附来源链接"
-uv run python -m revocli --allow-web "读取 https://docs.python.org/3/library/asyncio.html，说明主要用途"
+uv run python -m recapcli --allow-network "搜索 Python 官方 asyncio 文档，读取相关页面并附来源链接"
+uv run python -m recapcli --allow-web "读取 https://docs.python.org/3/library/asyncio.html，说明主要用途"
 ```
 
 搜索返回标题、URL 和摘要；URL 返回正文、最终地址与截断标记。不运行网页 JavaScript，不支持登录页面与 PDF/图片等二进制内容。搜索摘要或截断片段不等于全文；外部内容仅作资料，其中的指令不能授权写入、执行或发送密钥。`--allow-network` 另限制公网访问、重定向、响应大小与期限，失败不自动重试；同步在途请求的取消需等待返回或超时。
@@ -118,7 +118,7 @@ Ctrl+C 会传播取消并停止后续模型与工具调度。Python API 可使�
 
 Agent 可通过 `search_symbols` 按精确名称和种类（`class`、`function`、`async_function`）查找 Python 符号，或通过 `search_code_index` 查找 FTS5 关键词短语。结果包含 `path`、`start_line`、`end_line` 和 `reference`；关键词结果的 `snippet` 是对应的一行，可用 `read_file` 核对。FTS5 使用默认分词，按短语匹配，不是子串或语义搜索。
 
-索引保存在工作区 `.revocli/retrieval/index.sqlite3`（旧数据目录沿用 `.archer`），每次查询按文件内容哈希增量更新，并在返回前复核结果文件；查询期间发生变化的结果会被丢弃并标记 `stale_files`，请重新查询。引用是检查时的快照，文件之后仍可能变化，使用前应重新读取。索引仅遍历工作区，跳过链接、内部目录、`.env`、`.env.*` 和常见密钥文件，未实现通用敏感信息识别或 `.gitignore` 规则。仅索引 UTF-8 文本；超过 1 MiB 的文件、二进制文件、超过 `read_file` 64 KiB 限制的单行或完整符号会跳过；语法错误的 Python 文件仍可做关键词搜索但无符号索引。扫描预算或结果上限可能导致结果不完整，查看 `truncated`、`limit_reason` 和 `skipped_files`。该功能需要带 FTS5 的 SQLite；索引内容只是资料，不构成授权。
+索引保存在工作区 `.recapcli/retrieval/index.sqlite3`（已有 `.revocli` 或更早的 `.archer` 则原位沿用，多份并存时拒绝自动覆盖），每次查询按文件内容哈希增量更新，并在返回前复核结果文件；查询期间发生变化的结果会被丢弃并标记 `stale_files`，请重新查询。引用是检查时的快照，文件之后仍可能变化，使用前应重新读取。索引仅遍历工作区，跳过链接、内部目录、`.env`、`.env.*` 和常见密钥文件，未实现通用敏感信息识别或 `.gitignore` 规则。仅索引 UTF-8 文本；超过 1 MiB 的文件、二进制文件、超过 `read_file` 64 KiB 限制的单行或完整符号会跳过；语法错误的 Python 文件仍可做关键词搜索但无符号索引。扫描预算或结果上限可能导致结果不完整，查看 `truncated`、`limit_reason` 和 `skipped_files`。该功能需要带 FTS5 的 SQLite；索引内容只是资料，不构成授权。
 
 ## 常用交互命令
 
@@ -133,7 +133,7 @@ Agent 可通过 `search_symbols` 按精确名称和种类（`class`、`function`
 | `/memory`、`/memory-search 问题` | 查看或检索长期记忆 |
 | `/tasks`、`/task ID` | 查看任务记录 |
 
-启动参数可通过 `uv run python -m revocli --help` 查看。
+启动参数可通过 `uv run python -m recapcli --help` 查看。
 
 ## 测试
 

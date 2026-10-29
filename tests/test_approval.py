@@ -12,17 +12,17 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from revocli.cli import build_parser, main, make_approver, run_turn, show_tasks
-from revocli.storage.session import SessionStore
-from revocli.storage.tasks import TaskStore
-from revocli.tools import execute_tool
-from revocli.tools.approval import (
+from recapcli.cli import build_parser, main, make_approver, run_turn, show_tasks
+from recapcli.storage.session import SessionStore
+from recapcli.storage.tasks import TaskStore
+from recapcli.tools import execute_tool
+from recapcli.tools.approval import (
     InteractiveApprover,
     approve_all,
     fail_closed,
     interpret_approval_line,
 )
-from revocli.ui.terminal_ui import TerminalUI
+from recapcli.ui.terminal_ui import TerminalUI
 
 
 def reply(text=None, *, name=None, arguments=None, call_id="call"):
@@ -54,8 +54,8 @@ class ApprovalGateTests(unittest.TestCase):
     def assert_no_mutation(self, *paths):
         for path in paths:
             self.assertFalse(path.exists(), path)
-        self.assertFalse((self.workspace / ".revocli" / "backups").exists())
-        self.assertFalse((self.workspace / ".revocli" / "commands").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "backups").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "commands").exists())
 
     def test_explicit_commands_are_not_confused_with_clarification(self):
         self.assertEqual(interpret_approval_line("approve"), "approved")
@@ -117,7 +117,7 @@ class ApprovalGateTests(unittest.TestCase):
             self.ui, timeout=5, reader=lambda remaining: next(lines)))
         self.assertTrue(result["ok"], result)
         self.assertEqual(target.read_text(encoding="utf-8"), "hello\n")
-        self.assertTrue((self.workspace / ".revocli" / "backups").is_dir())
+        self.assertTrue((self.workspace / ".recapcli" / "backups").is_dir())
         self.assertIn("不是批准", self.output.getvalue())
 
     def test_approve_then_file_change_invalidates_and_does_not_write(self):
@@ -136,7 +136,7 @@ class ApprovalGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "invalidated")
         self.assertFalse(result["ok"])
         self.assertEqual(path.read_text(encoding="utf-8"), "print(1)\n# external\n")
-        self.assertFalse((self.workspace / ".revocli" / "backups").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "backups").exists())
         self.assertIn("文件指纹", seen[0].summary)
         self.assertIn("差异提示", seen[0].summary)
         self.assertIn("edit_file", seen[0].summary)
@@ -156,7 +156,7 @@ class ApprovalGateTests(unittest.TestCase):
         self.assertEqual(result["approval"], "invalidated")
         self.assertEqual(path.read_text(encoding="utf-8"), "print(1)\n")
         self.assertNotIn("hacked", path.read_text(encoding="utf-8"))
-        self.assertFalse((self.workspace / ".revocli" / "backups").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "backups").exists())
 
     def test_approve_then_command_target_change_does_not_start(self):
         path = self.workspace / "app.py"
@@ -169,7 +169,7 @@ class ApprovalGateTests(unittest.TestCase):
         result = self.command([sys.executable, "app.py"], approver)
         self.assertEqual(result["approval"], "invalidated")
         self.assertEqual(path.read_text(encoding="utf-8"), "print(9)\n")
-        self.assertFalse((self.workspace / ".revocli" / "commands").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "commands").exists())
 
     def test_capability_blocks_before_approval_even_if_yes_would_approve(self):
         def approver(request):
@@ -209,7 +209,7 @@ class ApprovalGateTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.edit("app.py", "old\n", "new\n", approve_all, on_approval=self._disk_full)
         self.assertEqual(path.read_text(encoding="utf-8"), "old\n")
-        self.assertFalse((self.workspace / ".revocli" / "backups").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "backups").exists())
 
     def test_restore_reject_does_not_change_the_file(self):
         path = self.workspace / "app.py"
@@ -281,7 +281,7 @@ class ApprovalFlowTests(unittest.TestCase):
         ], capabilities=("read", "write"))
         self.assertEqual(answer, "没有批准")
         self.assertEqual(self.source.read_text(encoding="utf-8"), "print(1)\n")
-        self.assertFalse((self.workspace / ".revocli" / "backups").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "backups").exists())
         kinds = [event["kind"] for event in self.task()["events"]
                  if event["kind"] in {"tool_start", "approval", "artifact", "tool_result"}]
         self.assertEqual(kinds, ["tool_start", "approval", "tool_result"])
@@ -327,8 +327,8 @@ class ApprovalCliTests(unittest.TestCase):
 
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict("os.environ", {}, clear=True), \
-                patch("revocli.config.dotenv_values", return_value=self.config), \
-                patch("revocli.cli.OpenAI", side_effect=factory), \
+                patch("recapcli.config.dotenv_values", return_value=self.config), \
+                patch("recapcli.cli.OpenAI", side_effect=factory), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = main(argv)
         return code, requests, output.getvalue(), errors.getvalue()
@@ -347,7 +347,7 @@ class ApprovalCliTests(unittest.TestCase):
         self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(1)\n")
         self.assertEqual(json.loads(requests[1]["messages"][-1]["content"])["approval"], "needs_approval")
         self.assertIn("不会执行", output)
-        self.assertFalse((self.workspace / ".revocli" / "backups").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "backups").exists())
 
         code, requests, output, errors = self.run_main(
             ["修改", *base, "--allow-write", "--yes"], [edit, reply("已改")])

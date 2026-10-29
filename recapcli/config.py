@@ -1,6 +1,6 @@
-"""加载 RevoCLI 自身的模型和搜索配置。
+"""加载 RecapCLI 自身的模型和搜索配置。
 
-只读取 RevoCLI 目录下的 `.env`，环境变量优先；不读取目标工作区的配置。
+只读取 RecapCLI 目录下的 `.env`，环境变量优先；不读取目标工作区的配置。
 """
 
 import os
@@ -36,12 +36,12 @@ class Config:
 
 
 def load_values():
-    """只读取 RevoCLI 的 .env 和环境变量，后者优先。"""
+    """只读取 RecapCLI 的 .env 和环境变量，后者优先。"""
     return {**dotenv_values(ENV_FILE), **os.environ}
 
 
 def _model_profiles():
-    """配置只来自 RevoCLI 自身；列举配置不要求密钥，也不发送探测请求。"""
+    """配置只来自 RecapCLI 自身；列举配置不要求密钥，也不发送探测请求。"""
     values = load_values()
     profiles = {"default": {
         "model": (values.get("OPENAI_MODEL") or "").strip(),
@@ -55,7 +55,7 @@ def _model_profiles():
             with MODELS_FILE.open("rb") as file:
                 document = tomllib.load(file)
         except (OSError, ValueError) as error:
-            raise ConfigError("RevoCLI 的 models.toml 无法读取或 TOML 格式不正确") from error
+            raise ConfigError("RecapCLI 的 models.toml 无法读取或 TOML 格式不正确") from error
         if set(document) - {"default", "models"} or not isinstance(document.get("models", {}), dict):
             raise ConfigError("models.toml 只支持 default 和 [models.名称] 配置")
         profiles.update(document.get("models", {}))
@@ -116,9 +116,9 @@ def load_config(profile=None):
     spec = profiles[name]
     api_key = (values.get(spec.get("api_key_env", "OPENAI_API_KEY")) or "").strip()
     if name == "default" and (not api_key or not spec["model"].strip()):
-        raise ConfigError("请在 RevoCLI 的 .env 或环境变量中设置 OPENAI_API_KEY 和 OPENAI_MODEL")
+        raise ConfigError("请在 RecapCLI 的 .env 或环境变量中设置 OPENAI_API_KEY 和 OPENAI_MODEL")
     if not api_key:
-        raise ConfigError(f"模型配置 {name} 缺少 {spec.get('api_key_env', 'OPENAI_API_KEY')}；请在 RevoCLI .env 或环境变量中设置")
+        raise ConfigError(f"模型配置 {name} 缺少 {spec.get('api_key_env', 'OPENAI_API_KEY')}；请在 RecapCLI .env 或环境变量中设置")
     return Config(api_key=api_key, model=spec["model"].strip(), base_url=spec.get("base_url"), profile=name,
                   protocol=spec.get("protocol", "chat_completions"), tools=spec.get("tools", True),
                   context_bytes=spec.get("context_bytes", 256 * 1024), images=spec.get("images", False),
@@ -130,5 +130,5 @@ def load_search_api_key():
     values = load_values()
     key = (values.get("TAVILY_API_KEY") or "").strip()
     if not key or any(ord(char) < 33 or ord(char) > 126 for char in key):
-        raise ConfigError("请在 RevoCLI 的 .env 或环境变量中设置有效的 TAVILY_API_KEY")
+        raise ConfigError("请在 RecapCLI 的 .env 或环境变量中设置有效的 TAVILY_API_KEY")
     return key

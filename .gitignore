@@ -28,7 +28,8 @@ dist/
 !.env.example
 models.toml
 
-# Runtime data and logs
+# Runtime data and logs. New workspaces use .recapcli; older trees stay in place.
+.recapcli/
 .revocli/
 .archer/
 logs/

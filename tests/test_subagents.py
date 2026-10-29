@@ -11,14 +11,14 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from revocli.cli import main, run_turn
-from revocli.core.agent import AgentLimits, TraceError, run_agent
-from revocli.core.budget import AgentBudget, AgentCancelled
-from revocli.core.compaction import SUMMARY_FIELDS
-from revocli.core.context import json_size
-from revocli.storage.session import SessionStore
-from revocli.storage.tasks import TaskStore
-from revocli.ui.terminal_ui import TerminalUI
+from recapcli.cli import main, run_turn
+from recapcli.core.agent import AgentLimits, TraceError, run_agent
+from recapcli.core.budget import AgentBudget, AgentCancelled
+from recapcli.core.compaction import SUMMARY_FIELDS
+from recapcli.core.context import json_size
+from recapcli.storage.session import SessionStore
+from recapcli.storage.tasks import TaskStore
+from recapcli.ui.terminal_ui import TerminalUI
 
 
 def reply(content=None, calls=None):
@@ -123,7 +123,7 @@ class SubagentTests(unittest.TestCase):
         results = [data["result"] for kind, data in self.traces if kind == "tool_result"]
         self.assertEqual(len(results), 8)
         self.assertTrue(all(not item["ok"] for item in results))
-        self.assertFalse((self.workspace / ".revocli" / "commands").exists())
+        self.assertFalse((self.workspace / ".recapcli" / "commands").exists())
 
     def test_parent_without_read_cannot_grant_read_to_children(self):
         def respond(role, count, data):
@@ -169,7 +169,7 @@ class SubagentTests(unittest.TestCase):
         def execute(*args, **kwargs):
             overlap.wait(timeout=5)
             return {"ok": True, "content": "x" * 600}
-        with patch("revocli.core.agent.execute_tool", side_effect=execute):
+        with patch("recapcli.core.agent.execute_tool", side_effect=execute):
             result = self.run_multi(self.reading, limits=AgentLimits(max_tool_calls=4, max_tool_bytes=1000))
         outputs = [json.loads(message["content"]) for role, data in self.requests if role != "aggregate"
                    for message in data["messages"] if message["role"] == "tool"]
@@ -193,7 +193,7 @@ class SubagentTests(unittest.TestCase):
             overlap.wait(timeout=5)
             cancelled.set()
             return reply(calls=[tool()])
-        with patch("revocli.core.agent.execute_tool") as execute, self.assertRaises(AgentCancelled):
+        with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaises(AgentCancelled):
             self.run_multi(respond, cancel_event=cancelled)
         execute.assert_not_called()
         self.assertEqual(self.counts, {"analysis": 1, "review": 1})
@@ -219,7 +219,7 @@ class SubagentTests(unittest.TestCase):
         def trace(kind, data):
             if kind == "tool_start":
                 raise OSError("offline trace failure")
-        with patch("revocli.core.agent.execute_tool") as execute, self.assertRaisesRegex(TraceError, "trace failure"):
+        with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaisesRegex(TraceError, "trace failure"):
             run_agent(self.client(self.reading), "test-model", "读取", self.workspace, mode="multi",
                       cancel_event=cancelled, on_event=lambda text: None, on_trace=trace)
         self.assertTrue(cancelled.is_set())
@@ -235,7 +235,7 @@ class SubagentTests(unittest.TestCase):
             overlap.wait(timeout=5)
             clock[0] = 4.0
             return reply(calls=[tool()])
-        with patch("revocli.core.agent.execute_tool") as execute, self.assertRaisesRegex(RuntimeError, "时间预算"):
+        with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaisesRegex(RuntimeError, "时间预算"):
             self.run_multi(respond, limits=limits, _budget=budget)
         execute.assert_not_called()
         self.assertEqual(budget.requests, 2)
@@ -256,8 +256,8 @@ class SubagentTests(unittest.TestCase):
             self.assertTrue(started.wait(timeout=5))
             raise KeyboardInterrupt()
 
-        with patch("revocli.core.subagents.wait", side_effect=interrupt), \
-                patch("revocli.core.agent.execute_tool") as execute, self.assertRaises(KeyboardInterrupt):
+        with patch("recapcli.core.subagents.wait", side_effect=interrupt), \
+                patch("recapcli.core.agent.execute_tool") as execute, self.assertRaises(KeyboardInterrupt):
             self.run_multi(respond, cancel_event=cancelled)
         self.assertTrue(cancelled.is_set())
         execute.assert_not_called()
@@ -317,7 +317,7 @@ class SubagentTests(unittest.TestCase):
     def test_aggregate_cannot_execute_tools_even_if_provider_ignores_tool_choice(self):
         def respond(role, count, data):
             return reply(calls=[tool("edit_file", path="new.py", old_text="", new_text="bad")]) if role == "aggregate" else reply(role)
-        with patch("revocli.core.agent.execute_tool") as execute:
+        with patch("recapcli.core.agent.execute_tool") as execute:
             result = self.run_multi(respond, capabilities=("read", "write", "exec"))
         execute.assert_not_called()
         self.assertEqual(result.status, "incomplete")
@@ -356,8 +356,8 @@ class SubagentTests(unittest.TestCase):
     def test_cli_persists_one_parent_turn_role_traces_usage_and_unverified_status(self):
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict("os.environ", {}, clear=True), \
-                patch("revocli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "test-model"}), \
-                patch("revocli.cli.OpenAI", side_effect=lambda **options: self.client(self.reading)), \
+                patch("recapcli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "test-model"}), \
+                patch("recapcli.cli.OpenAI", side_effect=lambda **options: self.client(self.reading)), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = main(["分析", "--workspace", str(self.workspace), "--mode", "multi", "--banner", "off", "--color", "never"])
         self.assertEqual(code, 0, errors.getvalue())
@@ -397,7 +397,7 @@ class SubagentTests(unittest.TestCase):
     def test_invalid_request_budget_stops_before_model_and_cli_config(self):
         with self.assertRaisesRegex(ValueError, "至少需要 3"):
             self.run_multi(self.reading, max_steps=2)
-        with contextlib.redirect_stderr(io.StringIO()), patch("revocli.cli.load_config") as config, \
+        with contextlib.redirect_stderr(io.StringIO()), patch("recapcli.cli.load_config") as config, \
                 self.assertRaises(SystemExit):
             main(["读取", "--mode", "multi", "--max-steps", "2"])
         config.assert_not_called()

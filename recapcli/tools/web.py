@@ -66,12 +66,18 @@ def web_search(query, max_results=5, *, workspace):
     values = load_values()
     brave = (values.get("BRAVE_API_KEY") or "").strip()
     tavily = (values.get("TAVILY_API_KEY") or "").strip()
-    provider = (values.get("REVO_WEB_PROVIDER") or "").strip().lower() or ("brave" if brave else "tavily" if tavily else "brave")
+    current = (values.get("RECAP_WEB_PROVIDER") or "").strip()
+    legacy = (values.get("REVO_WEB_PROVIDER") or "").strip()
+    if current and legacy and current.casefold() != legacy.casefold():
+        raise ToolError("RECAP_WEB_PROVIDER 与旧变量 REVO_WEB_PROVIDER 不一致，请只保留 RECAP_WEB_PROVIDER")
+    chosen = current or legacy
+    label = "RECAP_WEB_PROVIDER" if current or not legacy else "REVO_WEB_PROVIDER"
+    provider = chosen.casefold() or ("brave" if brave else "tavily" if tavily else "brave")
     if provider not in {"brave", "tavily"}:
-        raise ToolError("REVO_WEB_PROVIDER 必须是 brave 或 tavily")
+        raise ToolError(f"{label} 必须是 brave 或 tavily")
     key = brave if provider == "brave" else tavily
     if not key:
-        raise ToolError(f"缺少 {provider.upper()}_API_KEY；请在 RevoCLI 的 .env 或环境变量中设置")
+        raise ToolError(f"缺少 {provider.upper()}_API_KEY；请在 RecapCLI 的 .env 或环境变量中设置")
     if provider == "brave":
         url = "https://api.search.brave.com/res/v1/web/search?" + urlencode({"q": query, "count": max_results})
         request = Request(url, headers={"Accept": "application/json", "X-Subscription-Token": key})
@@ -106,7 +112,7 @@ def fetch_url(url, max_bytes=MAX_BYTES, *, workspace):
         raise ToolError("url 必须是有效的 HTTP(S) 地址，且不能包含凭据") from error
     if not 1 <= max_bytes <= MAX_BYTES:
         raise ToolError(f"max_bytes 必须在 1 到 {MAX_BYTES} 之间")
-    request = Request(url, headers={"User-Agent": "RevoCLI/1.0", "Accept": "text/html, text/plain"})
+    request = Request(url, headers={"User-Agent": "RecapCLI/1.0", "Accept": "text/html, text/plain"})
     raw, truncated, final_url, headers = _request(request, max_bytes)
     content_type = headers.get_content_type()
     if content_type not in {"text/html", "text/plain", "application/xhtml+xml"}:

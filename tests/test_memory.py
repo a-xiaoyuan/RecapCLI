@@ -4,10 +4,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from revocli.cli import handle_command
-from revocli.storage.session import SessionStore
-from revocli.storage.tasks import TaskStore
-from revocli.ui.terminal_ui import TerminalUI
+from recapcli.cli import handle_command
+from recapcli.storage.session import SessionStore
+from recapcli.storage.tasks import TaskStore
+from recapcli.ui.terminal_ui import TerminalUI
 
 
 class MemoryTests(unittest.TestCase):

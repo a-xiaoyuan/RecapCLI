@@ -1,4 +1,4 @@
-# Copy to models.toml in the RevoCLI directory. The legacy .env config is "default".
+# Copy to models.toml in the RecapCLI directory. The legacy .env config is "default".
 default = "default"
 
 [models.backup]

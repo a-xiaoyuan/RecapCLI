@@ -25,7 +25,7 @@ wheels = [
 ]
 
 [[package]]
-name = "revocli"
+name = "recapcli"
 version = "0.6.0"
 source = { virtual = "." }
 dependencies = [

@@ -1,6 +1,6 @@
 import unittest
 
-from revocli.core.context import json_size, select_history
+from recapcli.core.context import json_size, select_history
 
 
 class ContextTests(unittest.TestCase):

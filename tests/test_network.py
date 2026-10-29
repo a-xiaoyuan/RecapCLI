@@ -14,12 +14,12 @@ from unittest.mock import MagicMock, patch
 import httpx2
 from openai import OpenAI
 
-from revocli.cli import main
-from revocli.config import load_search_api_key
-from revocli.storage.tasks import TaskStore
-from revocli.tools import execute_tool, tool_definitions
-from revocli.tools import network
-from revocli.tools.registry import TOOL_REGISTRY
+from recapcli.cli import main
+from recapcli.config import load_search_api_key
+from recapcli.storage.tasks import TaskStore
+from recapcli.tools import execute_tool, tool_definitions
+from recapcli.tools import network
+from recapcli.tools.registry import TOOL_REGISTRY
 
 
 PUBLIC = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
@@ -260,11 +260,11 @@ class NetworkTests(unittest.TestCase):
 
     def test_search_key_is_lazy_project_scoped_and_environment_wins(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "env-key"}, clear=True), \
-                patch("revocli.config.dotenv_values", return_value={"TAVILY_API_KEY": "file-key"}) as dotenv:
+                patch("recapcli.config.dotenv_values", return_value={"TAVILY_API_KEY": "file-key"}) as dotenv:
             self.assertEqual(load_search_api_key(), "env-key")
-        from revocli.config import ENV_FILE
+        from recapcli.config import ENV_FILE
         dotenv.assert_called_once_with(ENV_FILE)
-        with patch.dict(os.environ, {}, clear=True), patch("revocli.config.dotenv_values", return_value={}), \
+        with patch.dict(os.environ, {}, clear=True), patch("recapcli.config.dotenv_values", return_value={}), \
                 patch.object(network, "_request") as request:
             result = self.call("web_search", query="python")
         self.assertIn("TAVILY_API_KEY", result["error"])
@@ -354,15 +354,15 @@ class NetworkFlowTests(unittest.TestCase):
         search_data = json.dumps({"results": [{"title": "Python", "url": "https://python.org/doc", "content": "docs"}]}).encode()
         with tempfile.TemporaryDirectory() as directory, \
                 patch.dict(os.environ, {}, clear=True), \
-                patch("revocli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "offline", "TAVILY_API_KEY": "secret-test-marker"}), \
-                patch("revocli.cli.OpenAI", side_effect=factory), \
+                patch("recapcli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "offline", "TAVILY_API_KEY": "secret-test-marker"}), \
+                patch("recapcli.cli.OpenAI", side_effect=factory), \
                 patch.object(network, "_request", side_effect=[(network.SEARCH_URL, media, search_data, False),
                                                                ("https://python.org/doc", media, b"<p>Python docs</p>", False)]), \
                 contextlib.redirect_stdout(io.StringIO()):
             code = main(["查 Python 文档", "--workspace", directory, "--allow-network", "--banner", "off", "--color", "never"])
             tasks = TaskStore(directory)
             task = tasks.get(tasks.list_tasks()[0]["id"])
-            sessions = [file.read_text(encoding="utf-8") for file in (Path(directory) / ".revocli" / "sessions").glob("*.json")]
+            sessions = [file.read_text(encoding="utf-8") for file in (Path(directory) / ".recapcli" / "sessions").glob("*.json")]
         self.assertEqual(code, 0)
         names = {tool["function"]["name"] for tool in requests[0]["tools"]}
         self.assertTrue({"web_search", "read_url"} <= names)

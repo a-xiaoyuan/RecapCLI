@@ -5,7 +5,7 @@ import unittest
 import httpx2
 from openai import OpenAI
 
-from revocli.llm import assistant_record, complete, portable_messages, validate_provider_state
+from recapcli.llm import assistant_record, complete, portable_messages, validate_provider_state
 
 
 TOOLS = [{"type": "function", "function": {

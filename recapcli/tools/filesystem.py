@@ -13,7 +13,7 @@ MAX_SEARCH_RESULTS = 50
 MAX_TREE_ENTRIES = 300
 MAX_LINE_LENGTH = 300
 SKIP_DIRS = {
-    ".git", ".venv", "venv", "__pycache__", ".revocli", ".archer", ".idea", ".vscode",
+    ".git", ".venv", "venv", "__pycache__", ".recapcli", ".revocli", ".archer", ".idea", ".vscode",
     "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
 
@@ -71,7 +71,7 @@ def _checked_target(workspace, target):
     if not target.is_relative_to(Path(workspace).resolve()):
         raise ToolError("禁止访问工作区之外的路径")
     if target == ENV_FILE.resolve():
-        raise ToolError("禁止访问 RevoCLI 的本地凭据配置")
+        raise ToolError("禁止访问 RecapCLI 的本地凭据配置")
     return target
 
 

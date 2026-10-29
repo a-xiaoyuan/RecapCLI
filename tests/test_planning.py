@@ -10,10 +10,10 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from revocli.cli import main
-from revocli.core.agent import AgentLimits, run_agent
-from revocli.storage.session import SessionStore
-from revocli.ui.terminal_ui import TerminalUI
+from recapcli.cli import main
+from recapcli.core.agent import AgentLimits, run_agent
+from recapcli.storage.session import SessionStore
+from recapcli.ui.terminal_ui import TerminalUI
 
 
 def reply(content=None, calls=None):
@@ -139,7 +139,7 @@ class PlanningTests(unittest.TestCase):
         for content in invalid:
             with self.subTest(content=content):
                 self.requests = []
-                with patch("revocli.core.agent.execute_tool") as execute, self.assertRaises(ValueError):
+                with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaises(ValueError):
                     self.run_plan([reply(content)])
                 self.assertEqual(execute.call_count, 0)
 
@@ -159,7 +159,7 @@ class PlanningTests(unittest.TestCase):
         for review in invalid:
             with self.subTest(review=review):
                 self.requests = []
-                with patch("revocli.core.agent.execute_tool") as execute, self.assertRaises(ValueError):
+                with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaises(ValueError):
                     self.run_plan([document(steps=["分析问题", "修改文件"]), reply("说明"), document(**review)])
                 self.assertEqual(execute.call_count, 0)
                 self.assertEqual(len(self.requests), 3)
@@ -174,7 +174,7 @@ class PlanningTests(unittest.TestCase):
         for replies in cases:
             with self.subTest(requests=len(replies)):
                 self.requests = []
-                with patch("revocli.core.agent.execute_tool") as execute, self.assertRaisesRegex(RuntimeError, "禁止调用工具"):
+                with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaisesRegex(RuntimeError, "禁止调用工具"):
                     self.run_plan(replies, capabilities={"read", "write"})
                 self.assertEqual(execute.call_count, 0)
                 self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(1)\n")
@@ -212,7 +212,7 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 6)
 
     def test_output_budget_is_shared_with_planning(self):
-        with patch("revocli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 2000}) as execute:
+        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 2000}) as execute:
             result = self.run_plan([document(steps=["读取文件"]), call(), reply("输出受限")],
                                    limits=AgentLimits(max_tool_calls=2, max_tool_bytes=300))
         self.assertEqual(execute.call_count, 1)
@@ -221,7 +221,7 @@ class PlanningTests(unittest.TestCase):
         self.assertFalse(json.loads(tool_result["content"])["ok"])
 
     def test_output_bytes_accumulate_across_completed_steps(self):
-        with patch("revocli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 450}) as execute:
+        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 450}) as execute:
             result = self.run_plan([
                 document(steps=["读取第一部分", "读取第二部分"]), call(), reply("读完第一部分"), completed(),
                 call(call_id="second"), reply("输出预算耗尽"),
@@ -233,7 +233,7 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 6)
 
     def test_time_budget_does_not_restart_after_planning(self):
-        with patch("revocli.core.agent.time.monotonic", return_value=0) as clock:
+        with patch("recapcli.core.agent.time.monotonic", return_value=0) as clock:
             def expire(number):
                 if number == 3:
                     clock.return_value = 121
@@ -253,9 +253,9 @@ class PlanningTests(unittest.TestCase):
     def run_cli(self, argv, replies):
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict("os.environ", {}, clear=True), \
-                patch("revocli.config.dotenv_values", return_value={
+                patch("recapcli.config.dotenv_values", return_value={
                     "OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model"}), \
-                patch("revocli.cli.OpenAI", side_effect=lambda **options: self.client(replies)), \
+                patch("recapcli.cli.OpenAI", side_effect=lambda **options: self.client(replies)), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = main([*argv, "--workspace", str(self.workspace), "--banner", "off", "--color", "never"])
         return code, output.getvalue(), errors.getvalue()

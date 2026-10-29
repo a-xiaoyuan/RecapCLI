@@ -3,8 +3,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from revocli.tools import execute_tool, tool_definitions
-from revocli.tools import registry
+from recapcli.tools import execute_tool, tool_definitions
+from recapcli.tools import registry
 
 
 class WebRoutingTests(unittest.TestCase):
