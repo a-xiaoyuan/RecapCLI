@@ -404,6 +404,7 @@ def build_parser():
     parser.add_argument("--no-memory", dest="memory", action="store_false", help="本次不注入长期记忆")
     parser.add_argument("--no-auto-compact", dest="auto_compact", action="store_false", help="关闭自动历史压缩，仍可使用 /compact")
     parser.add_argument("--compact", action="store_true", help="压缩所恢复会话的旧轮次后退出；需要 --continue 或 --session")
+    parser.add_argument("--allow-web", action="store_true", help="开放网页搜索和读取（只读联网）")
     parser.add_argument("--allow-write", action="store_true", help="开放文件编辑与按备份恢复")
     parser.add_argument("--allow-exec", action="store_true", help="开放前台命令执行（以当前用户权限运行）")
     parser.add_argument("--yes", action="store_true",
@@ -425,6 +426,8 @@ def main(argv=None) -> int:
             or not math.isfinite(args.approval_timeout) or not 0 < args.approval_timeout <= 3600):
         parser.error("--approval-timeout 必须是大于 0 且不超过 3600 的秒数")
     capabilities = {"read"}
+    if args.allow_web:
+        capabilities.add("web")
     if args.allow_write:
         capabilities.add("write")
     if args.allow_exec:

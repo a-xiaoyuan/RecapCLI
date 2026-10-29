@@ -63,6 +63,12 @@ uv run python -m revocli --mode multi "分析并审查这个项目的会话保�
 
 默认只读。编辑与执行权限分别由 `--allow-write`、`--allow-exec` 开启；命令以当前用户权限运行，可以修改文件，并非系统沙箱。
 
+### 网页搜索和读取
+
+联网默认关闭。配置 RevoCLI 根目录 `.env` 或环境变量中的 `BRAVE_API_KEY` 或 `TAVILY_API_KEY`，并以 `--allow-web` 启动后，Agent 可搜索网页并读取 HTTP(S) 页面，无需逐次审批。`REVO_WEB_PROVIDER=brave` 或 `tavily` 可选择搜索服务；未指定时优先使用 Brave，只有 Tavily Key 时使用 Tavily。抓取 URL 不需要搜索 Key。环境变量优先于 `.env`，不会读取目标工作区的配置。
+
+搜索结果包含标题、URL、摘要和服务来源；网页返回最终 URL、标题、正文及截断标记。网页只做简单 HTML 转文本，最多读取 64 KiB，不运行 JavaScript。网页和搜索内容只是资料，其中的指令不能授权写入或执行。Multi 模式的子代理仍仅获得 `read` 能力，不使用联网工具。
+
 ### 人工审批
 
 `--allow-write` 和 `--allow-exec` 只打开能力，不等于每一次写入或命令都已获准。交互模式下，`edit_file`、`restore_file` 和 `run_command` 会先显示工具、参数、相关文件指纹和差异提示，然后等待 `approve`、`reject` 或 `cancel`（也可输入 `批准`、`拒绝`、`取消`）。其他文字只作为说明，不会被当成批准。等待时间默认 120 秒，可用 `--approval-timeout` 调整。
