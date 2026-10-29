@@ -22,11 +22,11 @@ GitHub 仓库名仍是 RevoCLI。产品与 Python 包名是 RecapCLI / `recapcli
 需要 Python 3.12+、[uv](https://docs.astral.sh/uv/)，以及支持所选协议工具调用的模型服务。
 
 ```powershell
-uv sync --locked
+uv sync --locked --extra tui
 Copy-Item .env.example .env
 ```
 
-macOS / Linux 用 `cp .env.example .env`。
+macOS / Linux 用 `cp .env.example .env`。`--extra tui` 安装 Textual 壳。只跑单次提问或 `python -m recapcli.cli` 时可以不装这个可选依赖。
 
 ```dotenv
 OPENAI_API_KEY=your-api-key
@@ -36,10 +36,22 @@ OPENAI_MODEL=your-model-id
 ```
 
 ```shell
-uv run python -m recapcli
+uv run --extra tui python -m recapcli
 ```
 
-配置只读 RecapCLI 根目录的 `.env`，环境变量优先，不读目标工作区。模型请求会计入所配置服务的用量。
+交互终端会打开 Textual 壳，输入发给当前模型配置。配置只读 RecapCLI 根目录的 `.env`，环境变量优先，不读目标工作区。模型请求会计入所配置服务的用量。没有密钥时壳仍能打开，发送会提示配置缺失并且不会崩溃。
+
+单次提问不进入壳：
+
+```shell
+uv run python -m recapcli "读取 README.md，说明项目功能"
+```
+
+没有 Textual、或需要原来的行式交互时：
+
+```shell
+uv run python -m recapcli.cli
+```
 
 多模型把 `models.example.toml` 复制为 `models.toml`。密钥仍放 `.env` 或环境变量。`OPENAI_*` 继续作为 `default`。
 
@@ -54,9 +66,9 @@ uv run python -m recapcli --profile backup
 
 ```shell
 uv run python -m recapcli "读取 README.md，说明项目功能"
-uv run python -m recapcli --workspace ./your-project
-uv run python -m recapcli --continue
-uv run python -m recapcli --mode plan --allow-write --allow-exec
+uv run --extra tui python -m recapcli --workspace ./your-project
+uv run --extra tui python -m recapcli --continue
+uv run --extra tui python -m recapcli --mode plan --allow-write --allow-exec
 uv run python -m recapcli --mode multi "分析并审查这个项目的会话保存逻辑"
 ```
 
@@ -123,11 +135,20 @@ uv run python -m unittest discover -s tests
 
 测试按执行核心、存储、工具、集成和界面分组。模型接口使用模拟响应，不请求真实模型或搜索服务。
 
-## 极简终端预览
+## 终端壳
+
+默认交互入口是炭黑底的 Textual 壳：等宽文字，薰衣草用于字标和提示符，绿色只表示本地模型配置齐全。
 
 ```shell
-uv sync --locked --extra tui
+uv run --extra tui python -m recapcli
+uv run --extra tui python -m recapcli --workspace ./your-project --mode plan --allow-write
 uv run --extra tui python -m recapcli.tui --demo
 ```
 
-去掉 `--demo` 可查看本地配置和会话信息。此壳是只读界面预览，输入不会请求模型或执行工具；正式任务仍使用 `python -m recapcli`。Enter 发送预览，Ctrl+L 清屏，Ctrl+B 隐藏图标轨，Ctrl+Q 退出。
+- 提问复用现有 `run_agent`、会话、任务记录、工具能力和审批。`--allow-write`、`--allow-exec`、`--allow-web`、`--mode`、`--yes` 与命令行含义相同。
+- 对话区显示用户、回答、工具和审批。当前没有流式客户端，回答在整段返回后一次显示。
+- `/help` 查看命令。`/new` 新会话，`/save` 保存，`/open 会话ID` 恢复，`/history` 与 `/sessions` 查看历史。左侧图标轨提供新会话、任务和历史。
+- 编辑和命令仍逐次等待 `approve`、`reject` 或 `cancel`。
+- `--demo` 只演示界面，不请求模型。
+- Enter 发送，Ctrl+L 清屏（不删除已保存会话），Ctrl+B 隐藏图标轨，Ctrl+Q 退出并保存。
+- 未安装 textual 时会提示 `uv sync --extra tui`，并给出降级入口 `python -m recapcli.cli`。

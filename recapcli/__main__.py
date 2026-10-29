@@ -1,8 +1,8 @@
-"""通过 python -m recapcli 启动命令行。"""
+"""通过 python -m recapcli 启动。交互终端进入 Textual 壳。"""
 
 import sys
 
-from .cli import main
+from .tui.launch import dispatch
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(dispatch())
