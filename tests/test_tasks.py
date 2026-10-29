@@ -16,6 +16,7 @@ import httpx2
 from openai import APIError, OpenAI
 
 from revocli.cli import handle_command, main, run_turn, show_tasks
+from revocli.tools.approval import approve_all
 from revocli.core.agent import AgentLimits
 from revocli.storage.session import SessionStore
 from revocli.storage.tasks import TaskStore, _process_identity, project_version
@@ -202,7 +203,7 @@ class TaskRuntimeTests(unittest.TestCase):
         usage = {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14}
         command = {"argv": [sys.executable, "-c", "print('checked')"]}
         self.run_replies([reply(name="run_command", arguments=command, usage=usage),
-                          reply("命令运行完毕", usage=usage)], capabilities=("read", "exec"))
+                          reply("命令运行完毕", usage=usage)], capabilities=("read", "exec"), approver=approve_all)
         task = self.task()
         self.assertEqual(task["status"], "returned")
         self.assertEqual(task["verification_status"], "unverified")
@@ -221,7 +222,7 @@ class TaskRuntimeTests(unittest.TestCase):
 
     def test_edit_survives_model_failure_and_failed_turn_does_not_enter_session(self):
         with self.assertRaises(APIError):
-            self.run_replies([self.edit(), httpx2.ConnectError("offline failure")], capabilities=("read", "write"))
+            self.run_replies([self.edit(), httpx2.ConnectError("offline failure")], capabilities=("read", "write"), approver=approve_all)
         task = self.task()
         self.assertEqual(task["status"], "failed")
         self.assertEqual(self.source.read_text(), "print(2)\n")
@@ -234,7 +235,7 @@ class TaskRuntimeTests(unittest.TestCase):
 
     def test_human_verification_requires_task_owned_command_and_matching_exit_result(self):
         self.run_replies([reply(name="run_command", arguments={"argv": [sys.executable, "-c", "print('checked')"]}),
-                          reply("返回")], capabilities=("read", "exec"))
+                          reply("返回")], capabilities=("read", "exec"), approver=approve_all)
         task = self.task()
         tasks = TaskStore(self.workspace, create=False)
         command_id = next(event["data"]["result"]["record_id"] for event in task["events"] if event["kind"] == "tool_result")
@@ -252,7 +253,7 @@ class TaskRuntimeTests(unittest.TestCase):
 
     def test_nonzero_command_can_be_verified_as_failed_but_never_passed(self):
         self.run_replies([reply(name="run_command", arguments={"argv": [sys.executable, "-c", "raise SystemExit(2)"]}),
-                          reply("命令失败")], capabilities=("read", "exec"))
+                          reply("命令失败")], capabilities=("read", "exec"), approver=approve_all)
         task = self.task()
         tasks = TaskStore(self.workspace, create=False)
         command_id = next(event["data"]["result"]["record_id"] for event in task["events"] if event["kind"] == "tool_result")
@@ -263,7 +264,7 @@ class TaskRuntimeTests(unittest.TestCase):
 
     def test_cancel_after_edit_preserves_task_backup_and_full_completed_action(self):
         with self.assertRaises(KeyboardInterrupt):
-            self.run_replies([self.edit(), KeyboardInterrupt()], capabilities=("read", "write"))
+            self.run_replies([self.edit(), KeyboardInterrupt()], capabilities=("read", "write"), approver=approve_all)
         self.assertEqual(self.task()["status"], "cancelled")
         self.assertEqual(self.source.read_text(), "print(2)\n")
         self.assertEqual(self.session["messages"], [])
@@ -279,7 +280,7 @@ class TaskRuntimeTests(unittest.TestCase):
             return real_append(store, task_id, kind, data)
 
         with patch.object(TaskStore, "append", new=fail_artifact), self.assertRaises(RuntimeError):
-            self.run_replies([self.edit()], capabilities=("read", "write"))
+            self.run_replies([self.edit()], capabilities=("read", "write"), approver=approve_all)
         self.assertEqual(self.source.read_text(), "print(1)\n")
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.task()["status"], "failed")
@@ -323,7 +324,7 @@ class TaskRuntimeTests(unittest.TestCase):
 
     def test_task_storage_unavailable_prevents_model_and_tool_execution(self):
         with patch.object(TaskStore, "start", side_effect=OSError("offline read only")), self.assertRaises(OSError):
-            self.run_replies([self.edit()], capabilities=("read", "write"))
+            self.run_replies([self.edit()], capabilities=("read", "write"), approver=approve_all)
         self.assertEqual(self.requests, [])
         self.assertEqual(self.source.read_text(), "print(1)\n")
 
@@ -365,6 +366,7 @@ import json, os, sys
 from pathlib import Path
 from revocli.storage.tasks import TaskStore
 from revocli.tools import execute_tool
+from revocli.tools.approval import approve_all
 workspace = Path(sys.argv[1])
 tasks = TaskStore(workspace)
 task_id = tasks.start("crashed-session", "修改文件", "test-model", "react", {})
@@ -372,7 +374,7 @@ tasks.append(task_id, "tool_start", {"action_id": "one", "call_id": "call", "nam
 def record(kind, record_id):
     tasks.append(task_id, "artifact", {"action_id": "one", "call_id": "call", "record_type": kind, "record_id": record_id})
 result = execute_tool("edit_file", {"path": "app.py", "old_text": "print(1)", "new_text": "print(2)"},
-                      workspace, capabilities=("read", "write"), on_record=record)
+                      workspace, capabilities=("read", "write"), approver=approve_all, on_record=record)
 assert result["ok"], result
 os._exit(0)
 '''

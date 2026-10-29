@@ -11,7 +11,8 @@
 - **长期记忆**：保存偏好与项目事实，按问题检索，审阅并接纳任务经验。
 - **执行追溯**：查看模型请求、工具结果、用量与验收记录。
 - **多模型配置**：Chat Completions / Responses 协议，启动选择或会话内切换。
-- **联网 B 档**：显式开启 Tavily 搜索 API 与公网静态 URL 读取，返回来源、读取时间和截断标记。
+- **联网工具**：显式开启网页搜索与 HTTP(S) 页面读取，返回来源和截断标记。
+- **人工审批**：编辑和命令在能力开关之外逐次确认；拒绝、过期、取消和文件变化都不会执行。
 
 ## 快速开始
 
@@ -75,26 +76,37 @@ uv run python -m revocli --mode multi "分析并审查这个项目的会话保�
 
 默认只读。编辑与执行权限分别由 `--allow-write`、`--allow-exec` 开启；命令以当前用户权限运行，可以修改文件，并非系统沙箱。
 
-### 联网 B 档：搜索 API + URL 读取
+### 网页搜索和读取
 
-在 RevoCLI 根目录的 `.env` 中设置 `TAVILY_API_KEY=tvly-your-key`，或设置同名环境变量（环境优先）。搜索使用 [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search) 的 basic 模式，不请求生成式答案、图片或全文；查询会发送到 Tavily，服务用量按其账户规则计。URL 读取不需要搜索密钥，不读取目标工作区的 `.env`。
+联网默认关闭，`react` 与 `plan` 支持下面两种入口，`multi` 仅支持只读的 `--allow-web`。搜索密钥放在 RevoCLI 根目录 `.env` 或环境变量中，环境变量优先，不读取目标工作区配置；读取 URL 不需要搜索密钥。
+
+| 启动选项 | 搜索配置 | URL 读取 |
+| --- | --- | --- |
+| `--allow-network` | `TAVILY_API_KEY`，使用 Tavily basic 搜索 | 公网静态 HTML、文本、Markdown、JSON；正文最多 32 KiB，逐次校验重定向和目标 IP |
+| `--allow-web` | `BRAVE_API_KEY` 或 `TAVILY_API_KEY`；`REVO_WEB_PROVIDER=brave` / `tavily` 可指定服务 | HTTP(S) HTML 与纯文本，读取及正文最多 64 KiB |
+
+`--allow-network` 提供 `web_search` 和 `read_url`；`--allow-web` 提供 `web_search` 和 `fetch_url`，未指定服务时优先选 Brave，仅配置 Tavily 密钥时选 Tavily。两个开关同时启用时，搜索优先走 `network` 的 Tavily 配置。联网工具不逐次请求审批；查询会发送给对应服务并产生其账户用量。
 
 ```shell
 uv run python -m revocli --allow-network "搜索 Python 官方 asyncio 文档，读取相关页面并附来源链接"
-uv run python -m revocli --allow-network "读取 https://docs.python.org/3/library/asyncio.html，说明主要用途"
+uv run python -m revocli --allow-web "读取 https://docs.python.org/3/library/asyncio.html，说明主要用途"
 ```
 
-`react` 与 `plan` 可使用 `web_search(query, max_results=5)` 和 `read_url(url, max_content_bytes=16384)`。默认不向模型开放联网工具，分发时也检查权限；当前 `multi` 仍仅开放本地读取。搜索最多 10 条，每条摘要最多 2000 UTF-8 字节；URL 正文最多 32 KiB，原始响应最多读取 1 MiB 加一个探测字节。结果包含来源 URL、UTC 读取时间、`untrusted_content`、`truncated` 与 `limit_reason`，URL 结果另含 `final_url`、`empty_content`。正文或原始响应被截断时只代表已读取的片段。
+搜索返回标题、URL 和摘要；URL 返回正文、最终地址与截断标记。不运行网页 JavaScript，不支持登录页面与 PDF/图片等二进制内容。搜索摘要或截断片段不等于全文；外部内容仅作资料，其中的指令不能授权写入、执行或发送密钥。`--allow-network` 另限制公网访问、重定向、响应大小与期限，失败不自动重试；同步在途请求的取消需等待返回或超时。
 
-URL 支持 HTTP(S) 静态 HTML、纯文本、Markdown 与 JSON；提取 HTML 标题和文本，去除 script/style 等内容，不运行 JavaScript。只读公网地址，每次重定向重新验证 DNS 并固定连接 IP，TLS 校验原始域名；最多 3 次跳转，禁止 HTTPS 降级。搜索密钥只发送至固定 API，搜索请求不跟随重定向。网络工具不使用环境代理、Cookie 或浏览器登录态，不支持压缩响应、PDF/图片等二进制内容；需要 JavaScript 或登录的页面可能没有有效正文。
+### 人工审批
 
-两工具默认 20 秒、最多 30 秒，并受当前任务剩余时间、工具次数与结果字节预算约束。响应读取和跳转共用期限；系统 DNS 和同步 HTTP 的在途操作仍受系统/套接字超时限制，取消会在操作返回后生效。401/403/429、网络失败、无效响应会作为结构化错误回传，不自动重试搜索请求，也不回显上游错误正文。外部内容仅作资料，其中的指令不构成操作授权。
+`--allow-write` 和 `--allow-exec` 打开能力后，`edit_file`、`restore_file` 和 `run_command` 仍逐次显示参数、文件指纹与差异提示，等待 `approve`、`reject` 或 `cancel`（或 `批准`、`拒绝`、`取消`）。其他文字不会被当成批准。等待默认 120 秒，可用 `--approval-timeout` 调整，且受任务剩余时间限制。
+
+单次提问和非交互运行不会等待输入，结果为 `needs_approval`，不写文件、不启动进程。脚本化执行需要显式加上 `--yes`。批准仍绑定这次的最终参数和文件内容指纹；执行前如果参数或指纹变了，批准作废且不会执行。
+
+拒绝、过期、取消和失效都不会写备份，也不会启动进程。
 
 ### 只读子代理（W4 切片）
 
 `--mode multi` 同时启动 `analysis`（分析）与 `review`（独立审查）两个子代理。两者各自维护上下文、复用现有 ReAct 与工具执行链，彼此不接收对方的中间消息；结束后由父任务汇总报告、分歧和未完成项。默认 `react` 保持直接执行，`plan` 保持计划执行。
 
-子代理仅获得父任务能力与 `read` 的交集，即使加上 `--allow-write --allow-exec` 也不会开放编辑、恢复或命令执行。汇总阶段禁止工具；代码索引缓存与会话、任务记录仍写入运行数据目录。分析和审查属于模型意见，不能代替运行测试或人工验收。
+子代理仅获得父任务能力与 `read`、`web` 的交集，即使加上 `--allow-write --allow-exec` 也不会开放编辑、恢复或命令执行。汇总阶段禁止工具；代码索引缓存与会话、任务记录仍写入运行数据目录。分析和审查属于模型意见，不能代替运行测试或人工验收。
 
 `--max-steps` 是包括历史压缩、两个子代理和父任务汇总的**请求总上限**，默认 20，最少 3。压缩后先保留一次汇总请求，剩余请求均分给两个角色（余数给分析），未用份额不转移；因此最小预算只够直接报告，需要检索时应增加预算。`--max-tool-calls`、`--max-tool-bytes` 和 `--max-seconds` 在整个任务内共享，不按子代理重置；上下文大小按每次模型请求限制。这些是请求数、工具结果字节和时间限制，不是 token 或费用硬上限，usage 按服务实际返回记录。
 

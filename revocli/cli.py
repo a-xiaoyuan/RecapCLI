@@ -3,7 +3,9 @@
 import argparse
 from dataclasses import asdict, replace
 import json
+import math
 from pathlib import Path
+import sys
 import time
 
 from openai import APIError, OpenAI
@@ -14,6 +16,7 @@ from .core.agent import AgentLimits, run_agent
 from .core.memory import active
 from .storage.session import SessionStore
 from .storage.tasks import TaskStore, project_version
+from .tools.approval import InteractiveApprover, approve_all, fail_closed
 from .ui.terminal_art import print_banner
 from .ui.terminal_ui import TerminalUI
 
@@ -42,7 +45,8 @@ HELP_TEXT = """命令：
   /memory-propose 任务ID [文本]  从已结束任务提炼候选
   /memory-accept ID  接纳经验候选
   /memory-reject ID  拒绝候选
-  /forget ID|all  删除一条或全部长期记忆"""
+  /forget ID|all  删除一条或全部长期记忆
+审批询问时只认 approve、reject、cancel（或 批准、拒绝、取消）；其他文字不会批准"""
 
 
 def save_session(store, session, ui, *, allow_empty=False):
@@ -93,7 +97,7 @@ def show_memory(ui, store, *, query=None, candidates=False):
 
 def run_turn(client, model, workspace, store, ui, session, prompt, *,
              max_steps=None, memory_enabled=True, limits=None, capabilities=("read",), mode="react",
-             auto_compact=True, compact_only=False, cancel_event=None):
+             auto_compact=True, compact_only=False, cancel_event=None, approver=None):
     """先落任务，再执行；失败轨迹独立于成功会话，核心不依赖存储。"""
     limits = limits or AgentLimits()
     model_config = client.metadata() if isinstance(client, ModelClient) else None
@@ -137,7 +141,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
                            memory_text=memory_text, max_steps=max_steps, limits=limits, on_event=ui.event,
                            capabilities=capabilities, mode=mode, on_trace=trace,
                            summary=session.get("summary"), auto_compact=auto_compact, compact_only=compact_only,
-                           cancel_event=cancel_event)
+                           cancel_event=cancel_event, approver=approver)
     except BaseException as error:
         status = "cancelled" if isinstance(error, KeyboardInterrupt) else "failed"
         reason = f"模型请求失败（{type(error).__name__}）" if isinstance(error, APIError) else f"{type(error).__name__}: {error}"
@@ -191,6 +195,10 @@ def show_tasks(ui, tasks, task_id=None, *, as_json=False):
         elif kind == "tool_start":
             starts[entry["action_id"]] = entry
             ui.info(f"动作 {entry['call_id']} · {entry['name']} · 参数：{entry['arguments']}")
+        elif kind == "approval":
+            ui.info(f"审批 {entry.get('tool')} · {entry.get('outcome')} · {entry.get('reason')}")
+            if entry.get("fingerprints"):
+                ui.info("  指纹：" + json.dumps(entry["fingerprints"], ensure_ascii=False))
         elif kind == "tool_result":
             finished.add(entry["action_id"])
             result = entry["result"]
@@ -343,8 +351,17 @@ def show_models(ui, current=None):
         ui.info(f"  能力声明：工具={spec['tools']}、图片={spec['images']}、流式={spec['streaming']}；上下文 JSON 字节上限={spec['context_bytes']}")
 
 
+def make_approver(ui, *, yes, interactive, timeout):
+    """--yes 跳过提问；非交互没有审批人时不执行写入和命令。"""
+    if yes:
+        return approve_all
+    if not interactive:
+        return fail_closed
+    return InteractiveApprover(ui, timeout=timeout)
+
+
 def interactive_loop(client, model, workspace, store, ui, session, max_steps, memory_enabled, limits=None,
-                     capabilities=("read",), mode="react", auto_compact=True):
+                     capabilities=("read",), mode="react", auto_compact=True, approver=None):
     ui.info("多轮对话模式：直接输入问题；/help 查看命令，/exit 退出。")
     while True:
         try:
@@ -393,7 +410,7 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
             answer = run_turn(client, model, workspace, store, ui, session,
                               prompt, max_steps=max_steps, memory_enabled=memory_enabled, limits=limits,
                               capabilities=capabilities, mode=mode,
-                              auto_compact=auto_compact, compact_only=compact_only)
+                              auto_compact=auto_compact, compact_only=compact_only, approver=approver)
         except KeyboardInterrupt:
             ui.error("已取消本轮。")
             continue
@@ -431,9 +448,16 @@ def build_parser():
     parser.add_argument("--no-memory", dest="memory", action="store_false", help="本次不注入长期记忆")
     parser.add_argument("--no-auto-compact", dest="auto_compact", action="store_false", help="关闭自动历史压缩，仍可使用 /compact")
     parser.add_argument("--compact", action="store_true", help="压缩所恢复会话的旧轮次后退出；需要 --continue 或 --session")
+    parser.add_argument("--allow-web", action="store_true", help="开放网页搜索和读取（只读联网）")
     parser.add_argument("--allow-write", action="store_true", help="开放文件编辑与按备份恢复")
     parser.add_argument("--allow-exec", action="store_true", help="开放前台命令执行（以当前用户权限运行）")
     parser.add_argument("--allow-network", action="store_true", help="开放搜索 API 与公网 URL 读取（搜索需 TAVILY_API_KEY）")
+
+
+    parser.add_argument("--yes", action="store_true",
+                        help="跳过逐次提问并批准本进程内的写入和命令；执行前仍复核参数与文件指纹，变化则作废")
+    parser.add_argument("--approval-timeout", type=float, default=120,
+                        help="交互审批等待秒数，默认 120，最大 3600")
     parser.add_argument("--preview", action="store_true", help="预览小幽灵与示例对话配色，不请求模型")
     parser.add_argument("--banner", choices=["auto", "color", "plain", "off"], default="auto",
                         help="启动面板显示：自动检测、彩色、纯文本或关闭（默认 auto）")
@@ -445,7 +469,12 @@ def build_parser():
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if (isinstance(args.approval_timeout, bool) or not isinstance(args.approval_timeout, (int, float))
+            or not math.isfinite(args.approval_timeout) or not 0 < args.approval_timeout <= 3600):
+        parser.error("--approval-timeout 必须是大于 0 且不超过 3600 的秒数")
     capabilities = {"read"}
+    if args.allow_web:
+        capabilities.add("web")
     if args.allow_write:
         capabilities.add("write")
     if args.allow_exec:
@@ -537,11 +566,20 @@ def main(argv=None) -> int:
     try:
         print_banner(workspace=args.workspace, mode=banner_mode)
         ui.info("执行模式：" + {"react": "ReAct", "plan": "Plan and Execute", "multi": "只读子代理（分析 + 审查）"}[args.mode])
-        effective = capabilities & {"read"} if args.mode == "multi" else capabilities
-        ui.info(f"工具能力：{'、'.join(name for key, name in [('read', '读取'), ('write', '编辑'), ('exec', '命令执行'), ('network', '联网')] if key in effective)}")
+        effective = capabilities & {"read", "web"} if args.mode == "multi" else capabilities
+        ui.info(f"工具能力：{'、'.join(name for key, name in [('read', '读取'), ('write', '编辑'), ('exec', '命令执行'), ('network', '联网'), ('web', '网页')] if key in effective)}")
         if args.allow_network and args.mode == "multi":
-            ui.info("当前 Multi 子代理仅开放本地读取；联网请使用 react 或 plan 模式。")
+            ui.info("当前 Multi 不开放 network 工具；网页搜索与读取可使用 --allow-web。")
         ui.info(f"模型配置：{getattr(config, 'profile', 'default')} · {getattr(config, 'protocol', 'chat_completions')} · {config.model}")
+        interactive_session = args.prompt is None and not args.compact and sys.stdin.isatty()
+        approver = make_approver(ui, yes=args.yes, interactive=interactive_session, timeout=args.approval_timeout)
+        if "write" in effective or "exec" in effective:
+            if args.yes:
+                ui.info("审批：--yes 会批准本进程内的写入和命令，执行前仍复核文件指纹。")
+            elif interactive_session:
+                ui.info("审批：每次写入或命令前输入 approve、reject 或 cancel。其他文字不会批准。")
+            else:
+                ui.info("审批：当前不会等待输入。未加 --yes 时，写入和命令不会执行。")
         with ModelClient(config, client_factory=OpenAI) as client:
             if args.prompt is not None or args.compact:
                 prompt = "/compact" if args.compact else args.prompt.strip()
@@ -551,11 +589,12 @@ def main(argv=None) -> int:
                 answer = run_turn(client, config.model, args.workspace, store, ui, session,
                                   prompt, max_steps=args.max_steps, memory_enabled=args.memory, limits=limits,
                                   capabilities=capabilities, mode=args.mode,
-                                  auto_compact=args.auto_compact, compact_only=args.compact)
+                                  auto_compact=args.auto_compact, compact_only=args.compact, approver=approver)
                 ui.answer(answer)
                 return 0 if save_session(store, session, ui) else 1
             return interactive_loop(client, config.model, args.workspace, store, ui, session,
-                                    args.max_steps, args.memory, limits, capabilities, args.mode, args.auto_compact)
+                                    args.max_steps, args.memory, limits, capabilities, args.mode,
+                                    args.auto_compact, approver)
     except (KeyboardInterrupt, EOFError):
         ui.error("\n已取消。")
         return 130

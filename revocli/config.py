@@ -35,9 +35,14 @@ class Config:
         self.streaming = streaming
 
 
+def load_values():
+    """只读取 RevoCLI 的 .env 和环境变量，后者优先。"""
+    return {**dotenv_values(ENV_FILE), **os.environ}
+
+
 def _model_profiles():
     """配置只来自 RevoCLI 自身；列举配置不要求密钥，也不发送探测请求。"""
-    values = {**dotenv_values(ENV_FILE), **os.environ}
+    values = load_values()
     profiles = {"default": {
         "model": (values.get("OPENAI_MODEL") or "").strip(),
         "protocol": (values.get("OPENAI_PROTOCOL") or "chat_completions").strip(),
@@ -122,7 +127,7 @@ def load_config(profile=None):
 
 def load_search_api_key():
     """按需读取搜索凭据；URL 读取和离线使用不要求此配置。"""
-    values = {**dotenv_values(ENV_FILE), **os.environ}
+    values = load_values()
     key = (values.get("TAVILY_API_KEY") or "").strip()
     if not key or any(ord(char) < 33 or ord(char) > 126 for char in key):
         raise ConfigError("请在 RevoCLI 的 .env 或环境变量中设置有效的 TAVILY_API_KEY")

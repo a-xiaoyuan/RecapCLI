@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from revocli.tools import execute_tool, tool_definitions
+from revocli.tools.approval import approve_all
 from revocli.tools.filesystem import ScanBudget
 from revocli.storage.files import write_json
 
@@ -20,7 +21,8 @@ class OperationTests(unittest.TestCase):
         self.workspace = Path(self.temp.name).resolve()
 
     def call(self, name, **arguments):
-        return execute_tool(name, arguments, self.workspace, capabilities={"read", "write", "exec"})
+        return execute_tool(name, arguments, self.workspace, capabilities={"read", "write", "exec"},
+                             approver=approve_all)
 
     def test_capabilities_filter_definitions_and_enforce_dispatch(self):
         names = lambda capabilities: {item["function"]["name"] for item in tool_definitions(capabilities)}
