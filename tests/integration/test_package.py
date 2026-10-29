@@ -14,7 +14,7 @@ from recapcli.config import load_config
 from recapcli.tools import filesystem
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = next(path for path in Path(__file__).resolve().parents if (path / "pyproject.toml").is_file())
 
 
 class PackageTests(unittest.TestCase):
@@ -33,6 +33,11 @@ class PackageTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("--session", result.stdout)
                     self.assertIn("--workspace", result.stdout)
+                    help_text = " ".join(result.stdout.split())
+                    self.assertIn("--allow-web", help_text)
+                    self.assertIn("--allow-network 是兼容别名", help_text)
+                    self.assertNotIn("搜索需 TAVILY_API_KEY", help_text)
+                    self.assertNotRegex(result.stdout, r"(?m)^\s*--allow-network\s")
 
     def test_module_preview_finds_version_without_loading_model_config(self):
         with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:

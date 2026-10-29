@@ -1,0 +1,22 @@
+{
+  "include": ["recapcli", "main.py", "tests"],
+  "exclude": [
+    ".venv",
+    "venv",
+    "**/__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".recapcli",
+    ".revocli",
+    ".archer",
+    "dist",
+    "build",
+    "*.egg-info",
+    "_testtmp",
+    "logs"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": []
+}

@@ -123,12 +123,3 @@ def load_config(profile=None):
                   protocol=spec.get("protocol", "chat_completions"), tools=spec.get("tools", True),
                   context_bytes=spec.get("context_bytes", 256 * 1024), images=spec.get("images", False),
                   streaming=spec.get("streaming", False))
-
-
-def load_search_api_key():
-    """按需读取搜索凭据；URL 读取和离线使用不要求此配置。"""
-    values = load_values()
-    key = (values.get("TAVILY_API_KEY") or "").strip()
-    if not key or any(ord(char) < 33 or ord(char) > 126 for char in key):
-        raise ConfigError("请在 RecapCLI 的 .env 或环境变量中设置有效的 TAVILY_API_KEY")
-    return key

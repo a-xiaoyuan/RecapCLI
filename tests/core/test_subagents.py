@@ -114,11 +114,12 @@ class SubagentTests(unittest.TestCase):
             self.assertNotIn("run_command", names)
             self.assertNotIn("read_url", names)
             self.assertNotIn("web_search", names)
+            self.assertNotIn("fetch_url", names)
             return reply(calls=[tool("edit_file", path="app.py", old_text="print(1)", new_text="print(2)"),
                                 {**tool("run_command", argv=["python", "app.py"]), "id": "exec"},
                                 {**tool("read_url", url="https://example.com"), "id": "url"},
                                 {**tool("web_search", query="Python"), "id": "search"}])
-        self.run_multi(respond, capabilities=("read", "write", "exec", "network"))
+        self.run_multi(respond, capabilities=("read", "write", "exec", "web", "network"))
         self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(1)\n")
         results = [data["result"] for kind, data in self.traces if kind == "tool_result"]
         self.assertEqual(len(results), 8)
@@ -359,7 +360,9 @@ class SubagentTests(unittest.TestCase):
                 patch("recapcli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "test-model"}), \
                 patch("recapcli.cli.OpenAI", side_effect=lambda **options: self.client(self.reading)), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-            code = main(["分析", "--workspace", str(self.workspace), "--mode", "multi", "--banner", "off", "--color", "never"])
+            code = main(["分析", "--workspace", str(self.workspace), "--mode", "multi",
+                         "--allow-web", "--allow-network", "--allow-write", "--allow-exec",
+                         "--banner", "off", "--color", "never"])
         self.assertEqual(code, 0, errors.getvalue())
         store = SessionStore(self.workspace)
         self.assertEqual(len(store.latest()["messages"]), 2)
@@ -372,8 +375,15 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual(task["usage"]["total_tokens"], 70)
         self.assertEqual({event["data"]["agent"] for event in task["events"] if event["kind"] == "model_request"},
                          {"analysis", "review", "aggregate"})
-        self.assertIn("[analysis]", output.getvalue())
-        self.assertIn("[review]", output.getvalue())
+        text = output.getvalue()
+        self.assertIn("[analysis]", text)
+        self.assertIn("[review]", text)
+        self.assertIn("仅本地只读", text)
+        self.assertIn("不联网", text)
+        self.assertNotIn("可使用 --allow-web", text)
+        child_tools = {tool["function"]["name"] for role, data in self.requests if role in {"analysis", "review"} for tool in data.get("tools", [])}
+        self.assertIn("read_file", child_tools)
+        self.assertTrue({"web_search", "read_url", "fetch_url", "edit_file", "run_command"}.isdisjoint(child_tools))
         session = store.latest()
         with self.client(lambda *args: reply("继续回答")) as client:
             answer = run_turn(client, "test-model", self.workspace, store, TerminalUI(io.StringIO()), session,

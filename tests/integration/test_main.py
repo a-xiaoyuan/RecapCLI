@@ -326,12 +326,15 @@ class ConversationTests(unittest.TestCase):
 
     def test_allow_web_enables_tools_in_model_request(self):
         base = ["--workspace", str(self.workspace), "--banner", "off", "--color", "never"]
-        for flags, expected in (([], False), (["--allow-web"], True)):
+        for flags, expected in (([], False), (["--allow-web"], True), (["--allow-network"], True)):
             with self.subTest(flags=flags):
                 code, requests = self.run_main(["你好", *base, *flags], [reply("你好")])
                 self.assertEqual(code, 0)
                 names = {tool["function"]["name"] for tool in requests[0]["tools"]}
-                self.assertEqual({"web_search", "fetch_url"}.issubset(names), expected)
+                self.assertNotIn("fetch_url", names)
+                self.assertEqual({"web_search", "read_url"}.issubset(names), expected)
+                if not expected:
+                    self.assertTrue({"web_search", "read_url"}.isdisjoint(names))
 
     def test_continue_reuses_previous_session(self):
         base = ["--workspace", str(self.workspace), "--banner", "off", "--color", "never"]

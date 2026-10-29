@@ -18,9 +18,10 @@ build/
 dist/
 *.egg-info/
 
-# Local editor configuration
+# Local editor configuration. Shared exclusions live in .vscode/settings.json.
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 
 # Local credentials; the example contains placeholders only
 .env

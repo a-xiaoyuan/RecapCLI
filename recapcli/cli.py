@@ -426,13 +426,13 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="RecapCLI：支持 ReAct、Plan and Execute 与只读子代理的终端代码 Agent")
+    parser = argparse.ArgumentParser(description="RecapCLI：支持 ReAct、Plan and Execute 与仅本地只读子代理的终端代码 Agent")
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
     parser.add_argument("--profile", metavar="名称", help="选择 models.toml 中的模型配置；恢复会话时默认沿用上次配置")
     parser.add_argument("--models", action="store_true", help="列出本地模型配置，不请求模型、不要求密钥齐全")
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="允许读取的工作区")
     parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
-                        help="执行模式：react 直接执行；plan 先计划再执行；multi 并发只读分析与审查")
+                        help="执行模式：react 直接执行；plan 先计划再执行；multi 仅本地只读的并发分析与审查")
     parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 8，plan/multi 默认 20")
     parser.add_argument("--max-tool-calls", type=int, default=16, help="每轮工具调用数量上限")
     parser.add_argument("--max-tool-bytes", type=int, default=128 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
@@ -448,12 +448,11 @@ def build_parser():
     parser.add_argument("--no-memory", dest="memory", action="store_false", help="本次不注入长期记忆")
     parser.add_argument("--no-auto-compact", dest="auto_compact", action="store_false", help="关闭自动历史压缩，仍可使用 /compact")
     parser.add_argument("--compact", action="store_true", help="压缩所恢复会话的旧轮次后退出；需要 --continue 或 --session")
-    parser.add_argument("--allow-web", action="store_true", help="开放网页搜索和读取（只读联网）")
+    parser.add_argument("--allow-web", action="store_true",
+                        help="开放网页搜索与公网读取（web_search、read_url）。--allow-network 是兼容别名")
+    parser.add_argument("--allow-network", action="store_true", dest="allow_web", help=argparse.SUPPRESS)
     parser.add_argument("--allow-write", action="store_true", help="开放文件编辑与按备份恢复")
     parser.add_argument("--allow-exec", action="store_true", help="开放前台命令执行（以当前用户权限运行）")
-    parser.add_argument("--allow-network", action="store_true", help="开放搜索 API 与公网 URL 读取（搜索需 TAVILY_API_KEY）")
-
-
     parser.add_argument("--yes", action="store_true",
                         help="跳过逐次提问并批准本进程内的写入和命令；执行前仍复核参数与文件指纹，变化则作废")
     parser.add_argument("--approval-timeout", type=float, default=120,
@@ -472,15 +471,15 @@ def main(argv=None) -> int:
     if (isinstance(args.approval_timeout, bool) or not isinstance(args.approval_timeout, (int, float))
             or not math.isfinite(args.approval_timeout) or not 0 < args.approval_timeout <= 3600):
         parser.error("--approval-timeout 必须是大于 0 且不超过 3600 的秒数")
-    capabilities = {"read"}
+    requested = {"read"}
     if args.allow_web:
-        capabilities.add("web")
+        requested.add("web")
     if args.allow_write:
-        capabilities.add("write")
+        requested.add("write")
     if args.allow_exec:
-        capabilities.add("exec")
-    if args.allow_network:
-        capabilities.add("network")
+        requested.add("exec")
+    # Multi 实际只有本地读取；网页、编辑和命令开关不授予子代理。
+    capabilities = {"read"} if args.mode == "multi" else requested
     ui = TerminalUI(color=args.color)
     banner_mode = args.banner
     if banner_mode == "auto" and args.color != "auto":
@@ -520,7 +519,7 @@ def main(argv=None) -> int:
     if args.mode == "plan" and args.max_steps < 4 and not args.compact:
         parser.error("计划模式至少需要 4 次模型请求预算")
     if args.mode == "multi" and args.max_steps < 3 and not args.compact:
-        parser.error("多代理模式至少需要 3 次模型请求预算")
+        parser.error("Multi 仅本地只读，至少需要 3 次模型请求预算")
     try:
         limits = AgentLimits(max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
                              max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds)
@@ -565,15 +564,17 @@ def main(argv=None) -> int:
 
     try:
         print_banner(workspace=args.workspace, mode=banner_mode)
-        ui.info("执行模式：" + {"react": "ReAct", "plan": "Plan and Execute", "multi": "只读子代理（分析 + 审查）"}[args.mode])
-        effective = capabilities & {"read", "web"} if args.mode == "multi" else capabilities
-        ui.info(f"工具能力：{'、'.join(name for key, name in [('read', '读取'), ('write', '编辑'), ('exec', '命令执行'), ('network', '联网'), ('web', '网页')] if key in effective)}")
-        if args.allow_network and args.mode == "multi":
-            ui.info("当前 Multi 不开放 network 工具；网页搜索与读取可使用 --allow-web。")
+        labels = {"react": "ReAct", "plan": "Plan and Execute", "multi": "Multi（仅本地只读）"}
+        ui.info("执行模式：" + labels[args.mode])
+        granted = "、".join(name for key, name in [("read", "读取"), ("write", "编辑"), ("exec", "命令执行"), ("web", "网页")] if key in capabilities)
+        if args.mode == "multi":
+            ui.info("工具能力：" + granted + "。不联网、不修改文件、不执行命令。")
+        else:
+            ui.info("工具能力：" + granted)
         ui.info(f"模型配置：{getattr(config, 'profile', 'default')} · {getattr(config, 'protocol', 'chat_completions')} · {config.model}")
         interactive_session = args.prompt is None and not args.compact and sys.stdin.isatty()
         approver = make_approver(ui, yes=args.yes, interactive=interactive_session, timeout=args.approval_timeout)
-        if "write" in effective or "exec" in effective:
+        if "write" in capabilities or "exec" in capabilities:
             if args.yes:
                 ui.info("审批：--yes 会批准本进程内的写入和命令，执行前仍复核文件指纹。")
             elif interactive_session:
