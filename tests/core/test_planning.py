@@ -239,7 +239,8 @@ class PlanningTests(unittest.TestCase):
                     clock.return_value = 121
 
             with self.assertRaisesRegex(RuntimeError, "时间预算"):
-                self.run_plan([document(steps=["分析问题"]), reply("说明"), completed()], on_request=expire)
+                self.run_plan([document(steps=["分析问题"]), reply("说明"), completed()], on_request=expire,
+                              limits=AgentLimits(max_seconds=120))
         self.assertEqual(len(self.requests), 3)
 
     def test_plan_mode_default_budget_supports_more_than_eight_requests(self):

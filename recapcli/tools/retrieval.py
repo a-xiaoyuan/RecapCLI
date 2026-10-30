@@ -2,8 +2,10 @@
 
 import ast
 import hashlib
+import json
 from pathlib import Path
 import sqlite3
+import time
 
 from ..storage.files import state_directory
 from .filesystem import (MAX_FILE_BYTES, MAX_SEARCH_FILE_BYTES, ScanBudget, ScanLimit,
@@ -11,6 +13,7 @@ from .filesystem import (MAX_FILE_BYTES, MAX_SEARCH_FILE_BYTES, ScanBudget, Scan
 
 SCHEMA_VERSION = 1
 MAX_RESULTS = 200
+REFRESH_SECONDS = 10
 
 
 def _read_source(workspace, path, budget=None):
@@ -49,6 +52,7 @@ def _connect(workspace):
         connection.execute("CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, digest TEXT NOT NULL)")
         connection.execute("CREATE TABLE IF NOT EXISTS symbols (path TEXT, name TEXT, kind TEXT, start_line INTEGER, end_line INTEGER)")
         connection.execute("CREATE VIRTUAL TABLE IF NOT EXISTS lines USING fts5(path UNINDEXED, line UNINDEXED, text)")
+        connection.execute("CREATE TABLE IF NOT EXISTS scan_state (id INTEGER PRIMARY KEY, refreshed_at REAL, details TEXT)")
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         return connection
     except BaseException:
@@ -128,7 +132,7 @@ def _refresh(connection, workspace):
     return budget, skipped
 
 
-def _search(workspace, *, name=None, kind=None, query=None, max_results=50):
+def _search(workspace, *, name=None, kind=None, query=None, max_results=50, refresh=False):
     workspace = Path(workspace).resolve(strict=True)
     if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
         raise ToolError("max_results 必须是大于 0 的整数")
@@ -141,22 +145,44 @@ def _search(workspace, *, name=None, kind=None, query=None, max_results=50):
         raise ToolError("kind 必须是 class、function 或 async_function")
     if query is None and name is None and kind is None:
         raise ToolError("至少提供 name 或 kind")
+    if not isinstance(refresh, bool):
+        raise ToolError("refresh 必须是布尔值")
     try:
         connection = _connect(workspace)
         try:
             with connection:
-                budget, skipped = _refresh(connection, workspace)
-                if query is not None:
-                    # 将用户输入作为 FTS 短语，避免将其解释成 FTS 操作符。
-                    phrase = '"' + query.replace('"', '""') + '"'
-                    rows = connection.execute("""SELECT lines.path, lines.line, lines.line, lines.text, files.digest
-                        FROM lines JOIN files ON files.path = lines.path WHERE lines MATCH ?
-                        ORDER BY lines.path, CAST(lines.line AS INTEGER) LIMIT ?""", (phrase, max_results + 1)).fetchall()
+                def scan():
+                    budget, skipped = _refresh(connection, workspace)
+                    details = {"reason": budget.reason, "skipped": skipped}
+                    connection.execute("INSERT OR REPLACE INTO scan_state VALUES (1, ?, ?)",
+                                       (time.time(), json.dumps(details)))
+                    return budget, details
+
+                def lookup():
+                    if query is not None:
+                        phrase = '"' + query.replace('"', '""') + '"'
+                        return connection.execute("""SELECT lines.path, lines.line, lines.line, lines.text, files.digest
+                            FROM lines JOIN files ON files.path = lines.path WHERE lines MATCH ?
+                            ORDER BY bm25(lines), lines.path, CAST(lines.line AS INTEGER) LIMIT ?""",
+                            (phrase, max_results + 1)).fetchall()
+                    return connection.execute("""SELECT symbols.path, start_line, end_line, name, kind, files.digest
+                            FROM symbols JOIN files ON files.path = symbols.path
+                            WHERE (? IS NULL OR name = ?) AND (? IS NULL OR kind = ?)
+                            ORDER BY symbols.path, start_line LIMIT ?""",
+                            (name, name, kind, kind, max_results + 1)).fetchall()
+
+                state = connection.execute("SELECT refreshed_at, details FROM scan_state WHERE id=1").fetchone()
+                age = max(0, time.time() - state[0]) if state else REFRESH_SECONDS
+                cached = not refresh and state is not None and age < REFRESH_SECONDS
+                if cached:
+                    budget, details = ScanBudget(), json.loads(state[1])
                 else:
-                    rows = connection.execute("""SELECT symbols.path, start_line, end_line, name, kind, files.digest
-                        FROM symbols JOIN files ON files.path = symbols.path
-                        WHERE (? IS NULL OR name = ?) AND (? IS NULL OR kind = ?)
-                        ORDER BY symbols.path, start_line LIMIT ?""", (name, name, kind, kind, max_results + 1)).fetchall()
+                    budget, details = scan()
+                rows = lookup()
+                if cached and not rows:
+                    # 空查询先刷新一次，避免新文件/新关键词被旧索引掩盖。
+                    budget, details = scan()
+                    rows, cached = lookup(), False
                 matches, changed = [], False
                 verified = {}
                 for row in rows[:max_results]:
@@ -181,10 +207,14 @@ def _search(workspace, *, name=None, kind=None, query=None, max_results=50):
                     else:
                         match.update(name=row[3], kind=row[4])
                     matches.append(match)
-                result = {"matches": matches, "truncated": len(rows) > max_results or bool(budget.reason) or changed,
-                          "skipped_files": skipped, "scanned_files": budget.files}
-                if budget.reason:
-                    result["limit_reason"] = budget.reason
+                reason = budget.reason or details["reason"]
+                result = {"matches": matches, "truncated": len(rows) > max_results or bool(reason) or changed,
+                          "skipped_files": details["skipped"], "scanned_files": budget.files,
+                          "cached": cached, "index_age_seconds": round(age, 2) if cached else 0}
+                if reason:
+                    result["limit_reason"] = reason
+                if cached:
+                    result["cache_note"] = "候选已核验；索引复用最近 10 秒扫描，若需完整覆盖当前工作区请传 refresh=true。"
                 if changed:
                     result["stale_files"] = True
                 return result
@@ -194,9 +224,9 @@ def _search(workspace, *, name=None, kind=None, query=None, max_results=50):
         raise ToolError(f"代码索引不可用：{error}") from error
 
 
-def search_symbols(workspace, name=None, kind=None, max_results=50):
-    return _search(workspace, name=name, kind=kind, max_results=max_results)
+def search_symbols(workspace, name=None, kind=None, max_results=50, refresh=False):
+    return _search(workspace, name=name, kind=kind, max_results=max_results, refresh=refresh)
 
 
-def search_code_index(workspace, query, max_results=50):
-    return _search(workspace, query=query, max_results=max_results)
+def search_code_index(workspace, query, max_results=50, refresh=False):
+    return _search(workspace, query=query, max_results=max_results, refresh=refresh)

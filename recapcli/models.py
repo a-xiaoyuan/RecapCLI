@@ -4,10 +4,26 @@ from contextlib import ExitStack
 import hashlib
 import json
 
-from openai import OpenAI
+from openai import OpenAI, APITimeoutError, APIConnectionError, APIStatusError
 
 from .config import load_config
 from .llm import complete
+
+
+def api_error_message(error, model="模型"):
+    if isinstance(error, APITimeoutError):
+        return f"等待 {model} 返回数据超时；可增大 --request-timeout，或用 /models 查看其他配置。"
+    if isinstance(error, APIConnectionError):
+        return f"无法连接 {model} 的模型服务，请检查网络和 OPENAI_BASE_URL。"
+    if isinstance(error, APIStatusError):
+        hints = {400: "请求格式不兼容，请核对模型与协议", 401: "密钥无效或已失效，请检查当前配置引用的密钥",
+                 403: "当前密钥没有此模型的访问权限", 404: "模型或接口地址不存在，请核对模型名称和端点",
+                 429: "请求被限流，请稍后重试或降低请求频率"}
+        hint = hints.get(error.status_code, "模型服务暂时异常，请稍后重试" if error.status_code >= 500 else "请核对服务配置")
+        if getattr(error, "code", None) in {"insufficient_quota", "organization_usage_limit_exceeded", "billing_hard_limit_reached"}:
+            hint = "模型服务额度不足，请检查提供商账户额度"
+        return f"{model} 返回 HTTP {error.status_code}：{hint}。"
+    return f"模型请求失败（{type(error).__name__}），请核对协议和模型配置。"
 
 
 class ModelClient:

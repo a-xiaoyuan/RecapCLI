@@ -11,14 +11,14 @@ import time
 from openai import APIError, OpenAI
 
 from .config import ConfigError, list_model_profiles, load_config
-from .models import ModelClient
-from .core.agent import AgentLimits, run_agent
+from .models import ModelClient, api_error_message
+from .core.agent import AgentLimits, DEFAULT_STEPS, run_agent
 from .core.memory import active
 from .core.recovery import TurnRecovery
 from .storage.session import SessionStore
 from .storage.tasks import TaskStore, project_version
 from .tools.approval import InteractiveApprover, approve_all, fail_closed
-from .ui.terminal_art import print_banner
+from .ui.terminal_art import print_banner, _title
 from .ui.terminal_ui import TerminalUI
 
 HELP_TEXT = """命令：
@@ -29,7 +29,7 @@ HELP_TEXT = """命令：
   /session        显示当前会话 ID、消息数与保存路径
   /sessions       列出已保存的会话
   /history        查看最近消息
-  /models         列出本地模型配置（不请求接口）
+  /models [筛选词] 紧凑列出本地模型配置（不请求接口）
   /model [名称]   查看当前模型，或切换下一轮使用的配置
   /compact        压缩较早的完整轮次（请求模型，原文保留）
   /summary        查看摘要、覆盖范围和来源任务
@@ -110,7 +110,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         max_steps = 1
     task_id = tasks.start(session["id"], prompt, model, "compact" if compact_only else mode, {
         "history_messages": len(session["messages"]), "capabilities": capabilities,
-        "limits": asdict(limits), "max_steps": max_steps if max_steps is not None else (20 if mode in ("plan", "multi") else 8),
+        "limits": asdict(limits), "max_steps": max_steps if max_steps is not None else DEFAULT_STEPS[mode],
         "provider_host": str(getattr(getattr(client, "base_url", None), "host", "unknown")),
         "experience_versions": [], "skill_versions": [],
         "auto_compact": auto_compact, "summary_covered_messages": (session.get("summary") or {}).get("covered_messages", 0),
@@ -370,12 +370,19 @@ def handle_command(command, ui, store, session, model):
     return session
 
 
-def show_models(ui, current=None):
-    for spec in list_model_profiles():
+def show_models(ui, current=None, pattern="*"):
+    profiles = list_model_profiles()
+    default = next(spec["name"] for spec in profiles if spec["default"])
+    ui.info(f"默认配置：{default}。--profile NAME 可覆盖；配置名 default 不保证是当前默认。")
+    selected = [spec for spec in profiles if pattern == "*" or pattern.casefold() in
+                " ".join((spec["name"], spec["model"], spec["protocol"])).casefold()]
+    if not selected:
+        ui.info("没有匹配的模型配置。")
+    for spec in selected:
         marker = "当前" if spec["name"] == current else ("默认" if spec["default"] else "可选")
         ready = "已配置" if spec["configured"] else "缺少模型或密钥配置"
-        ui.info(f"{marker} · {spec['name']} · {spec['protocol']} · {spec['model'] or '未设置模型'} · {ready}")
-        ui.info(f"  能力声明：工具={spec['tools']}、图片={spec['images']}、流式={spec['streaming']}；上下文 JSON 字节上限={spec['context_bytes']}")
+        capabilities = "/".join(name for name in ("tools", "images", "streaming") if spec[name]) or "纯文本"
+        ui.info(f"{marker} · {spec['name']} · {spec['protocol']} · {spec['model'] or '未设置模型'} · {ready} · {capabilities}")
 
 
 def make_approver(ui, *, yes, interactive, timeout):
@@ -405,9 +412,9 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
                 if not isinstance(client, ModelClient):
                     raise ValueError("当前 Python 客户端未启用配置切换；请从 CLI 启动")
                 if parts[0].lower() == "/models":
-                    if len(parts) != 1:
-                        raise ValueError("用法：/models")
-                    show_models(ui, getattr(client.config, "profile", "default"))
+                    if len(parts) > 2:
+                        raise ValueError("用法：/models [筛选词]")
+                    show_models(ui, getattr(client.config, "profile", "default"), parts[1] if len(parts) == 2 else "*")
                 elif len(parts) == 1:
                     info = client.metadata()
                     ui.info(f"当前模型：{info['profile']} · {info['protocol']} · {info['model']}")
@@ -442,7 +449,7 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
             ui.error("已取消本轮。")
             continue
         except APIError as error:
-            ui.error(f"模型请求失败（{type(error).__name__}），请检查网络、协议和模型配置。")
+            ui.error(api_error_message(error, model))
             continue
         except (OSError, ValueError, RuntimeError) as error:
             ui.error(f"任务停止：{error}")
@@ -452,22 +459,29 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
             ui.info("当前消息仍保留在内存，输入 /save 重试，无需重新提问。")
 
 
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(2, f"错误：{message}\n")
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(
+    parser = ArgumentParser(
         description="RecapCLI：支持 ReAct、Plan and Execute 与仅本地只读子代理的终端代码 Agent。交互终端默认打开 Textual 壳。",
         epilog="终端壳需要可选依赖 textual（uv sync --extra tui）。--demo 只演示界面，不请求模型。无 textual 时使用 python -m recapcli.cli。",
     )
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
+    parser.add_argument("--version", action="version", version=_title())
+    parser.add_argument("--demo", action="store_true", help="离线界面演示，不请求模型")
     parser.add_argument("--profile", metavar="名称", help="选择 models.toml 中的模型配置；恢复会话时默认沿用上次配置")
-    parser.add_argument("--models", action="store_true", help="列出本地模型配置，不请求模型、不要求密钥齐全")
+    parser.add_argument("--models", nargs="?", const="*", metavar="筛选词", help="紧凑列出模型配置，可按名称或模型筛选；不请求接口")
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="允许读取的工作区")
     parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
                         help="执行模式：react 直接执行；plan 先计划再执行；multi 仅本地只读的并发分析与审查")
-    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 8，plan/multi 默认 20")
-    parser.add_argument("--max-tool-calls", type=int, default=16, help="每轮工具调用数量上限")
+    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 16，plan/multi 默认 20")
+    parser.add_argument("--max-tool-calls", type=int, default=AgentLimits.max_tool_calls, help="每轮工具调用数量上限，默认 32")
     parser.add_argument("--max-tool-bytes", type=int, default=128 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
     parser.add_argument("--context-bytes", type=int, default=256 * 1024, help="模型消息的 UTF-8 JSON 大小上限")
-    parser.add_argument("--max-seconds", type=float, default=120.0, help="每轮执行时间预算，秒")
+    parser.add_argument("--max-seconds", type=float, default=AgentLimits.max_seconds, help="每轮执行时间预算，默认 300 秒")
     parser.add_argument("--request-timeout", type=float, default=30.0, help="单次模型请求超时，秒；同时受剩余任务时间限制")
     parser.add_argument("--max-retries", type=int, default=2, help="暂时性模型请求错误的重试上限，默认 2；计入 --max-steps")
     sessions = parser.add_mutually_exclusive_group()
@@ -491,15 +505,20 @@ def build_parser():
                         help="交互审批等待秒数，默认 120，最大 3600")
     parser.add_argument("--preview", action="store_true", help="预览小幽灵与示例对话配色，不请求模型")
     parser.add_argument("--banner", choices=["auto", "color", "plain", "off"], default="auto",
-                        help="启动面板显示：自动检测、彩色、纯文本或关闭（默认 auto）")
+                        help="行式启动面板：auto、color、plain 或 off；显式指定非 auto 时使用行式 CLI")
     parser.add_argument("--color", choices=["auto", "always", "never"], default="auto",
-                        help="对话配色：自动、始终开启或关闭（默认 auto）")
+                        help="行式对话配色；显式指定非 auto 时使用行式 CLI")
     return parser
 
 
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.demo:
+        if args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview:
+            parser.error("--demo 只启动界面演示，不能同时提问或查看任务")
+        from .tui.launch import launch_shell
+        return launch_shell(args, demo=True)
     if (isinstance(args.approval_timeout, bool) or not isinstance(args.approval_timeout, (int, float))
             or not math.isfinite(args.approval_timeout) or not 0 < args.approval_timeout <= 3600):
         parser.error("--approval-timeout 必须是大于 0 且不超过 3600 的秒数")
@@ -524,7 +543,7 @@ def main(argv=None) -> int:
         if args.prompt is not None or args.session or args.continue_ or args.compact or args.task or args.tasks or args.json:
             parser.error("--models 不能与提问、会话或任务查看参数同时使用")
         try:
-            show_models(ui, args.profile)
+            show_models(ui, args.profile, args.models)
         except ConfigError as error:
             parser.error(str(error))
         return 0
@@ -545,7 +564,7 @@ def main(argv=None) -> int:
     if args.compact and (args.prompt is not None or not (args.session or args.continue_)):
         parser.error("--compact 需要 --continue 或 --session，且不能同时提问")
     if args.max_steps is None:
-        args.max_steps = 20 if args.mode in ("plan", "multi") else 8
+        args.max_steps = DEFAULT_STEPS[args.mode]
     if args.max_steps < 1:
         parser.error("--max-steps 必须大于 0")
     if args.mode == "plan" and args.max_steps < 4 and not args.compact:
@@ -633,7 +652,7 @@ def main(argv=None) -> int:
         ui.error("\n已取消。")
         return 130
     except APIError as error:
-        ui.error(f"模型请求失败（{type(error).__name__}），请检查网络、协议和模型配置。")
+        ui.error(api_error_message(error, getattr(config, "model", "模型")))
         return 1
     except (OSError, ValueError, RuntimeError) as error:
         ui.error(f"任务停止：{error}")

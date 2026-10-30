@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from openai import APIError, APITimeoutError, APIConnectionError, APIStatusError
+from openai import APIError
 
 from ..cli import (
     HELP_TEXT,
@@ -17,8 +17,8 @@ from ..cli import (
     show_tasks as show_task_report,
 )
 from ..config import ConfigError, load_config
-from ..core.agent import AgentLimits
-from ..models import ModelClient
+from ..core.agent import AgentLimits, DEFAULT_STEPS
+from ..models import ModelClient, api_error_message
 from ..storage.tasks import TaskStore
 from ..tools.approval import InteractiveApprover, approve_all
 from .state import _sessions
@@ -45,7 +45,7 @@ class ShellOptions:
     workspace: Path
     mode: str = "react"
     capabilities: tuple = ("read",)
-    max_steps: int = 8
+    max_steps: int = DEFAULT_STEPS["react"]
     limits: AgentLimits | None = None
     profile: str | None = None
     session_id: str | None = None
@@ -94,9 +94,12 @@ class Presenter:
         event = message
         for role in ("analysis", "review", "aggregate"):
             event = event.removeprefix(f"[{role}] ")
-        # 请求次数和正常读取过程留在任务追溯中；审批、失败和实际操作仍展示。
-        if event.startswith(("[模型]", "[工具]")) or event == "[结果] 成功":
-            return
+        if event.startswith(("[模型]", "[工具]")):
+            activity = ("请求模型 · " + event.removeprefix("[模型]").strip() if event.startswith("[模型]")
+                        else "工具 · " + event.removeprefix("[工具]").strip())
+            self._call(self.app.set_activity, activity)
+            if event.startswith("[模型]"):
+                return
         self._call(self.app.append_line, message, "event")
 
     def answer(self, message):
@@ -352,12 +355,12 @@ class ShellDriver:
         head = parts[0].lower()
         try:
             if head == "/models":
-                if len(parts) != 1:
-                    raise ValueError("用法：/models")
+                if len(parts) > 2:
+                    raise ValueError("用法：/models [筛选词]")
                 current = self.options.profile
                 if isinstance(self.client, ModelClient):
                     current = getattr(self.client.config, "profile", "default")
-                show_models(self.presenter, current)
+                show_models(self.presenter, current, parts[1] if len(parts) == 2 else "*")
                 return
             if not self._require_client(sending=False):
                 return
@@ -404,15 +407,7 @@ class ShellDriver:
             self._save_quiet()
             return
         except APIError as error:
-            if isinstance(error, APITimeoutError):
-                message = f"等待 {self.model} 返回数据超时，本轮未获得完整回答。可稍后重试，或用 /models 查看其他配置。"
-            elif isinstance(error, APIConnectionError):
-                message = f"无法连接 {self.model} 的模型服务，请检查网络和 OPENAI_BASE_URL。"
-            elif isinstance(error, APIStatusError):
-                message = f"模型服务返回 HTTP {error.status_code}（{self.model}），请核对密钥、模型权限及服务状态。"
-            else:
-                message = f"模型请求失败（{type(error).__name__}），请检查协议和模型配置。"
-            self.presenter.error(message)
+            self.presenter.error(api_error_message(error, self.model))
             return
         except (OSError, ValueError, RuntimeError) as error:
             self.presenter.error(f"任务停止：{error}")

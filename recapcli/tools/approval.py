@@ -17,7 +17,7 @@ import threading
 import time
 
 from ..storage.files import data_root
-from .editing import _hash, _plan_edit, _read_bytes, _target
+from .editing import _hash, _plan_edit, _plan_edits, _read_bytes, _target, _undo_records
 from .filesystem import ToolError, _relative
 
 APPROVED = "approved"
@@ -211,6 +211,11 @@ def collect_fingerprints(tool, workspace, params):
         if tool == "edit_file":
             path = params.get("path")
             return [_file_fingerprint(workspace, path if isinstance(path, str) else "")]
+        if tool == "edit_files":
+            return [_file_fingerprint(workspace, item.get("path", "")) for item in params.get("edits", [])]
+        if tool == "undo_edit":
+            return [fingerprint for item in _undo_records(workspace)
+                    for fingerprint in _restore_fingerprints(workspace, {"backup_id": item["id"]})]
         if tool == "restore_file":
             return _restore_fingerprints(workspace, params)
         if tool == "run_command":
@@ -250,6 +255,14 @@ def _edit_hint(workspace, params):
 def _action_hint(tool, workspace, params):
     if tool == "edit_file":
         return _edit_hint(workspace, params)
+    if tool == "edit_files":
+        try:
+            return "\n".join(item["diff"] + (f"\n{item['path']} 差异已截断" if item["diff_truncated"] else "")
+                             for item in _plan_edits(workspace, params.get("edits")))
+        except (OSError, ValueError, TypeError) as error:
+            return f"执行前检查未通过：{error}"
+    if tool == "undo_edit":
+        return "撤销最近一组未撤销编辑；文件已有后续变化时不会覆盖。"
     if tool == "restore_file":
         return "将按备份恢复目标文件；目标或备份已变化时不会覆盖。"
     if tool == "run_command":
@@ -262,8 +275,9 @@ def build_summary(tool, workspace, params, fingerprints):
     if not fingerprint_text:
         fingerprint_text = "无相关文件；批准只绑定工作区与最终参数"
     hint = _action_hint(tool, workspace, params)
-    if len(hint) > _HINT_LIMIT:
-        hint = hint[:_HINT_LIMIT] + "\n…（差异显示已截断，批准仍绑定完整参数和指纹）"
+    hint_limit = 160 * 1024 if tool == "edit_files" else _HINT_LIMIT
+    if len(hint) > hint_limit:
+        hint = hint[:hint_limit] + "\n…（差异显示已截断，批准仍绑定完整参数和指纹）"
     lines = [
         "[审批] 需要明确批准后才会执行",
         f"工具：{tool}",

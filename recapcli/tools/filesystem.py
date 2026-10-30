@@ -2,7 +2,10 @@
 
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
+import os
 from pathlib import Path
+import re
+import subprocess
 import time
 
 from ..config import ENV_FILE
@@ -82,7 +85,8 @@ def sensitive_path(path):
     # Windows 的 :$DATA 等备用数据流语法不能绕过基础文件名检查。
     parts = [part.split(":", 1)[0].rstrip(" .").casefold() for part in Path(path).parts]
     return any(part in {".ssh", ".aws", ".azure", ".kube", ".netrc", "_netrc", ".npmrc", ".pypirc"}
-               or part == ".env" or part.startswith(".env.")
+               or ((part == ".env" or part.startswith(".env."))
+                   and part not in {".env.example", ".env.sample", ".env.template"})
                or part.endswith((".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"))
                for part in parts)
 
@@ -111,13 +115,32 @@ def file_reference(path, start, end):
     return f"{path}:{start}" if start == end else f"{path}:{start}-{end}"
 
 
-def _directory_entries(workspace, directory, budget):
+def _git_ignored(workspace, root, budget):
+    """交给 Git 处理忽略、例外和嵌套规则；非 Git 目录沿用普通遍历。"""
+    budget.check_time()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), "ls-files", "--others", "--ignored", "--exclude-standard",
+             "--directory", "-z", "--", str(root.relative_to(workspace))],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=max(0.1, budget.max_seconds - (time.monotonic() - budget.started)),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if result.returncode:
+        return set()
+    return {Path(workspace) / os.fsdecode(name).rstrip("/") for name in result.stdout.split(b"\0") if name}
+
+
+def _directory_entries(workspace, directory, budget, ignored=()):
     """只列出允许访问的子项；遍历不跟随链接，避免越界和循环。"""
     entries = []
     try:
         for entry in directory.iterdir():
             budget.visit_entry()
             if entry.name in SKIP_DIRS:
+                continue
+            if ignored and any(path in ignored for path in (entry, *entry.parents)):
                 continue
             try:
                 if entry.is_symlink() or entry.is_junction():
@@ -135,10 +158,11 @@ def _directory_entries(workspace, directory, budget):
 
 
 def _walk_files(workspace, root, budget):
+    ignored = _git_ignored(Path(workspace).resolve(), root, budget)
     directories = [root]
     while directories:
         children = []
-        for entry in _directory_entries(workspace, directories.pop(), budget):
+        for entry in _directory_entries(workspace, directories.pop(), budget, ignored):
             if entry.is_dir():
                 children.append(entry)
             else:
@@ -251,12 +275,24 @@ def find_files(workspace, pattern, path=".", max_results=50):
     return result
 
 
-def search_text(workspace, query, path=".", case_sensitive=False, max_results=MAX_SEARCH_RESULTS):
+def search_text(workspace, query, path=".", case_sensitive=False, max_results=MAX_SEARCH_RESULTS,
+                regex=False, whole_word=False, context_lines=0):
     """在工作区文本文件中搜索字符串，返回匹配位置。"""
     if not isinstance(query, str) or not query.strip():
         raise ToolError("query 必须是非空字符串")
     if not isinstance(case_sensitive, bool):
         raise ToolError("case_sensitive 必须是布尔值")
+    if not isinstance(regex, bool) or not isinstance(whole_word, bool):
+        raise ToolError("regex 和 whole_word 必须是布尔值")
+    if isinstance(context_lines, bool) or not isinstance(context_lines, int) or not 0 <= context_lines <= 10:
+        raise ToolError("context_lines 必须是 0 到 10 的整数")
+    pattern = query if regex else re.escape(query)
+    if whole_word:
+        pattern = r"(?<!\w)(?:" + pattern + r")(?!\w)"
+    try:
+        matcher = re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
+    except re.error as error:
+        raise ToolError(f"正则表达式无效：{error}") from error
     if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
         raise ToolError("max_results 必须是大于 0 的整数")
     max_results = min(max_results, 200)
@@ -264,7 +300,6 @@ def search_text(workspace, query, path=".", case_sensitive=False, max_results=MA
     root = _resolve(workspace, path)
     budget = ScanBudget()
     files = [root] if root.is_file() else _walk_files(workspace, root, budget)
-    needle = query if case_sensitive else query.lower()
     matches = []
     skipped = 0
     truncated = False
@@ -289,10 +324,10 @@ def search_text(workspace, query, path=".", case_sensitive=False, max_results=MA
             except (OSError, ValueError):
                 skipped += 1
                 continue
-            for number, line in enumerate(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), 1):
+            lines = text.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+            for number, line in enumerate(lines, 1):
                 budget.check_time()
-                haystack = line if case_sensitive else line.lower()
-                if needle in haystack:
+                if matcher.search(line):
                     if len(matches) == max_results:
                         truncated = True
                         break
@@ -301,6 +336,10 @@ def search_text(workspace, query, path=".", case_sensitive=False, max_results=MA
                         "reference": file_reference(_relative(workspace, file), number, number),
                         "text": line[:MAX_LINE_LENGTH],
                     })
+                    if context_lines:
+                        start, end = max(1, number - context_lines), min(len(lines), number + context_lines)
+                        matches[-1]["context"] = "\n".join(f"{index}: {lines[index - 1][:MAX_LINE_LENGTH]}"
+                                                           for index in range(start, end + 1))
             if truncated:
                 break
     except ScanLimit:
@@ -328,13 +367,14 @@ def list_directory(workspace, path=".", max_depth=2, max_entries=MAX_TREE_ENTRIE
     budget = ScanBudget()
     count = 0
     truncated = False
+    ignored = set()
 
     def walk(directory, prefix, level):
         nonlocal count, truncated
         if count >= max_entries:
             truncated = True
             return
-        entries = _directory_entries(workspace, directory, budget)
+        entries = _directory_entries(workspace, directory, budget, ignored)
         for index, entry in enumerate(entries):
             budget.check_time()
             if count >= max_entries:
@@ -351,6 +391,7 @@ def list_directory(workspace, path=".", max_depth=2, max_entries=MAX_TREE_ENTRIE
                 return
 
     try:
+        ignored = _git_ignored(Path(workspace).resolve(), root, budget)
         walk(root, "", 0)
     except ScanLimit:
         pass

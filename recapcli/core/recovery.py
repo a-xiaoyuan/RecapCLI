@@ -41,8 +41,8 @@ class TurnRecovery:
                 size = json_size(result)
                 if size > self.remaining_bytes:
                     # 保留操作收据和退出码，省略超预算正文；完整结果仍在任务追溯中。
-                    fields = ("ok", "error", "summary", "path", "reference", "backup_id", "command_id", "record_id",
-                              "returncode", "status", "sha256", "before_hash", "after_hash")
+                    fields = ("ok", "error", "summary", "path", "reference", "backup_id", "backup_ids",
+                              "group_id", "record_id", "returncode", "success")
                     result = {key: result[key] for key in fields if key in result}
                     result.update(truncated=True, recovery_note="正文超过恢复上下文预算，完整事实见本任务记录。")
                 self.remaining_bytes = max(0, self.remaining_bytes - json_size(result))

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .approval import authorize_action, fail_closed
 from .commands import run_command
-from .editing import edit_file, restore_file
+from .editing import edit_file, edit_files, restore_file, undo_edit
 from .filesystem import ToolError, find_files, list_directory, read_file, search_text
 from .retrieval import search_code_index, search_symbols
 from .web import read_url, web_search
@@ -42,6 +42,7 @@ TOOL_REGISTRY = {
             "name": {"type": "string", "description": "精确符号名"},
             "kind": {"type": "string", "description": "class、function 或 async_function"},
             "max_results": {"type": "integer", "description": "默认 50，最大 200"},
+            "refresh": {"type": "boolean", "description": "强制刷新索引；默认复用 10 秒缓存，候选始终核验文件内容"},
         }, "required": [], "additionalProperties": False},
     },
     "search_code_index": {
@@ -50,6 +51,7 @@ TOOL_REGISTRY = {
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "关键词或短语"},
             "max_results": {"type": "integer", "description": "默认 50，最大 200"},
+            "refresh": {"type": "boolean", "description": "强制刷新索引；默认复用 10 秒缓存，候选始终核验文件内容"},
         }, "required": ["query"], "additionalProperties": False},
     },
     "read_file": {
@@ -75,6 +77,9 @@ TOOL_REGISTRY = {
                 "query": {"type": "string", "description": "要搜索的文本"},
                 "path": {"type": "string", "description": "搜索起点，默认工作区根目录"},
                 "case_sensitive": {"type": "boolean", "description": "是否区分大小写，默认否"},
+                "regex": {"type": "boolean", "description": "将 query 作为正则表达式，默认否"},
+                "whole_word": {"type": "boolean", "description": "只匹配完整单词，默认否"},
+                "context_lines": {"type": "integer", "description": "每个命中的前后上下文行数，默认 0，最大 10"},
                 "max_results": {"type": "integer", "description": "最多返回条数，默认 50"},
             },
             "required": ["query"],
@@ -115,6 +120,21 @@ TOOL_REGISTRY = {
             "replace_all": {"type": "boolean", "description": "是否替换所有匹配，默认否"},
         }, "required": ["path", "old_text", "new_text"], "additionalProperties": False},
     },
+    "edit_files": {
+        "handler": edit_files, "records_artifacts": True, "capability": "write",
+        "description": "批量精确替换，一次审批展示整组 diff。edits 按顺序应用，允许同文件多处替换，最多 20 项。全部预检后逐文件写入，每个文件保存备份；中途失败明确返回已完成项。undo_edit 撤销最近一组。",
+        "parameters": {"type": "object", "properties": {
+            "edits": {"type": "array", "items": {"type": "object", "properties": {
+                "path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"},
+                "replace_all": {"type": "boolean"},
+            }, "required": ["path", "old_text", "new_text"], "additionalProperties": False}},
+        }, "required": ["edits"], "additionalProperties": False},
+    },
+    "undo_edit": {
+        "handler": undo_edit, "capability": "write",
+        "description": "撤销最近一组未撤销编辑（单文件或 edit_files 批量操作）。先核对全组文件；有后续改动时拒绝覆盖。需一次人工审批。",
+        "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+    },
     "restore_file": {
         "handler": restore_file,
         "capability": "write",
@@ -135,6 +155,7 @@ TOOL_REGISTRY = {
             "timeout_seconds": {"type": "integer", "description": "超时秒数，默认 30，最多 60"},
             "max_output_bytes": {"type": "integer", "description": "输出 UTF-8/原始编码字节上限，默认 16384，最多 65536"},
             "encoding": {"type": "string", "description": "输出解码，默认 utf-8，旧 Windows 程序可用 gb18030"},
+            "stdin_text": {"type": "string", "description": "预先提供给命令的 UTF-8 标准输入，可包含换行；不提供时输入关闭，不支持交互式 TTY"},
         }, "required": ["argv"], "additionalProperties": False},
     },
 }
@@ -144,8 +165,6 @@ def _spec_for(name):
     spec = TOOL_REGISTRY.get(name)
     if spec is None:
         raise ToolError(f"未知工具：{name}")
-    if not callable(spec.get("handler")):
-        raise ToolError(f"工具未注册执行函数：{name}")
     return spec
 
 
@@ -153,8 +172,7 @@ def tool_definitions(capabilities=("read",)):
     """按当前能力选择 schema 与处理函数，保持模型定义和分发一致。"""
     capabilities = frozenset(capabilities)
     definitions = []
-    for name in TOOL_REGISTRY:
-        spec = _spec_for(name)
+    for name, spec in TOOL_REGISTRY.items():
         if spec.get("capability", "read") in capabilities:
             definitions.append({"type": "function", "function": {
                 "name": name, "description": spec["description"],
@@ -185,15 +203,12 @@ def _parse_arguments(arguments, schema):
             "string": isinstance(value, str),
             "integer": isinstance(value, int) and not isinstance(value, bool),
             "boolean": isinstance(value, bool),
-            "array": isinstance(value, list) and all(isinstance(item, str) for item in value),
+            "array": isinstance(value, list) and all(
+                isinstance(item, dict if schema["properties"][name].get("items", {}).get("type") == "object" else str)
+                for item in value),
         }
         if not valid.get(kind, False):
             raise ToolError(f"{name} 类型必须是 {kind}")
-    return params
-
-
-def _apply_hooks(name, params):
-    """执行链中的 Hook。当前没有注册项，原样跳过，不动态导入插件。"""
     return params
 
 
@@ -203,24 +218,16 @@ _PARAM_DEFAULTS = {
 }
 
 
-def _apply_defaults(name, params):
-    for key, value in _PARAM_DEFAULTS.get(name, {}).items():
-        params.setdefault(key, value)
-    return params
-
-
 def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_remaining=None, on_record=None,
                  approver=None, on_approval=None):
-    """查找 → 校验 →（无 Hook 则跳过）→ 再校验 → 能力检查 → 审批 → 执行。
+    """查找 → 校验参数 → 能力检查 → 审批 → 执行。
 
     写入和命令在能力允许后仍要审批。拒绝、过期、取消、未获交互批准或批准失效时不调用工具函数。
     """
     try:
         spec = _spec_for(name)
         params = _parse_arguments(arguments, spec["parameters"])
-        params = _apply_hooks(name, params)
-        _apply_defaults(name, params)
-        params = _parse_arguments(params, spec["parameters"])
+        params = {**_PARAM_DEFAULTS.get(name, {}), **params}
         capability = spec.get("capability", "read")
         if capability not in capabilities:
             option = {"write": "--allow-write", "exec": "--allow-exec", "web": "--allow-web"}.get(capability, capability)
@@ -245,6 +252,8 @@ def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_rem
         if spec.get("records_artifacts") and on_record is not None:
             params["on_record"] = on_record
         result = spec["handler"](workspace=workspace_path, **params)
-        return {"ok": True, **({"content": result} if isinstance(result, str) else result)}
+        if result.get("truncated") and name in {"search_text", "find_files", "search_symbols", "search_code_index"}:
+            result["warning"] = "检索结果不完整，不能据此断言整个项目没有匹配内容；请缩小目录或查询范围。"
+        return {"ok": True, **result}
     except (OSError, ValueError, TypeError) as error:
         return {"ok": False, "error": str(error)}

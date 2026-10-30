@@ -1,6 +1,7 @@
-import io
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +10,6 @@ from unittest.mock import patch
 from recapcli.tools import execute_tool
 from recapcli.tools.approval import approve_all
 from recapcli.tools.filesystem import MAX_FILE_BYTES, ScanBudget
-from recapcli.tools.registry import TOOL_REGISTRY, tool_definitions
 from recapcli.storage.session import SessionStore
 
 
@@ -73,6 +73,13 @@ class ToolBoundaryTests(unittest.TestCase):
             self.assertEqual(self.call(tool, **arguments)["matches"], [])
         self.assertEqual(self.call("find_files", pattern="*")["files"], [])
         self.assertNotIn(".env", self.call("list_directory")["tree"])
+        example = self.workspace / ".env.example"
+        example.write_text("PORT=8000\n", encoding="utf-8")
+        self.assertEqual(self.call("read_file", path=example.name)["content"], "PORT=8000\n")
+        edited = execute_tool("edit_file", {"path": example.name, "old_text": "8000", "new_text": "9000"},
+                              self.workspace, capabilities={"read", "write"}, approver=approve_all)
+        self.assertTrue(edited["ok"], edited)
+        self.assertEqual(self.call("search_code_index", query="PORT")["matches"][0]["path"], example.name)
         if os.name == "nt":
             for alias in (".env::$DATA", "private.pem::$DATA"):
                 self.assertFalse(self.call("read_file", path=alias)["ok"])
@@ -192,53 +199,24 @@ class ToolBoundaryTests(unittest.TestCase):
         path.write_text("", encoding="utf-8")
         self.assertFalse(self.call("read_file", path=path.name, start_line=1)["ok"])
 
-    def test_line_range_reads_in_bounded_chunks(self):
-        class BoundedReader(io.StringIO):
-            def readline(self, size=-1):
-                if size < 0 or size > MAX_FILE_BYTES + 1:
-                    raise AssertionError("行读取必须有长度上限")
-                return super().readline(size)
-
-            def read(self, size=-1):
-                raise AssertionError("按行读取不能一次加载整个文件")
-
-        path = self.workspace / "stream.txt"
-        path.touch()
-        stream = BoundedReader("x" * (MAX_FILE_BYTES * 3) + "\nselected\n")
-        with patch.object(Path, "open", return_value=stream):
-            result = self.call("read_file", path=path.name, start_line=2)
-            self.assertTrue(result["ok"])
-            self.assertEqual(result["content"], "selected")
-            self.assertEqual(result["reference"], "stream.txt:2")
-
-    def test_missing_tool_handler_is_explicit_error_not_directory_fallback(self):
-        spec = {"description": "未来工具", "parameters": {"type": "object", "properties": {}}}
-        with patch.dict(TOOL_REGISTRY, {"future_tool": spec}):
-            result = self.call("future_tool")
-            self.assertFalse(result["ok"])
-            self.assertIn("未注册执行函数", result["error"])
-            self.assertNotIn("tree", result)
-            with self.assertRaises(ValueError):
-                tool_definitions()
-
-    def test_new_tool_schema_and_execution_share_one_registration(self):
-        received = []
-
-        def handler(workspace, text):
-            received.append((workspace, text))
-            return {"echo": text}
-
-        spec = {"description": "测试工具", "handler": handler, "parameters": {
-            "type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"],
-            "additionalProperties": False,
-        }}
-        with patch.dict(TOOL_REGISTRY, {"echo": spec}):
-            self.assertIn("echo", [item["function"]["name"] for item in tool_definitions()])
-            self.assertEqual(self.call("echo", text="hello"), {"ok": True, "echo": "hello"})
-            self.assertFalse(self.call("echo")["ok"])
-            self.assertFalse(self.call("echo", text="x", extra=True)["ok"])
-            self.assertFalse(self.call("echo", text=1)["ok"])
-        self.assertEqual(received, [(self.workspace, "hello")])
+    @unittest.skipUnless(shutil.which("git"), "需要 Git 验证忽略规则")
+    def test_scans_follow_gitignore_but_keep_tracked_and_explicit_files(self):
+        def git(*args):
+            subprocess.run(["git", "-C", str(self.workspace), *args], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        git("init", "-q")
+        (self.workspace / ".gitignore").write_text("ignored/\n*.log\n!keep.log\n", encoding="utf-8")
+        for name in ("public.py", "ignored/noise.py", "skip.log", "keep.log", "tracked.log"):
+            target = self.workspace / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("needle\n", encoding="utf-8")
+        git("add", "-f", "tracked.log")
+        expected = {"public.py", "keep.log", "tracked.log"}
+        for name in ("search_text", "search_code_index"):
+            self.assertEqual({item["path"] for item in self.call(name, query="needle")["matches"]}, expected)
+        self.assertEqual(set(self.call("find_files", pattern="*")["files"]), expected | {".gitignore"})
+        self.assertNotIn("ignored/", self.call("list_directory")["tree"])
+        self.assertEqual(self.call("read_file", path="ignored/noise.py")["content"], "needle\n")
 
     def test_no_match_search_stops_at_file_budget(self):
         for number in range(8):
@@ -249,6 +227,17 @@ class ToolBoundaryTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertEqual(result["scanned_files"], 2)
         self.assertIn("文件数量", result["limit_reason"])
+        self.assertIn("不能据此断言", result["warning"])
+
+    def test_regex_whole_word_and_context_search(self):
+        (self.workspace / "code.py").write_text("before\ncat = 1\nscatter = 2\nCAT = 3\nafter\n", encoding="utf-8")
+        result = self.call("search_text", query="cat", whole_word=True, context_lines=1)
+        self.assertEqual([item["line"] for item in result["matches"]], [2, 4])
+        self.assertIn("1: before", result["matches"][0]["context"])
+        self.assertIn("3: scatter = 2", result["matches"][0]["context"])
+        self.assertEqual(len(self.call("search_text", query=r"^cat\s*=", regex=True)["matches"]), 2)
+        self.assertEqual(self.call("search_text", query="cat.*")["matches"], [])
+        self.assertFalse(self.call("search_text", query="[", regex=True)["ok"])
 
     def test_exact_result_limit_is_not_misreported_as_truncated(self):
         (self.workspace / "a.txt").write_text("hit\nhit\n", encoding="utf-8")

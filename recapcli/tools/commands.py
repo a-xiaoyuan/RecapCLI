@@ -19,7 +19,7 @@ _WINDOWS_GATE = """import subprocess, sys
 if not sys.stdin.buffer.read(1):
     raise SystemExit(125)
 try:
-    code = subprocess.call(sys.argv[1:], stdin=subprocess.DEVNULL)
+    code = subprocess.run(sys.argv[1:], input=sys.stdin.buffer.read()).returncode
 except OSError as error:
     print(str(error), file=sys.stderr)
     code = 127
@@ -65,7 +65,8 @@ def _windows_job(process):
     return lambda: kernel.CloseHandle(handle)
 
 
-def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=16384, encoding="utf-8", *, on_record=None):
+def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=16384, encoding="utf-8",
+                stdin_text="", *, on_record=None):
     if (not isinstance(argv, list) or not 1 <= len(argv) <= 64
             or any(not isinstance(arg, str) or "\x00" in arg for arg in argv) or not argv[0].strip()):
         raise ToolError("argv 必须是非空字符串数组，最多 64 项，首项为可执行文件")
@@ -86,6 +87,7 @@ def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=1
     directory = _resolve(workspace, cwd)
     if not directory.is_dir():
         raise ToolError("cwd 必须是工作区内的目录")
+    input_bytes = stdin_text.encode("utf-8")
     command_id = uuid.uuid4().hex
     record_path = state_directory(workspace, "commands") / f"{command_id}.json"
     record = {"schema_version": 1, "id": command_id, "argv": argv, "cwd": _relative(workspace, directory),
@@ -106,7 +108,7 @@ def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=1
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
     output = bytearray()
     exceeded = threading.Event()
-    process, reader, close_job = None, None, None
+    process, reader, writer, close_job = None, None, None, None
     started = time.monotonic()
     reason = ""
 
@@ -120,18 +122,26 @@ def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=1
         except OSError:
             pass
 
+    def feed_input():
+        try:
+            process.stdin.write((b"1" if os.name == "nt" else b"") + input_bytes)
+        except OSError:
+            pass  # 命令可能提前退出或不读取输入。
+        finally:
+            process.stdin.close()
+
     try:
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
         actual_argv = [sys.executable, "-I", "-u", "-c", _WINDOWS_GATE, *argv] if os.name == "nt" else argv
         process = subprocess.Popen(actual_argv, cwd=directory, env=environment, shell=False, bufsize=0,
-                                   stdin=subprocess.PIPE if os.name == "nt" else subprocess.DEVNULL,
+                                   stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **options)
         if os.name == "nt":
             close_job = _windows_job(process)
-            process.stdin.write(b"1")
-            process.stdin.close()
         reader = threading.Thread(target=capture, daemon=True)
         reader.start()
+        writer = threading.Thread(target=feed_input, daemon=True)
+        writer.start()
         while process.poll() is None:
             if exceeded.wait(0.01):
                 reason = "命令输出超过上限，已停止"
@@ -159,6 +169,8 @@ def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=1
             if process.poll() is None:
                 process.kill()
             process.wait()
+            if writer is not None:
+                writer.join(timeout=2)
             if process.stdin is not None and not process.stdin.closed:
                 process.stdin.close()
             if reader is not None:
@@ -167,14 +179,13 @@ def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=1
         if exceeded.is_set() and not reason:
             reason = "命令输出超过上限，已停止"
         returncode = process.returncode if process is not None else None
-        if returncode and not reason:
-            reason = f"命令退出码为 {returncode}"
         decoded = bytes(output).decode(encoding, errors="replace").encode("utf-8", errors="replace").decode("utf-8")
         record.update(returncode=returncode, output=decoded,
                       output_truncated=exceeded.is_set(), timed_out="超时" in reason,
                       duration_seconds=round(time.monotonic() - started, 3), error=reason)
         write_json(record_path, record)
-    result = {"ok": not reason, "returncode": returncode, "output": record["output"],
+    result = {"ok": not reason, "success": not reason and returncode == 0,
+              "returncode": returncode, "output": record["output"],
               "output_truncated": record["output_truncated"], "timed_out": record["timed_out"],
               "record_id": command_id, "duration_seconds": record["duration_seconds"],
               "summary": f"命令退出码 {returncode}，执行记录 ID：{command_id}"}

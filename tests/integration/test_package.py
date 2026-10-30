@@ -23,6 +23,8 @@ class PackageTests(unittest.TestCase):
             cases = [
                 ([str(PROJECT_ROOT / "main.py"), "--help"], other_directory),
                 (["-m", "recapcli", "--help"], PROJECT_ROOT),
+                (["-m", "recapcli.cli", "--help"], PROJECT_ROOT),
+                (["-m", "recapcli", "--version"], PROJECT_ROOT),
             ]
             for arguments, directory in cases:
                 with self.subTest(arguments=arguments):
@@ -31,10 +33,15 @@ class PackageTests(unittest.TestCase):
                         capture_output=True, encoding="utf-8", timeout=30,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
+                    if "--version" in arguments:
+                        with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
+                            self.assertIn(tomllib.load(file)["project"]["version"], result.stdout)
+                        continue
                     self.assertIn("--session", result.stdout)
                     self.assertIn("--workspace", result.stdout)
                     help_text = " ".join(result.stdout.split())
                     self.assertIn("--allow-web", help_text)
+                    self.assertIn("--demo", help_text)
                     self.assertIn("--allow-network 是兼容别名", help_text)
                     self.assertNotIn("搜索需 TAVILY_API_KEY", help_text)
                     self.assertNotRegex(result.stdout, r"(?m)^\s*--allow-network\s")

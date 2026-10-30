@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import httpx2
-from openai import OpenAI
+from openai import OpenAI, APIStatusError
 
 from recapcli.cli import main, run_turn
 from recapcli.config import ConfigError, list_model_profiles, load_config
@@ -206,9 +206,28 @@ class ModelConfigTests(ModelTestCase):
         self.assertIn("reasoning", self.output.getvalue())
         self.assertIn("responses", self.output.getvalue())
         self.assertFalse((self.workspace / ".recapcli").exists())
+        self.output.seek(0)
+        self.output.truncate(0)
+        with patch("recapcli.cli.OpenAI") as factory, redirect_stdout(self.output):
+            self.assertEqual(main(["--models", "reasoning", "--color", "never"]), 0)
+        self.assertIn("默认配置：", self.output.getvalue())
+        self.assertIn("reasoning", self.output.getvalue())
+        self.assertNotIn(" · fast · ", self.output.getvalue())
+        factory.assert_not_called()
 
 
 class ModelCLITests(ModelTestCase):
+    def test_http_errors_explain_credentials_permissions_and_rate_limits(self):
+        for status, hint in ((401, "密钥"), (403, "权限"), (429, "限流")):
+            self.errors.seek(0)
+            self.errors.truncate(0)
+            response = httpx2.Response(status, request=httpx2.Request("POST", "https://offline.invalid"))
+            self.replies = [APIStatusError("offline", response=response, body={"code": None})] * 3
+            self.assertEqual(self.run_cli("hello", "--profile", "fast"), 1)
+            self.assertIn(f"HTTP {status}", self.errors.getvalue())
+            self.assertIn(hint, self.errors.getvalue())
+            self.assertNotIn("usage:", self.errors.getvalue())
+
     def test_profile_is_saved_restored_and_explicitly_overridden(self):
         self.assertEqual(self.run_cli("第一问", "--profile", "reasoning"), 0)
         saved = SessionStore(self.workspace).latest()

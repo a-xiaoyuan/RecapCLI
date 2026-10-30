@@ -299,9 +299,11 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(dispatch(["你好", "--workspace", directory]), 0)
             self.assertEqual(dispatch(["--workspace", directory]), 0)
             self.assertEqual(dispatch(["--models"]), 0)
+            self.assertEqual(dispatch(["--color", "never", "--workspace", directory]), 0)
             self.assertEqual(dispatch(["--demo", "--workspace", directory]), 0)
         cli.assert_any_call(["你好", "--workspace", directory])
         cli.assert_any_call(["--models"])
+        cli.assert_any_call(["--color", "never", "--workspace", directory])
         self.assertEqual(shell.call_count, 2)
         self.assertFalse(shell.call_args_list[0].kwargs["demo"])
         self.assertTrue(shell.call_args_list[1].kwargs["demo"])
@@ -474,7 +476,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         turn.assert_not_called()
         self.assertEqual(list(self.workspace.iterdir()), [])
 
-    async def test_submit_shows_answer_without_routine_request_noise(self):
+    async def test_submit_shows_tools_and_results_without_model_request_noise(self):
         from recapcli.tui.driver import ShellDriver as Driver
 
         def fake_turn(client, model, workspace, store, ui, session, prompt, **kwargs):
@@ -522,8 +524,8 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("任务 ID：", visible)
         self.assertNotIn("长期记忆：本轮选用", visible)
         self.assertNotIn("[模型]", visible)
-        self.assertNotIn("[工具]", visible)
-        self.assertNotIn("[结果] 成功", visible)
+        self.assertIn("[工具] read_file", visible)
+        self.assertIn("[结果] 成功", visible)
         self.assertIn("[操作] 已修改 README.md", visible)
         self.assertIn("[结果] 失败：文件不存在", visible)
         self.assertNotIn("Working on the summary", visible)
@@ -637,15 +639,6 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("uv sync --extra tui", stderr.getvalue())
         self.assertIn("recapcli.cli", stderr.getvalue())
-
-    def test_cli_module_remains_available(self):
-        result = __import__("subprocess").run(
-            [sys.executable, "-m", "recapcli.cli", "--help"],
-            capture_output=True, encoding="utf-8", timeout=30,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--session", result.stdout)
-        self.assertIn("--workspace", result.stdout)
 
 
 if __name__ == "__main__":

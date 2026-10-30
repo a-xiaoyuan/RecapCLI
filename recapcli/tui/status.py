@@ -21,11 +21,12 @@ class TaskStatus:
                 continue
             data = event.get("data", {})
             result = data.get("result", {})
-            if (data.get("name") in {"edit_file", "restore_file"} and result.get("ok")
-                    and (result.get("changed") or result.get("restored"))):
-                path = result.get("path")
-                if isinstance(path, str) and path not in paths:
-                    paths.append(path)
+            if data.get("name") in {"edit_file", "edit_files", "restore_file", "undo_edit"}:
+                for item in result.get("files", [result]):
+                    if item.get("ok", True) and (item.get("changed") or item.get("restored")):
+                        path = item.get("path")
+                        if isinstance(path, str) and path not in paths:
+                            paths.append(path)
         return cls(task_id=task.get("id", ""), status=task.get("status", ""),
                    requests=task.get("model_requests", 0), duration=task.get("duration_seconds"),
                    usage=task.get("usage"), modified_files=tuple(paths), stop_reason=task.get("stop_reason", ""))

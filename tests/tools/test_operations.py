@@ -24,6 +24,34 @@ class OperationTests(unittest.TestCase):
         return execute_tool(name, arguments, self.workspace, capabilities={"read", "write", "exec"},
                              approver=approve_all)
 
+    def test_batch_edit_has_one_approval_and_grouped_undo(self):
+        (self.workspace / "a.txt").write_text("alpha omega", encoding="utf-8")
+        (self.workspace / "b.txt").write_text("before", encoding="utf-8")
+        edits = [{"path": "a.txt", "old_text": "alpha", "new_text": "beta"},
+                 {"path": "a.txt", "old_text": "omega", "new_text": "end"},
+                 {"path": "b.txt", "old_text": "before", "new_text": "after"}]
+        approvals = []
+        def approve(request):
+            approvals.append(request)
+            return approve_all(request)
+        result = execute_tool("edit_files", {"edits": edits}, self.workspace,
+                              capabilities={"read", "write"}, approver=approve)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(approvals), 1)
+        self.assertIn("a/b.txt", approvals[0].summary)
+        self.assertEqual(len(result["backup_ids"]), 2)
+        self.assertEqual((self.workspace / "a.txt").read_text(), "beta end")
+        self.call("edit_file", path="a.txt", old_text="beta", new_text="gamma")
+        self.assertTrue(self.call("undo_edit")["ok"])
+        self.assertEqual((self.workspace / "a.txt").read_text(), "beta end")
+        self.assertTrue(self.call("undo_edit")["ok"])
+        self.assertEqual((self.workspace / "a.txt").read_text(), "alpha omega")
+        self.assertEqual((self.workspace / "b.txt").read_text(), "before")
+        edits[-1]["old_text"] = "missing"
+        result = self.call("edit_files", edits=edits)
+        self.assertFalse(result["ok"])
+        self.assertEqual((self.workspace / "a.txt").read_text(), "alpha omega")
+
     def test_capabilities_filter_definitions_and_enforce_dispatch(self):
         names = lambda capabilities: {item["function"]["name"] for item in tool_definitions(capabilities)}
         self.assertEqual(names({"read"}), {"read_file", "search_text", "list_directory", "find_files", "search_symbols", "search_code_index"})
@@ -193,9 +221,13 @@ class OperationTests(unittest.TestCase):
 
     def test_command_nonzero_and_stderr_are_reported(self):
         result = self.call("run_command", argv=[sys.executable, "-c", "import sys; print('failure', file=sys.stderr); sys.exit(7)"])
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["success"])
         self.assertEqual(result["returncode"], 7)
         self.assertIn("failure", result["output"])
+        result = self.call("run_command", argv=[sys.executable, "-c", "print(input())"], stdin_text="中文输入\n")
+        self.assertTrue(result["success"], result)
+        self.assertIn("中文输入", result["output"])
 
     def test_command_does_not_interpret_shell_characters(self):
         value = "a; echo injected && | > marker.txt"
@@ -238,17 +270,10 @@ class OperationTests(unittest.TestCase):
                 self.assertFalse(self.call("run_command", **arguments)["ok"])
             self.assertEqual(start.call_count, 0)
 
-    def test_command_does_not_inherit_recapcli_api_key(self):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "offline-private-key", "DEEPSEEK_API_KEY": "offline-provider-key"}):
-            result = self.call("run_command", argv=[sys.executable, "-c", "import os; print(os.getenv('OPENAI_API_KEY', 'absent'), os.getenv('DEEPSEEK_API_KEY', 'absent'))"])
-        self.assertTrue(result["ok"], result)
-        self.assertIn("absent", result["output"])
-        self.assertNotIn("offline-private-key", result["output"])
-        self.assertNotIn("offline-provider-key", result["output"])
-
     def test_command_environment_uses_allowlist_for_tokens_and_cloud_secrets(self):
         secrets = {name: "fake-review-secret" for name in (
-            "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "CUSTOM_PASSWORD", "CUSTOM_CREDENTIAL",
+            "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
+            "CUSTOM_PASSWORD", "CUSTOM_CREDENTIAL",
             "HTTP_PROXY", "PYTHONPATH", "NODE_OPTIONS", "JAVA_TOOL_OPTIONS")}
         script = "import os,json; print(json.dumps({key: os.getenv(key) for key in " + repr(list(secrets)) + "}))"
         with patch.dict(os.environ, secrets | {"JAVA_HOME": "fake-java-home"}):

@@ -137,6 +137,7 @@ class RecapShell(App):
         self._cursor_visible = True
         self._busy = False
         self._busy_since = None
+        self._activity = ""
         self._approval = False
         self._approval_draft = ""
         self._cancel_requested = False
@@ -358,13 +359,20 @@ class RecapShell(App):
         if self._busy:
             self._refresh_status()
 
+    def set_activity(self, activity):
+        self._activity = clean_output(activity)
+        self._refresh_status()
+
     def _refresh_status(self):
         if not self.query("#status-line"):
             return
         label = "停止中…等待在途操作返回" if self._cancel_requested else task_text(self._task_status, busy=self._busy, approval=self._approval)
         if self._busy and not self._approval and not self._cancel_requested and self._busy_since is not None:
             elapsed = max(0, int(time.monotonic() - self._busy_since))
-            label = f"{'正在回答' if self._response_text else '正在处理'} · {elapsed}s"
+            activity = self._activity or "正在处理"
+            if self._response_text and activity.startswith("请求模型"):
+                activity = "正在回答"
+            label = f"{activity} · {elapsed}s"
         if self._task_status.status == "failed" and not self._busy and "APITimeoutError" in self._task_status.stop_reason:
             label += " · 模型请求超时，详情见上方提示"
         if self.demo:
@@ -423,6 +431,7 @@ class RecapShell(App):
     def _lock(self):
         self._busy = True
         self._busy_since = time.monotonic()
+        self._activity = ""
         self._approval = False
         self._cancel_requested = False
         self.query_one("#prompt", PromptInput).placeholder = "可先写下一条问题，Esc 停止本轮…"
@@ -431,6 +440,7 @@ class RecapShell(App):
     def _unlock(self):
         self._busy = False
         self._busy_since = None
+        self._activity = ""
         self._cancel_requested = False
         self.end_approval()
         while True:
@@ -542,7 +552,9 @@ class RecapShell(App):
 
     def action_quit(self):
         if self.driver is not None and self._busy:
+            self._cancel_requested = True
             self.driver.request_stop()
+            self._refresh_status()
             return
         if self.driver is not None:
             self.driver.save_if_needed()

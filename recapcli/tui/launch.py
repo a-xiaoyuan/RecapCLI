@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..cli import build_parser
 from ..cli import main as cli_main
-from ..core.agent import AgentLimits
+from ..core.agent import AgentLimits, DEFAULT_STEPS
 from .driver import ShellOptions
 
 
@@ -23,6 +23,8 @@ def _interactive_shell(args):
 
 
 def shell_options(args):
+    if args.banner != "auto" or args.color != "auto":
+        raise ValueError("--banner/--color 用于行式 CLI：python -m recapcli.cli；TUI 演示请去掉这两个参数")
     if (isinstance(args.approval_timeout, bool) or not isinstance(args.approval_timeout, (int, float))
             or not math.isfinite(args.approval_timeout) or not 0 < args.approval_timeout <= 3600):
         raise ValueError("--approval-timeout 必须是大于 0 且不超过 3600 的秒数")
@@ -31,7 +33,7 @@ def shell_options(args):
         raise ValueError("--workspace 必须是存在的目录")
     max_steps = args.max_steps
     if max_steps is None:
-        max_steps = 20 if args.mode in ("plan", "multi") else 8
+        max_steps = DEFAULT_STEPS[args.mode]
     if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
         raise ValueError("--max-steps 必须大于 0")
     if args.mode == "plan" and max_steps < 4:
@@ -88,18 +90,12 @@ def dispatch(argv=None, *, force_shell=False) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if any(item in {"-h", "--help"} for item in argv):
         return cli_main(argv)
-    demo = False
-    cleaned = []
-    for item in argv:
-        if item == "--demo":
-            demo = True
-        else:
-            cleaned.append(item)
     try:
-        args = build_parser().parse_args(cleaned)
+        args = build_parser().parse_args(argv)
     except SystemExit as error:
         code = error.code
         return int(code) if isinstance(code, int) else (0 if code is None else 1)
+    demo = args.demo
     blocked = args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview
     if demo and blocked:
         print("--demo 只启动界面演示，不能和提问、任务查看或 --preview 同时使用。", file=sys.stderr)
@@ -107,6 +103,8 @@ def dispatch(argv=None, *, force_shell=False) -> int:
     if force_shell and blocked:
         print("这些参数属于命令行入口：python -m recapcli.cli …", file=sys.stderr)
         return 2
+    if not force_shell and not demo and (args.banner != "auto" or args.color != "auto"):
+        return cli_main(argv)
     if force_shell or demo or (_interactive_shell(args) and _tty()):
         return launch_shell(args, demo=demo)
-    return cli_main(cleaned)
+    return cli_main(argv)

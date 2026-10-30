@@ -143,6 +143,20 @@ class ApprovalGateTests(unittest.TestCase):
         self.assertRegex(seen[0].summary, r"[0-9a-f]{64}")
         self.assertEqual(events[0]["outcome"], "invalidated")
         self.assertTrue(events[0]["files_changed"])
+        path.write_text("print(1)\n", encoding="utf-8")
+        other = self.workspace / "other.py"
+        other.write_text("old", encoding="utf-8")
+        def approve_batch(request):
+            other.write_text("external", encoding="utf-8")
+            return "approved"
+        result = execute_tool("edit_files", {"edits": [
+            {"path": "app.py", "old_text": "print(1)", "new_text": "print(2)"},
+            {"path": "other.py", "old_text": "old", "new_text": "new"},
+        ]}, self.workspace, capabilities={"read", "write"}, approver=approve_batch)
+        self.assertEqual(result["approval"], "invalidated")
+        self.assertEqual(path.read_text(), "print(1)\n")
+        self.assertEqual(other.read_text(), "external")
+        self.assertFalse((self.workspace / ".recapcli/backups").exists())
 
     def test_approve_then_param_change_invalidates_and_does_not_write(self):
         path = self.workspace / "app.py"

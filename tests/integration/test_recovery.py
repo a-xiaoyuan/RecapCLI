@@ -12,14 +12,13 @@ from unittest.mock import patch
 import httpx2
 from openai import APIConnectionError, APIStatusError, OpenAI
 
-from recapcli.cli import build_parser, run_turn
+from recapcli.cli import run_turn
 from recapcli.core.agent import AgentLimits, run_agent
 from recapcli.core.budget import AgentCancelled
 from recapcli.models import request_completion
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
 from recapcli.tools.approval import approve_all
-from recapcli.tui.launch import shell_options
 from recapcli.ui.terminal_ui import TerminalUI
 
 
@@ -115,14 +114,6 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse((self.workspace / "1.txt").exists())
         self.assertFalse((self.workspace / "2.txt").exists())
 
-    def test_retry_exhaustion_preserves_completed_operations(self):
-        with self.assertRaises(APIStatusError):
-            self.turn([reply(calls=[call("edit", path="a.txt", old_text="", new_text="new")]),
-                       unavailable(), unavailable()], limits=AgentLimits(max_retries=1))
-        self.assertEqual(len(self.requests), 3)
-        self.assertEqual(self.store.load(self.session["id"])["messages"][2]["role"], "tool")
-        self.assertEqual(TaskStore(self.workspace).list_tasks()[0]["status"], "failed")
-
     def test_retries_count_toward_steps_and_keep_final_request_for_summary(self):
         self.turn([unavailable(), reply(calls=[call("read", "list_directory")]), reply("done")], max_steps=3)
         self.assertEqual(len(self.requests), 3)
@@ -145,12 +136,6 @@ class RecoveryTests(unittest.TestCase):
         tasks = TaskStore(self.workspace)
         self.assertEqual(tasks.get(tasks.list_tasks()[0]["id"])["model_requests"], 2)
         self.assertEqual(client.max_retries, 2)
-
-    def test_cli_timeout_and_retry_options_reach_tui_limits(self):
-        args = build_parser().parse_args(["--workspace", str(self.workspace), "--request-timeout", "70", "--max-retries", "1"])
-        limits = shell_options(args).limits
-        self.assertEqual(limits.request_timeout, 70)
-        self.assertEqual(limits.max_retries, 1)
 
     def test_permanent_http_and_quota_errors_are_not_retried(self):
         for status, code in ((400, None), (401, None), (403, None), (429, "insufficient_quota")):
@@ -188,9 +173,3 @@ class RecoveryTests(unittest.TestCase):
             run_agent(self.sdk([unavailable()]), "offline", "hello", self.workspace,
                       on_event=event, cancel_event=cancelled)
         self.assertEqual(len(self.requests), 1)
-
-    def test_invalid_retry_and_timeout_options_are_rejected(self):
-        for options in ({"request_timeout": 0}, {"request_timeout": float("nan")},
-                        {"max_retries": -1}, {"max_retries": 6}, {"max_retries": True}):
-            with self.subTest(options=options), self.assertRaises(ValueError):
-                AgentLimits(**options)

@@ -156,7 +156,7 @@ class TerminalUI:
         self.answer(
             "### 运行 RecapCLI\n\n"
             "先安装依赖，再发送一次提问：\n\n"
-            "```powershell\nuv sync\nuv run python main.py \"读取 README.md\"\n```\n\n"
+            "```powershell\nuv sync\nuv run python -m recapcli \"读取 README.md\"\n```\n\n"
             "- **只读工具**：使用 `read_file` 读取工作区文件。\n"
             "- **执行过程**：模型请求 → 工具执行 → 结果回传 → 回答。\n\n"
             "> 这是本地配色示例，未请求模型或读取文件。"

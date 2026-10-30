@@ -76,6 +76,20 @@ class RetrievalTests(unittest.TestCase):
         path.unlink()
         self.assertEqual(self.call("search_code_index", query="broken")["matches"], [])
 
+    def test_relevance_ranking_and_cached_queries_avoid_rescan(self):
+        (self.workspace / "a.txt").write_text("marker " + "noise " * 80, encoding="utf-8")
+        (self.workspace / "z.java").write_text("marker marker marker", encoding="utf-8")
+        first = self.call("search_code_index", query="marker")
+        self.assertEqual(first["matches"][0]["path"], "z.java")
+        with patch.object(retrieval, "_refresh", side_effect=AssertionError("cached query rescanned")):
+            second = self.call("search_code_index", query="marker")
+        self.assertTrue(second["cached"])
+        self.assertEqual(second["scanned_files"], 0)
+        self.assertEqual(second["matches"], first["matches"])
+        self.assertFalse(self.call("search_code_index", query="marker", refresh=True)["cached"])
+        (self.workspace / "new.txt").write_text("new_keyword", encoding="utf-8")
+        self.assertEqual(self.call("search_code_index", query="new_keyword")["matches"][0]["path"], "new.txt")
+
     def test_result_changed_during_query_is_not_returned(self):
         path = self.workspace / "a.py"
         path.write_text("def old():\n    pass\n", encoding="utf-8")
@@ -99,7 +113,7 @@ class RetrievalTests(unittest.TestCase):
             (self.workspace / name).write_text("def hit():\n    pass\n", encoding="utf-8")
         self.assertEqual(len(self.call("search_symbols", name="hit")["matches"]), 2)
         with patch.object(retrieval, "ScanBudget", side_effect=lambda: ScanBudget(max_files=1)):
-            result = self.call("search_symbols", name="hit")
+            result = self.call("search_symbols", name="hit", refresh=True)
         self.assertTrue(result["truncated"])
         self.assertIn("limit_reason", result)
         self.assertEqual(len(result["matches"]), 2)
@@ -116,7 +130,7 @@ class RetrievalTests(unittest.TestCase):
         (self.workspace / "b.py").write_text("def changed():\n    pass\n", encoding="utf-8")
         (self.workspace / "c.py").unlink()
         with patch.object(retrieval, "ScanBudget", side_effect=lambda: ScanBudget(max_files=1)):
-            result = self.call("search_symbols", name="hit")
+            result = self.call("search_symbols", name="hit", refresh=True)
         self.assertEqual([item["path"] for item in result["matches"]], ["a.py"])
         self.assertTrue(result["stale_files"])
         self.assertTrue(result["truncated"])

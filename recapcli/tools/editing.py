@@ -12,7 +12,7 @@ import stat
 import tempfile
 import uuid
 
-from ..storage.files import state_directory, write_json
+from ..storage.files import data_root, state_directory, write_json
 from .filesystem import ToolError, _relative, _resolve
 
 MAX_EDIT_BYTES = 1024 * 1024
@@ -91,7 +91,7 @@ def _diff(before, after, path):
     return "".join(chunks), False
 
 
-def _plan_edit(workspace, path, old_text, new_text, replace_all=False):
+def _plan_edit(workspace, path, old_text, new_text, replace_all=False, *, before=...):
     """计算一次精确替换，不写文件、不建备份。"""
     if not isinstance(old_text, str) or not isinstance(new_text, str):
         raise ToolError("old_text 和 new_text 必须是字符串")
@@ -100,7 +100,8 @@ def _plan_edit(workspace, path, old_text, new_text, replace_all=False):
     if max(len(old_text.encode("utf-8")), len(new_text.encode("utf-8"))) > MAX_EDIT_BYTES:
         raise ToolError("编辑文本不能超过 1 MiB")
     target = _target(workspace, path)
-    before = _read_bytes(target) if target.exists() else None
+    if before is ...:
+        before = _read_bytes(target) if target.exists() else None
     text = before.decode("utf-8-sig") if before is not None else ""
     newline = "\r\n" if "\r\n" in text else "\n"
     old = old_text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)
@@ -133,13 +134,16 @@ def _plan_edit(workspace, path, old_text, new_text, replace_all=False):
 
 def edit_file(workspace, path, old_text, new_text, replace_all=False, *, on_record=None):
     """现有文件默认只替换唯一匹配；创建文件时 old_text 必须为空。"""
-    planned = _plan_edit(workspace, path, old_text, new_text, replace_all)
+    return _commit_edit(workspace, _plan_edit(workspace, path, old_text, new_text, replace_all), on_record)
+
+
+def _commit_edit(workspace, planned, on_record=None, group_id=None):
     relative = planned["path"]
     if not planned["changed"]:
         return {"path": relative, "changed": False, "summary": f"{relative} 内容未变化"}
     before, after = planned["before"], planned["after"]
     backup_id = uuid.uuid4().hex
-    backup = {"schema_version": 1, "id": backup_id, "path": relative,
+    backup = {"schema_version": 1, "id": backup_id, "path": relative, "group_id": group_id or backup_id,
               "created_at": datetime.now().astimezone().isoformat(),
               "before_base64": base64.b64encode(before).decode("ascii") if before is not None else None,
               "before_sha256": _hash(before) if before is not None else None,
@@ -147,10 +151,80 @@ def edit_file(workspace, path, old_text, new_text, replace_all=False, *, on_reco
     write_json(state_directory(workspace, "backups") / f"{backup_id}.json", backup)
     if on_record is not None:
         on_record("backup", backup_id)
-    _replace_file(workspace, path, before, after)
+    _replace_file(workspace, relative, before, after)
     return {"path": relative, "changed": True, "created": planned["created"], "replacements": planned["replacements"],
             "backup_id": backup_id, "diff": planned["diff"], "diff_truncated": planned["diff_truncated"],
             "summary": f"已修改 {relative}，备份 ID：{backup_id}"}
+
+
+def _plan_edits(workspace, edits):
+    if not isinstance(edits, list) or not 1 <= len(edits) <= 20:
+        raise ToolError("edits 必须包含 1 到 20 项精确替换")
+    plans = {}
+    for edit in edits:
+        if (not isinstance(edit, dict) or not {"path", "old_text", "new_text"} <= edit.keys()
+                or set(edit) - {"path", "old_text", "new_text", "replace_all"}):
+            raise ToolError("每项编辑须包含 path、old_text、new_text，可选 replace_all")
+        target = _target(workspace, edit["path"])
+        previous = plans.get(target)
+        planned = _plan_edit(workspace, **edit, before=previous["after"] if previous else ...)
+        if previous:
+            original = previous["before"]
+            planned.update(before=original, fingerprint=previous["fingerprint"], created=previous["created"],
+                           replacements=previous["replacements"] + planned["replacements"],
+                           changed=original != planned["after"])
+            planned["diff"], planned["diff_truncated"] = _diff(
+                original.decode("utf-8-sig") if original is not None else "",
+                planned["after"].decode("utf-8-sig"), planned["path"])
+        plans[target] = planned
+    return list(plans.values())
+
+
+def edit_files(workspace, edits, *, on_record=None):
+    """一次审批一组编辑；先验证全部替换，再逐文件写入并保存各自收据。"""
+    plans = _plan_edits(workspace, edits)
+    group_id, files, diffs = uuid.uuid4().hex, [], []
+    for planned in plans:
+        try:
+            receipt = _commit_edit(workspace, planned, on_record, group_id)
+            diffs.append(receipt.pop("diff", ""))
+            files.append(receipt)
+        except (OSError, ValueError) as error:
+            return {"ok": False, "files": files, "group_id": group_id,
+                    "error": f"批量编辑在 {planned['path']} 停止：{error}；已完成的文件与备份见 files，后续未执行。"}
+    backups = [item["backup_id"] for item in files if item.get("changed")]
+    diff = "\n".join(diffs).encode("utf-8")
+    return {"files": files, "group_id": group_id, "backup_ids": backups,
+            "diff": diff[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore"),
+            "diff_truncated": len(diff) > MAX_DIFF_BYTES or any(item.get("diff_truncated") for item in files),
+            "summary": f"已编辑 {len(backups)} 个文件，操作组：{group_id}；undo_edit 可撤销本组。"}
+
+
+def _undo_records(workspace):
+    records = []
+    for path in (data_root(workspace) / "backups").glob("*.json"):
+        if path.is_symlink() or path.is_junction() or path.stat().st_size > MAX_EDIT_BYTES * 2:
+            raise ToolError("备份文件类型或大小不正确")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not {"id", "path", "after_sha256", "created_at"} <= data.keys():
+            raise ToolError(f"备份记录格式不正确：{path.name}")
+        if not data.get("restored_at"):
+            records.append(data)
+    if not records:
+        raise ToolError("没有可撤销的编辑")
+    latest = max(records, key=lambda item: item["created_at"])
+    group = latest.get("group_id", latest["id"])
+    return [item for item in reversed(records) if item.get("group_id", item["id"]) == group]
+
+
+def undo_edit(workspace):
+    records = _undo_records(workspace)
+    for item in records:
+        target = _target(workspace, item["path"])
+        if not target.is_file() or _hash(_read_bytes(target)) != item["after_sha256"]:
+            raise ToolError(f"{item['path']} 已有后续变化，未撤销；请先核对文件")
+    files = [restore_file(workspace, item["id"]) for item in records]
+    return {"files": files, "summary": f"已撤销最近一组编辑，共 {len(files)} 个文件。"}
 
 
 def restore_file(workspace, backup_id):
@@ -182,5 +256,7 @@ def restore_file(workspace, backup_id):
         if len(original) > MAX_EDIT_BYTES or _hash(original) != data.get("before_sha256"):
             raise ToolError("备份原文校验失败")
         _replace_file(workspace, data["path"], current, original)
+    data["restored_at"] = datetime.now().astimezone().isoformat()
+    write_json(record, data)
     return {"path": data["path"], "restored": True, "backup_id": backup_id,
             "summary": f"已恢复 {data['path']}，备份 ID：{backup_id}"}

@@ -166,7 +166,7 @@ class AgentTests(unittest.TestCase):
         with patch("recapcli.core.agent.time") as clock, patch("recapcli.core.agent.execute_tool") as tool:
             clock.monotonic.return_value = 0
             with self.assertRaisesRegex(RuntimeError, "时间预算"):
-                self.run_with_replies([reply(calls=[tool_call()])],
+                self.run_with_replies([reply(calls=[tool_call()])], limits=AgentLimits(max_seconds=120),
                                       on_request=lambda request: setattr(clock.monotonic, "return_value", 121))
         tool.assert_not_called()
 
@@ -204,21 +204,6 @@ class AgentTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 self.assertFalse(execute_tool("read_file", json.dumps({"path": filename}), self.workspace)["ok"])
 
-    def test_read_file_supports_line_range(self):
-        result = execute_tool("read_file", json.dumps(
-            {"path": "README.md", "start_line": 1, "end_line": 1}), self.workspace)
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["content"], "启动：python app.py")
-
-    def test_search_text_finds_matches_with_location(self):
-        (self.workspace / "pkg").mkdir()
-        (self.workspace / "pkg" / "app.py").write_text(
-            "def run():\n    return '启动服务'\n", encoding="utf-8")
-        result = execute_tool("search_text", json.dumps({"query": "启动服务"}), self.workspace)
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["matches"][0]["path"], "pkg/app.py")
-        self.assertEqual(result["matches"][0]["line"], 2)
-
     def test_search_text_respects_case_sensitivity(self):
         (self.workspace / "code.py").write_text("Hello\nhello\n", encoding="utf-8")
         insensitive = execute_tool("search_text", json.dumps({"query": "HELLO"}), self.workspace)
@@ -247,20 +232,14 @@ class AgentTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(execute_tool(name, json.dumps(arguments), self.workspace)["ok"])
 
-    def test_tool_cannot_read_recapcli_credentials(self):
-        local_config = self.workspace / ".env"
-        local_config.write_text("OPENAI_API_KEY=private-test-key\n", encoding="utf-8")
-        with patch("recapcli.tools.filesystem.ENV_FILE", local_config):
-            result = execute_tool("read_file", '{"path":".env"}', self.workspace)
-        self.assertFalse(result["ok"])
-        self.assertNotIn("private-test-key", json.dumps(result))
-
     def test_missing_configuration_stops_before_model_request(self):
         with patch.dict("os.environ", {}, clear=True), patch("recapcli.config.dotenv_values", return_value={}), patch("recapcli.cli.OpenAI") as client:
-            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            output = io.StringIO()
+            with contextlib.redirect_stderr(output), self.assertRaises(SystemExit) as error:
                 main(["你好", "--workspace", str(self.workspace)])
         self.assertEqual(error.exception.code, 2)
         client.assert_not_called()
+        self.assertNotIn("usage:", output.getvalue())
 
     def test_cli_loads_own_config_and_environment_key_takes_priority(self):
         app_config = self.root / ".env"

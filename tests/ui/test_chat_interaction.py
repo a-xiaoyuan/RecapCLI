@@ -44,6 +44,17 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
         state = ShellState(self.workspace, profiles=[dict(name="default", model="test-model", default=True, configured=True)])
         return RecapShell(state, options=ShellOptions(workspace=self.workspace, memory=False, **options), client_factory=factory)
 
+    async def test_current_tool_and_busy_quit_show_in_status_line(self):
+        app = self.app()
+        async with app.run_test(size=(80, 24)):
+            app._lock()
+            app.driver.presenter.event("[工具] read_file")
+            self.assertIn("read_file", str(app.query_one("#status-line").render()))
+            app.action_quit()
+            self.assertTrue(app.driver.quitting)
+            self.assertTrue(app.driver.cancel_event.is_set())
+            self.assertIn("停止中", str(app.query_one("#status-line").render()))
+
     async def test_waiting_time_and_timeout_remain_visible_after_bounded_retries(self):
         def handler(request):
             raise APITimeoutError(request=request)
