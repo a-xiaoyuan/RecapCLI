@@ -94,7 +94,7 @@ class RetrievalTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertEqual(self.call("search_symbols", name="new")["matches"][0]["start_line"], 2)
 
-    def test_scan_budget_does_not_return_unscanned_old_entries(self):
+    def test_partial_scan_preserves_and_revalidates_unscanned_cached_entries(self):
         for name in ("a.py", "b.py"):
             (self.workspace / name).write_text("def hit():\n    pass\n", encoding="utf-8")
         self.assertEqual(len(self.call("search_symbols", name="hit")["matches"]), 2)
@@ -102,7 +102,42 @@ class RetrievalTests(unittest.TestCase):
             result = self.call("search_symbols", name="hit")
         self.assertTrue(result["truncated"])
         self.assertIn("limit_reason", result)
-        self.assertEqual(len(result["matches"]), 1)
+        self.assertEqual(len(result["matches"]), 2)
+        connection = sqlite3.connect(self.workspace / ".recapcli/retrieval/index.sqlite3")
+        try:
+            self.assertEqual(connection.execute("SELECT count(*) FROM files").fetchone()[0], 2)
+        finally:
+            connection.close()
+
+    def test_partial_scan_never_returns_changed_or_deleted_cached_entries(self):
+        for name in ("a.py", "b.py", "c.py"):
+            (self.workspace / name).write_text("def hit():\n    pass\n", encoding="utf-8")
+        self.assertEqual(len(self.call("search_symbols", name="hit")["matches"]), 3)
+        (self.workspace / "b.py").write_text("def changed():\n    pass\n", encoding="utf-8")
+        (self.workspace / "c.py").unlink()
+        with patch.object(retrieval, "ScanBudget", side_effect=lambda: ScanBudget(max_files=1)):
+            result = self.call("search_symbols", name="hit")
+        self.assertEqual([item["path"] for item in result["matches"]], ["a.py"])
+        self.assertTrue(result["stale_files"])
+        self.assertTrue(result["truncated"])
+        self.assertEqual(self.call("search_symbols", name="changed")["matches"][0]["path"], "b.py")
+
+    def test_budget_expiry_during_indexing_rolls_back_partial_file(self):
+        path = self.workspace / "a.py"
+        path.write_text("def old():\n    pass\n", encoding="utf-8")
+        self.call("search_symbols", name="old")
+        path.write_text("def new():\n    pass\n", encoding="utf-8")
+        connection = retrieval._connect(self.workspace)
+        def interrupted(db, relative, digest, text, budget):
+            retrieval._delete(db, relative)
+            budget.stop("test indexing deadline")
+        try:
+            with connection, patch.object(retrieval, "_index", side_effect=interrupted):
+                budget, _ = retrieval._refresh(connection, self.workspace)
+            self.assertTrue(budget.reason)
+            self.assertEqual(connection.execute("SELECT name FROM symbols").fetchone()[0], "old")
+        finally:
+            connection.close()
 
     def test_exclusions_binary_and_result_limit(self):
         (self.workspace / ".env").write_text("sensitive marker", encoding="utf-8")

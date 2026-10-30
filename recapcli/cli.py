@@ -14,6 +14,7 @@ from .config import ConfigError, list_model_profiles, load_config
 from .models import ModelClient
 from .core.agent import AgentLimits, run_agent
 from .core.memory import active
+from .core.recovery import TurnRecovery
 from .storage.session import SessionStore
 from .storage.tasks import TaskStore, project_version
 from .tools.approval import InteractiveApprover, approve_all, fail_closed
@@ -116,8 +117,10 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         "model_config": model_config,
     })
     started = time.monotonic()
+    recovery = TurnRecovery(limits.max_tool_bytes)
 
     def trace(kind, data):
+        recovery.observe(kind, data)
         try:
             tasks.append(task_id, kind, data)
         except (OSError, ValueError) as error:
@@ -165,6 +168,14 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         except (OSError, ValueError, RuntimeError) as record_error:
             ui.error(f"任务 {task_id} 的终态未保存：{record_error}；请核对现有操作记录，勿重复执行。")
         publish_task()
+        recovered_messages = recovery.finish(task_id)
+        if recovered_messages:
+            session["messages"].extend(recovered_messages)
+            session["model"] = model
+            if model_config is not None:
+                session["model_profile"] = model_config["profile"]
+            saved = save_session(store, session, ui)
+            ui.info(f"已保留本轮工具事实{'并保存会话' if saved else '在内存中，请用 /save 重试'}；任务未完成，未重放操作。")
         raise
     try:
         tasks.finish(task_id, result.status, result.stop_reason, answer=result.answer,
@@ -457,6 +468,8 @@ def build_parser():
     parser.add_argument("--max-tool-bytes", type=int, default=128 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
     parser.add_argument("--context-bytes", type=int, default=256 * 1024, help="模型消息的 UTF-8 JSON 大小上限")
     parser.add_argument("--max-seconds", type=float, default=120.0, help="每轮执行时间预算，秒")
+    parser.add_argument("--request-timeout", type=float, default=30.0, help="单次模型请求超时，秒；同时受剩余任务时间限制")
+    parser.add_argument("--max-retries", type=int, default=2, help="暂时性模型请求错误的重试上限，默认 2；计入 --max-steps")
     sessions = parser.add_mutually_exclusive_group()
     sessions.add_argument("--session", metavar="ID", help="加载指定会话 ID 后继续")
     sessions.add_argument("--continue", dest="continue_", action="store_true", help="恢复最近一个有内容的会话")
@@ -541,7 +554,8 @@ def main(argv=None) -> int:
         parser.error("Multi 仅本地只读，至少需要 3 次模型请求预算")
     try:
         limits = AgentLimits(max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
-                             max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds)
+                             max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds,
+                             request_timeout=args.request_timeout, max_retries=args.max_retries)
     except ValueError as error:
         parser.error(str(error))
     if not args.workspace.is_dir():

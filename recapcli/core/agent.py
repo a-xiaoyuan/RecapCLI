@@ -16,6 +16,7 @@ from .budget import AgentBudget, OUTPUT_LIMIT_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text, validate_summary
 from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, select_history
 from .planning import PlanController
+from .requests import retry_delay
 from ..tools import execute_tool, tool_definitions
 from ..tools.approval import fail_closed
 
@@ -43,6 +44,8 @@ class AgentLimits:
     max_tool_calls: int = 16
     max_tool_bytes: int = 128 * 1024
     max_seconds: float = 120.0
+    request_timeout: float = 30.0
+    max_retries: int = 2
 
     def __post_init__(self):
         for name in ("max_context_bytes", "max_tool_calls", "max_tool_bytes"):
@@ -52,6 +55,11 @@ class AgentLimits:
         if (isinstance(self.max_seconds, bool) or not isinstance(self.max_seconds, (int, float))
                 or not 0 < self.max_seconds < float("inf")):
             raise ValueError("max_seconds 必须是有限的正数")
+        if (isinstance(self.request_timeout, bool) or not isinstance(self.request_timeout, (int, float))
+                or not 0 < self.request_timeout < float("inf")):
+            raise ValueError("request_timeout 必须是有限的正数")
+        if isinstance(self.max_retries, bool) or not isinstance(self.max_retries, int) or not 0 <= self.max_retries <= 5:
+            raise ValueError("max_retries 必须是 0 到 5 的整数")
         if self.max_tool_bytes < self.max_tool_calls * json_size(OUTPUT_LIMIT_RESULT):
             raise ValueError("工具输出预算过小，无法为每次调用保留错误结果空间")
 
@@ -136,48 +144,68 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
 
     def request_model(messages, phase, *, tools=None, tools_allowed=False, history_messages=0):
         nonlocal requests_used
-        if requests_used >= max_steps:
-            raise RuntimeError("模型请求预算已耗尽")
-        remaining_time()
-        if json_size(messages) > limits.max_context_bytes:
-            raise ValueError("模型消息超过上下文预算")
-        request_index = budget.request(_request_reserve)
-        requests_used += 1
-        model_config = client.metadata() if isinstance(client, ModelClient) else {"protocol": "chat_completions", "model": model}
-        trace("model_request", index=request_index, phase=phase, model_config=model_config,
-              history_messages=history_messages, context_bytes=json_size(messages), tools_allowed=tools_allowed,
-              messages=messages, tools=[item["function"]["name"] for item in (tools or [])])
-        on_event(f"[模型] 第 {request_index} 次请求" + ("（历史压缩）" if phase == "compact" else ""))
-        visible_stream = (on_stream is not None and phase in {"react", "summary"}
-                          and _role not in {"analysis", "review"}
-                          and (not isinstance(client, ModelClient) or client.metadata()["capabilities"]["streaming"]))
-
-        def delta(text):
+        for attempt in range(limits.max_retries + 1):
+            if requests_used >= max_steps:
+                raise RuntimeError("模型请求预算已耗尽")
             remaining_time()
-            on_stream("delta", text)
+            if json_size(messages) > limits.max_context_bytes:
+                raise ValueError("模型消息超过上下文预算")
+            request_index = budget.request(_request_reserve)
+            requests_used += 1
+            model_config = client.metadata() if isinstance(client, ModelClient) else {"protocol": "chat_completions", "model": model}
+            trace("model_request", index=request_index, phase=phase, model_config=model_config,
+                  history_messages=history_messages, context_bytes=json_size(messages), tools_allowed=tools_allowed,
+                  messages=messages, tools=[item["function"]["name"] for item in (tools or [])])
+            on_event(f"[模型] 第 {request_index} 次请求" + ("（历史压缩）" if phase == "compact" else ""))
+            visible_stream = (on_stream is not None and phase in {"react", "summary"}
+                              and _role not in {"analysis", "review"}
+                              and (not isinstance(client, ModelClient) or client.metadata()["capabilities"]["streaming"]))
+            emitted = False
 
-        if visible_stream:
-            on_stream("start", "")
-        try:
-            response = request_completion(client, model=model, messages=messages, tools=tools,
-                                          tools_allowed=tools_allowed, timeout=min(30.0, remaining_time()),
-                                          context_bytes=limits.max_context_bytes, workspace=workspace,
-                                          on_delta=delta if visible_stream else None, check=remaining_time)
-        except (ModelResponseError, IncompleteStreamError) as error:
-            trace("model_response", response=error.response, usage=error.usage)
+            def delta(text):
+                nonlocal emitted
+                remaining_time()
+                emitted = emitted or bool(text)
+                on_stream("delta", text)
+
             if visible_stream:
-                on_stream("abort", "")
-            raise
-        except BaseException:
+                on_stream("start", "")
+            try:
+                response = request_completion(client, model=model, messages=messages, tools=tools,
+                                              tools_allowed=tools_allowed, timeout=min(limits.request_timeout, remaining_time()),
+                                              context_bytes=limits.max_context_bytes, workspace=workspace,
+                                              on_delta=delta if visible_stream else None, check=remaining_time)
+            except (ModelResponseError, IncompleteStreamError) as error:
+                trace("model_response", response=error.response, usage=error.usage)
+                if visible_stream:
+                    on_stream("abort", "")
+                raise
+            except APIError as error:
+                if visible_stream:
+                    on_stream("abort", "")
+                delay = retry_delay(error, attempt)
+                reserve = {"plan": 4, "multi": 3}.get(mode, 1) if phase == "compact" else int(tools_allowed)
+                if (delay is None or emitted or attempt >= limits.max_retries
+                        or requests_used >= max_steps - reserve
+                        or budget.requests >= budget.max_requests - _request_reserve
+                        or delay >= remaining_time()):
+                    raise
+                trace("model_retry", index=request_index, error_type=type(error).__name__,
+                      status_code=getattr(error, "status_code", None), delay_seconds=delay)
+                on_event(f"[重试] 模型请求暂时失败（{type(error).__name__}），{delay:g} 秒后重试；不会重放工具。")
+                budget.cancel_event.wait(delay)
+                remaining_time()
+                continue
+            except BaseException:
+                if visible_stream:
+                    on_stream("abort", "")
+                raise
+            trace("model_response", response=response.model_dump(exclude_none=True),
+                  usage=response.usage.model_dump(exclude_none=True) if response.usage else None)
+            remaining_time()
             if visible_stream:
-                on_stream("abort", "")
-            raise
-        trace("model_response", response=response.model_dump(exclude_none=True),
-              usage=response.usage.model_dump(exclude_none=True) if response.usage else None)
-        remaining_time()
-        if visible_stream:
-            on_stream("end", "")
-        return response
+                on_stream("end", "")
+            return response
 
     covered = summary["covered_messages"] if summary else 0
     uncovered = history[covered:]
@@ -221,7 +249,8 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
     base_system_text = system_text
     system_text += ("\n\n" + summary_text(summary)) if summary else ""
     history_for_model = history[summary["covered_messages"]:] if summary else history
-    for step in range(requests_used + 1, max_steps + 1):
+    while requests_used < max_steps:
+        step = requests_used + 1
         remaining_time()
         final_request = step == max_steps or budget.should_summarize(_request_reserve)
         if planner is not None and final_request:

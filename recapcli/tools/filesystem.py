@@ -72,7 +72,19 @@ def _checked_target(workspace, target):
         raise ToolError("禁止访问工作区之外的路径")
     if target == ENV_FILE.resolve():
         raise ToolError("禁止访问 RecapCLI 的本地凭据配置")
+    if sensitive_path(target.relative_to(Path(workspace).resolve())):
+        raise ToolError("禁止访问敏感凭据文件或目录")
     return target
+
+
+def sensitive_path(path):
+    """读取、检索、编辑和图片输入共用的凭据路径策略。"""
+    # Windows 的 :$DATA 等备用数据流语法不能绕过基础文件名检查。
+    parts = [part.split(":", 1)[0].rstrip(" .").casefold() for part in Path(path).parts]
+    return any(part in {".ssh", ".aws", ".azure", ".kube", ".netrc", "_netrc", ".npmrc", ".pypirc"}
+               or part == ".env" or part.startswith(".env.")
+               or part.endswith((".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"))
+               for part in parts)
 
 
 def _resolve(workspace, path, *, must_exist=True):
@@ -81,6 +93,8 @@ def _resolve(workspace, path, *, must_exist=True):
     candidate = Path(path)
     if candidate.is_absolute():
         raise ToolError("path 必须是相对工作区的路径")
+    if sensitive_path(candidate):
+        raise ToolError("禁止访问敏感凭据文件或目录")
     target = _checked_target(workspace, Path(workspace) / candidate)
     if must_exist and not target.exists():
         raise ToolError(f"路径不存在：{path}")

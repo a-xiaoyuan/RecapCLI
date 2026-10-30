@@ -100,7 +100,7 @@ def prepare_user_message(prompt, workspace):
         from .tools.filesystem import _checked_target, SKIP_DIRS
         target = _checked_target(workspace, target)
         relative = target.relative_to(workspace)
-        if any(part in SKIP_DIRS for part in relative.parts) or target.name.startswith(".env"):
+        if any(part in SKIP_DIRS for part in relative.parts):
             raise ValueError("不能把凭据或运行数据作为图片附件")
         data, mime = _image_bytes(target)
         payloads.append((data, {"sha256": hashlib.sha256(data).hexdigest(), "mime_type": mime,

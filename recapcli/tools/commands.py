@@ -93,8 +93,16 @@ def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=1
     write_json(record_path, record)  # 记录不可写时，不启动命令。
     if on_record is not None:
         on_record("command", command_id)
-    environment = {key: value for key, value in os.environ.items()
-                   if key.upper() != "API_KEY" and not key.upper().endswith("_API_KEY")}
+    # 只继承启动常用构建工具所需的变量，不把宿主的令牌、云凭据或代理密码交给命令。
+    allowed_environment = {
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC",
+        "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+        "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+        "COMMONPROGRAMFILES", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+        "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "NO_COLOR", "VIRTUAL_ENV",
+        "JAVA_HOME", "JDK_HOME", "MAVEN_HOME", "M2_HOME", "GRADLE_HOME",
+    }
+    environment = {key: value for key, value in os.environ.items() if key.upper() in allowed_environment}
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
     output = bytearray()
     exceeded = threading.Event()

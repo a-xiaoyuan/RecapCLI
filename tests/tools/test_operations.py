@@ -246,6 +246,19 @@ class OperationTests(unittest.TestCase):
         self.assertNotIn("offline-private-key", result["output"])
         self.assertNotIn("offline-provider-key", result["output"])
 
+    def test_command_environment_uses_allowlist_for_tokens_and_cloud_secrets(self):
+        secrets = {name: "fake-review-secret" for name in (
+            "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "CUSTOM_PASSWORD", "CUSTOM_CREDENTIAL",
+            "HTTP_PROXY", "PYTHONPATH", "NODE_OPTIONS", "JAVA_TOOL_OPTIONS")}
+        script = "import os,json; print(json.dumps({key: os.getenv(key) for key in " + repr(list(secrets)) + "}))"
+        with patch.dict(os.environ, secrets | {"JAVA_HOME": "fake-java-home"}):
+            result = self.call("run_command", argv=[sys.executable, "-c", script])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(json.loads(result["output"]), dict.fromkeys(secrets))
+        with patch.dict(os.environ, {"JAVA_HOME": "fake-java-home"}):
+            result = self.call("run_command", argv=[sys.executable, "-c", "import os; print(os.getenv('JAVA_HOME'))"])
+        self.assertIn("fake-java-home", result["output"])
+
 
 if __name__ == "__main__":
     unittest.main()

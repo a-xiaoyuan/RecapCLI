@@ -220,13 +220,16 @@ class TaskRuntimeTests(unittest.TestCase):
         self.assertEqual(task["metadata"]["provider_host"], "offline.invalid")
         self.assertNotIn("offline-secret-key", json.dumps(task))
 
-    def test_edit_survives_model_failure_and_failed_turn_does_not_enter_session(self):
+    def test_edit_and_receipt_survive_exhausted_model_retries_in_session(self):
         with self.assertRaises(APIError):
-            self.run_replies([self.edit(), httpx2.ConnectError("offline failure")], capabilities=("read", "write"), approver=approve_all)
+            self.run_replies([self.edit(), *[httpx2.ConnectError("offline failure") for _ in range(3)]],
+                             capabilities=("read", "write"), approver=approve_all)
         task = self.task()
         self.assertEqual(task["status"], "failed")
         self.assertEqual(self.source.read_text(), "print(2)\n")
-        self.assertEqual(self.session["messages"], [])
+        self.assertEqual([message["role"] for message in self.session["messages"]], ["user", "assistant", "tool", "assistant"])
+        self.assertIn("本轮已中断", self.sessions.load(self.session["id"])["messages"][-1]["content"])
+        self.assertEqual(task["model_requests"], 4)
         backup = next(event for event in task["events"] if event["kind"] == "artifact")
         result = next(event for event in task["events"] if event["kind"] == "tool_result")
         self.assertLess(backup["sequence"], result["sequence"])
@@ -267,7 +270,8 @@ class TaskRuntimeTests(unittest.TestCase):
             self.run_replies([self.edit(), KeyboardInterrupt()], capabilities=("read", "write"), approver=approve_all)
         self.assertEqual(self.task()["status"], "cancelled")
         self.assertEqual(self.source.read_text(), "print(2)\n")
-        self.assertEqual(self.session["messages"], [])
+        self.assertTrue(json.loads(self.session["messages"][2]["content"])["ok"])
+        self.assertIn("本轮已中断", self.sessions.load(self.session["id"])["messages"][-1]["content"])
         self.assertTrue(any(event["kind"] == "tool_result" for event in self.task()["events"]))
 
     def test_trace_failure_before_edit_side_effect_stops_the_task(self):

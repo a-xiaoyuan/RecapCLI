@@ -4,6 +4,8 @@ from contextlib import ExitStack
 import hashlib
 import json
 
+from openai import OpenAI
+
 from .config import load_config
 from .llm import complete
 
@@ -92,6 +94,9 @@ def request_completion(client, *, model, messages, tools=None, tools_allowed=Tru
         return client.complete(model=model, messages=messages, tools=tools, tools_allowed=tools_allowed,
                                timeout=timeout, context_bytes=context_bytes, workspace=workspace, on_delta=on_delta, check=check)
     # 保留 Python API 接收现有 OpenAI 客户端的兼容性。
+    if isinstance(client, OpenAI):
+        # 请求重试由 Agent 统一计数和取消，不叠加调用方 SDK 的默认重试。
+        client = client.with_options(max_retries=0)
     return complete(client, "chat_completions", model=model, messages=messages, tools=tools,
                     tools_allowed=tools_allowed, timeout=timeout, context_bytes=context_bytes,
                     workspace=workspace, on_delta=on_delta, check=check)

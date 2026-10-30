@@ -44,7 +44,7 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
         state = ShellState(self.workspace, profiles=[dict(name="default", model="test-model", default=True, configured=True)])
         return RecapShell(state, options=ShellOptions(workspace=self.workspace, memory=False, **options), client_factory=factory)
 
-    async def test_waiting_time_and_timeout_are_visible_without_retry_or_switch(self):
+    async def test_waiting_time_and_timeout_remain_visible_after_bounded_retries(self):
         def handler(request):
             raise APITimeoutError(request=request)
 
@@ -59,7 +59,8 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one("#prompt").load_text("你好")
                 await pilot.press("enter")
                 await wait_for(pilot, lambda: not app._busy)
-                self.assertEqual(len(self.requests), 1)
+                self.assertEqual(len(self.requests), 3)
+                self.assertIn("[重试]", transcript(app))
                 self.assertEqual(app.driver.model, "test-model")
                 self.assertIn("返回数据超时", transcript(app))
                 self.assertIn("/models", transcript(app))

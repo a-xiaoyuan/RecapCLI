@@ -54,6 +54,29 @@ class ToolBoundaryTests(unittest.TestCase):
         self.assertEqual([match["path"] for match in result["matches"]], ["config_example.py"])
         self.assertNotIn("offline-private-marker", json.dumps(result))
 
+    def test_workspace_credentials_share_read_search_edit_and_index_policy(self):
+        names = (".env", "nested/.Env.production", "private.pem", "secret.key", ".aws/credentials", ".ssh/id_rsa")
+        for name in names:
+            target = self.workspace / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("FAKE_CREDENTIAL_MARKER", encoding="utf-8")
+        for name in names:
+            with self.subTest(path=name):
+                self.assertFalse(self.call("read_file", path=name)["ok"])
+                self.assertFalse(self.call("search_text", query="FAKE_CREDENTIAL_MARKER", path=name)["ok"])
+                result = execute_tool("edit_file", {"path": name, "old_text": "FAKE_CREDENTIAL_MARKER", "new_text": "changed"},
+                                      self.workspace, capabilities={"read", "write"}, approver=approve_all)
+                self.assertFalse(result["ok"])
+                self.assertEqual((self.workspace / name).read_text(encoding="utf-8"), "FAKE_CREDENTIAL_MARKER")
+        for tool, arguments in (("search_text", {"query": "FAKE_CREDENTIAL_MARKER"}),
+                                ("search_code_index", {"query": "FAKE_CREDENTIAL_MARKER"})):
+            self.assertEqual(self.call(tool, **arguments)["matches"], [])
+        self.assertEqual(self.call("find_files", pattern="*")["files"], [])
+        self.assertNotIn(".env", self.call("list_directory")["tree"])
+        if os.name == "nt":
+            for alias in (".env::$DATA", "private.pem::$DATA"):
+                self.assertFalse(self.call("read_file", path=alias)["ok"])
+
     def test_recursive_tools_never_enter_outside_directory_link(self):
         outside = self.root / "outside"
         outside.mkdir()

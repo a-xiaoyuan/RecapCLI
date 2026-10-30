@@ -301,7 +301,7 @@ class SubagentTests(unittest.TestCase):
         self.assertIn("analysis=failed", result.answer)
         aggregate = next(data for role, data in self.requests if role == "aggregate")
         self.assertIn("review-only", aggregate["messages"][-1]["content"])
-        self.assertEqual(self.counts["analysis"], 1)
+        self.assertEqual(self.counts["analysis"], 3)
 
     def test_aggregation_failure_preserves_reports_without_retry(self):
         def respond(role, count, data):

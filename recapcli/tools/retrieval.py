@@ -13,12 +13,6 @@ SCHEMA_VERSION = 1
 MAX_RESULTS = 200
 
 
-def _excluded(path):
-    name = path.name.casefold()
-    return (name == ".env" or name.startswith(".env.") or name.endswith(
-        (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")))
-
-
 def _read_source(workspace, path, budget=None):
     # 遍历时和再次校验时都拒绝链接，且重新检查解析后的路径。
     relative = path.relative_to(workspace)
@@ -27,7 +21,7 @@ def _read_source(workspace, path, budget=None):
         cursor = cursor / part
         if cursor.is_symlink() or cursor.is_junction():
             raise ToolError("索引文件路径不能包含链接")
-    if _checked_target(workspace, path) != path or not path.is_file() or _excluded(path):
+    if _checked_target(workspace, path) != path or not path.is_file():
         raise ToolError("文件不可索引")
     if path.stat().st_size > MAX_SEARCH_FILE_BYTES:
         raise ToolError("文件超过索引大小上限")
@@ -110,17 +104,27 @@ def _refresh(connection, workspace):
                 raise
             except (OSError, ValueError, UnicodeError):
                 skipped += 1
+                _delete(connection, relative)
                 continue
             old = connection.execute("SELECT digest FROM files WHERE path = ?", (relative,)).fetchone()
             if old is None or old[0] != digest:
-                _index(connection, relative, digest, text, budget)
+                # 建索引中途耗尽预算时回滚该文件，保留此前完整的缓存。
+                connection.execute("SAVEPOINT index_file")
+                try:
+                    _index(connection, relative, digest, text, budget)
+                except BaseException:
+                    connection.execute("ROLLBACK TO index_file")
+                    raise
+                finally:
+                    connection.execute("RELEASE index_file")
             seen.add(relative)
     except ScanLimit:
         pass
-    # 对删除、不可读和本次预算未扫描到的文件，不保留可查询的旧引用。
-    for (path,) in connection.execute("SELECT path FROM files").fetchall():
-        if path not in seen:
-            _delete(connection, path)
+    # 只有完整扫描才能以“未出现”判定文件已删除；部分扫描保留未检查的缓存。
+    if not budget.reason:
+        for (path,) in connection.execute("SELECT path FROM files").fetchall():
+            if path not in seen:
+                _delete(connection, path)
     return budget, skipped
 
 
@@ -168,6 +172,7 @@ def _search(workspace, *, name=None, kind=None, query=None, max_results=50):
                         break
                     except (OSError, ValueError, UnicodeError):
                         changed = True
+                        _delete(connection, path)
                         continue
                     match = {"path": path, "start_line": int(start), "end_line": int(end),
                              "reference": file_reference(path, int(start), int(end))}

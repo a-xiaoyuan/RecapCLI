@@ -414,7 +414,12 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), "new")
         self.assertEqual(len(list((self.workspace / ".recapcli/backups").glob("*.json"))), 1)
         self.assertIn("备份 ID", self.output.getvalue())
-        self.assertEqual(list(SessionStore(self.workspace).sessions_dir.glob("*.json")), [])
+        saved = SessionStore(self.workspace).latest()
+        self.assertEqual([message["role"] for message in saved["messages"]], ["user", "assistant", "tool", "assistant"])
+        receipt = json.loads(saved["messages"][2]["content"])
+        self.assertTrue(receipt["ok"])
+        self.assertIn("backup_id", receipt)
+        self.assertIn("本轮已中断", saved["messages"][-1]["content"])
 
     def test_interactive_multi_turn_and_remember_command(self):
         prompts = ["/remember preference 项目使用 uv 管理依赖", "第一问", "第二问", "/exit"]
@@ -624,7 +629,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(self.errors.getvalue().count("命令执行失败"), 3)
         self.assertEqual(store.memory_path.read_bytes(), original)
 
-    def test_failed_model_turn_does_not_leak_partial_tool_history(self):
+    def test_failed_model_turn_preserves_completed_tools_for_next_question(self):
         (self.workspace / "README.md").write_text("offline content", encoding="utf-8")
         prompts = ["第一问", "失败的问题", "继续提问", "/exit"]
         with patch.object(TerminalUI, "read_prompt", side_effect=prompts):
@@ -634,10 +639,14 @@ class ConversationTests(unittest.TestCase):
             )
         self.assertEqual(code, 0)
         self.assertEqual(len(requests), 4)
-        self.assertEqual([message.get("content") for message in requests[-1]["messages"]][1:],
-                         ["第一问", "第一答", "继续提问"])
+        history = requests[-1]["messages"][1:]
+        self.assertEqual([message["role"] for message in history],
+                         ["user", "assistant", "user", "assistant", "tool", "assistant", "user"])
+        self.assertIn("offline content", history[4]["content"])
+        self.assertIn("本轮已中断", history[5]["content"])
+        self.assertNotIn("不完整回答", json.dumps(history, ensure_ascii=False))
         saved = SessionStore(self.workspace).latest()
-        self.assertEqual([message["content"] for message in saved["messages"]], ["第一问", "第一答", "继续提问", "继续回答"])
+        self.assertEqual(len(saved["messages"]), 8)
 
 
 if __name__ == "__main__":

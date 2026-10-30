@@ -114,19 +114,29 @@ uv run python -m recapcli --allow-web "搜索 Python 官方 asyncio 文档，读
 
 单次提问和非交互运行不会等待输入，结果为 `needs_approval`。脚本需要显式 `--yes`。批准绑定这次的参数和文件指纹；执行前若变化，批准作废。拒绝、过期、取消和失效都不写备份、不启动进程。
 
+文件工具与图片输入统一拒绝工作区内的 `.env`、`.env.*`（含示例文件）、常见密钥文件和 `.ssh` / `.aws` 等凭据目录。命令只继承 PATH、系统路径、临时目录、用户目录、语言设置和 Java / Maven / Gradle 等必要环境变量；令牌、云密钥、代理与启动注入变量不继承。命令仍以当前用户权限运行，能够自行读取凭据文件；这不是操作系统沙箱。
+
+### 模型请求失败与继续
+
+`--request-timeout` 设置单次模型请求超时，默认 30 秒，同时受 `--max-seconds` 剩余时间限制。连接错误、超时、HTTP 408 / 429 / 5xx 默认最多重试 2 次（`--max-retries 0` 可关闭，最多 5）；401 / 403、额度不足、协议错误和已输出部分正文的流不重试。重试采用退避或服务端 Retry-After；延迟超过剩余任务时间时停止，每次重试计入 `--max-steps` 和任务追溯。SDK 内部自动重试关闭，避免重复计数。
+
+失败或取消前已经开始的工具调用会保存到会话并补上“任务中断”说明，下一次提问或 `--continue` 可以看到已有操作事实。已完成的结果保留；只有开始记录而无结果的调用标为 `unknown`，尚未调度的调用标为 `not_executed`。超出恢复上下文预算的工具正文会省略，收据和完整任务追溯保留。不会因模型请求失败重放编辑或命令，也不会把半截回答当作成功结果。`multi` 子代理的独立工具过程仍通过任务追溯查看，不混入父会话。
+
 ### Multi：仅本地只读
 
 `--mode multi` 同时跑 `analysis` 与 `review`。两者各自保持上下文，复用同一条 ReAct 和工具链，结束后由父任务汇总。父任务即使加了 `--allow-web`、`--allow-write` 或 `--allow-exec`，子代理也只有本地读取：不联网、不改文件、不执行命令。汇总阶段不用工具。分析和审查是模型意见，不能代替测试或人工验收。
 
 `--max-steps` 含压缩、两个子代理和汇总，默认 20，最少 3。压缩后先留一次汇总，剩余请求均分（余数给分析），未用份额不转移。`--max-tool-calls`、`--max-tool-bytes` 和 `--max-seconds` 在整个任务内共享。这些不是 token 或费用硬上限。
 
-Ctrl+C 会停掉后续调度。Python API：`run_agent(..., mode="multi", cancel_event=threading.Event())`。已在途的同步 HTTP 会等到返回或超时（单次 SDK 超时为 30 秒与剩余时间的较小值）。会话只追加问题和最终汇总。`/task ID` 或 `--task ID --json` 可看各角色的记录。
+Ctrl+C 会停掉后续调度。Python API：`run_agent(..., mode="multi", cancel_event=threading.Event())`。已在途的同步 HTTP 会等到返回或超时（`--request-timeout` 与剩余时间的较小值，默认 30 秒）。会话只追加问题和最终汇总。`/task ID` 或 `--task ID --json` 可看各角色的记录。
 
 ### 代码索引
 
 `search_symbols` 按精确名称查找 `class`、`function`、`async_function`。`search_code_index` 做 FTS5 短语检索，不是子串或语义搜索。结果含 `path`、`start_line`、`end_line` 和 `reference`。
 
 索引在工作区 `.recapcli/retrieval/index.sqlite3`。已有 `.revocli` 或更早的 `.archer` 则原位沿用；多份并存时拒绝自动覆盖。查询前按内容哈希增量更新，并复核文件；期间变化的结果会丢弃并标 `stale_files`。只遍历工作区，跳过链接、运行数据目录、`.env`、`.env.*` 和常见密钥文件名，不实现通用敏感信息识别或 `.gitignore` 规则。只索引 UTF-8 文本；过大、二进制、超长行或完整符号会跳过。需要带 FTS5 的 SQLite。索引内容只是资料，不构成授权。
+
+扫描超预算时保留本次未扫描到的旧缓存，返回候选前仍核验当前文件的哈希；变化、删除或不可访问的缓存不会作为已核实结果返回。单个文件建索引中断时回滚该文件更新。`truncated` / `limit_reason` 表示查询不完整，不能据此断言整个项目不存在某段代码。
 
 ## 常用交互命令
 
