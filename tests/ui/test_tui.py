@@ -1,4 +1,4 @@
-"""Violet Studio 终端壳：配色、只读启动、以及接到现有 Agent 的对话。"""
+"""薄荷绿终端：响应布局、只读启动、以及接到现有 Agent 的对话。"""
 
 import importlib.util
 import io
@@ -71,6 +71,9 @@ class Recording:
     def answer(self, message):
         self.events.append(("answer", str(message)))
 
+    def task_update(self, task):
+        self.events.append(("task", task))
+
     def show_approval(self, message):
         self.events.append(("approval", str(message)))
 
@@ -98,11 +101,9 @@ def texts(recording, kind=None):
 
 
 class PaletteTests(unittest.TestCase):
-    def test_green_is_reserved_for_status_dot(self):
+    def test_mint_accents_and_local_config_status(self):
         css = TCSS.read_text(encoding="utf-8").lower()
-        self.assertNotIn(PALETTE["online"].lower(), css)
-        for green in ("green", "$success", "#00ff00"):
-            self.assertNotIn(green, css)
+        self.assertIn(PALETTE["mint"].lower(), css)
         self.assertEqual(colors(dot(True)), [PALETTE["online"]])
         self.assertNotIn(PALETTE["online"], colors(dot(False)) + colors(dot()))
 
@@ -179,6 +180,8 @@ class DriverTests(unittest.TestCase):
 
     def test_read_turn_shows_tool_events_and_saves_the_answer(self):
         replies = [reply(calls=[tool_call()]), reply("使用 hello 作为正文")]
+        for response in replies:
+            response["usage"] = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}
         requests = []
 
         def handler(request):
@@ -198,6 +201,9 @@ class DriverTests(unittest.TestCase):
         self.assertIn("[结果] 成功", blob)
         self.assertIn("使用 hello 作为正文", texts(self.recording, "answer"))
         self.assertEqual(len(requests), 2)
+        tasks = texts(self.recording, "task")
+        self.assertEqual([task["status"] for task in tasks], ["running", "returned"])
+        self.assertEqual(tasks[-1]["usage"]["total_tokens"], 50)
         saved = list((self.workspace / ".recapcli" / "sessions").glob("*.json"))
         self.assertEqual(len(saved), 1)
         self.assertIn("使用 hello 作为正文", saved[0].read_text(encoding="utf-8"))
@@ -237,19 +243,28 @@ class DriverTests(unittest.TestCase):
         self.assertIn("[结果] 成功", "\n".join(texts(self.recording, "event")))
         self.assertIn("已改好", texts(self.recording, "answer"))
         self.assertTrue(any("approve" in item[1] for item in self.recording.events if item[0] == "approval"))
+        from recapcli.tui.status import TaskStatus
+        self.assertEqual(TaskStatus.from_task(texts(self.recording, "task")[-1]).modified_files, ("README.md",))
 
     def test_open_restores_saved_messages(self):
         from recapcli.storage.session import SessionStore
         store = SessionStore(self.workspace)
         session = store.new_session("demo-model")
         session["messages"].append({"role": "user", "content": "昨天的问题"})
+        session["messages"].append({"role": "assistant", "content": None, "tool_calls": [
+            {"id": "saved-read", "type": "function", "function": {
+                "name": "read_file", "arguments": '{"path":"README.md"}',
+            }},
+        ]})
+        session["messages"].append({"role": "tool", "tool_call_id": "saved-read", "content": "hello"})
         session["messages"].append({"role": "assistant", "content": "昨天的回答"})
         store.save(session)
         driver = self.driver()
         driver.handle_line(f"/open {session['id']}")
         replaced = [item for item in self.recording.events if item[0] == "replace"]
-        self.assertIn(("user", "昨天的问题"), replaced[-1][1])
-        self.assertIn(("assistant", "昨天的回答"), replaced[-1][1])
+        self.assertEqual(replaced[-1][1], [("user", "昨天的问题"), ("assistant", "昨天的回答")])
+        self.assertEqual(driver.session["messages"], session["messages"])
+        self.assertEqual(store.load(session["id"])["messages"], session["messages"])
         driver.handle_line("/history")
         self.assertTrue(any("昨天的问题" in item for item in texts(self.recording, "info")))
 
@@ -308,7 +323,7 @@ class LaunchTests(unittest.TestCase):
 
 
 def transcript(app):
-    return "\n".join(str(widget.render()) for widget in app.query(".turn"))
+    return "\n".join(widget.content_text for widget in app.query(".turn"))
 
 
 async def wait_for(pilot, predicate, rounds=60):
@@ -346,13 +361,15 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         app = self._app(self._state(profiles=MISSING))
         async with app.run_test(size=(144, 40)) as pilot:
             await pilot.pause()
-            for selector in ("#brand", "#studio", "#model", "#rail", "#conversation", "#composer", "#send"):
+            for selector in ("#brand", "#studio", "#model", "#conversation", "#composer", "#send", "#inspector"):
                 self.assertTrue(app.query_one(selector).display)
-            self.assertEqual(app.query_one("#rail").region.width, 5)
+            self.assertLessEqual(app.query_one("#stage").region.right, app.query_one("#inspector").region.x)
+            self.assertEqual(app.query_one("#stage").region.x, 0)
             self.assertEqual(app.query_one("#prompt").size.height, 1)
-            self.assertEqual(len(app.query(".rail-button")), 5)
+            self.assertFalse(app.query("#rail, .rail-button"))
             self.assertFalse(app.query(".bubble, #pills, #toolbar"))
             self.assertFalse(app.query("#stream-cursor"))
+            self.assertLess(app.query(".turn").first().region.y, app.query_one("#conversation").region.y + 3)
             self.assertIs(app.focused, app.query_one("#prompt"))
             self.assertEqual(list(self.workspace.iterdir()), [])
 
@@ -361,6 +378,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(80, 28)) as pilot:
             await pilot.pause()
             self.assertFalse(app.query_one("#studio").display)
+            self.assertFalse(app.query_one("#inspector").display)
             await pilot.resize_terminal(60, 24)
             await pilot.pause()
             for selector in ("#model", "#composer", "#prompt", "#send"):
@@ -368,6 +386,55 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(widget.display)
                 self.assertLessEqual(widget.region.right, 60)
             self.assertIs(app.focused, app.query_one("#prompt"))
+
+    async def test_chinese_survives_markdown_styles_and_terminal_resize(self):
+        from textual.geometry import Region
+        app = self._app(self._state(profiles=MISSING))
+        answer = ("你好！我是 RecapCLI，一个代码助手。\n\n"
+                  "- **读取和分析代码文件**（Python、JavaScript、HTML 等）\n"
+                  "- **搜索项目中的符号、函数或类**\n"
+                  "- **浏览目录结构**")
+        expected = ("一个代码助手", "读取和分析代码文件", "搜索项目中的符号、函数或类", "浏览目录结构")
+        async with app.run_test(size=(144, 40)) as pilot:
+            await app.replace_transcript_sync([("assistant", answer)])
+            for width in (144, 80, 60):
+                await pilot.resize_terminal(width, 40)
+                await pilot.pause()
+                widget = app.query(".assistant-turn").last()
+                strips = widget.render_lines(Region(0, 0, widget.region.width, widget.region.height))
+                rendered = "".join("".join(strip.text for strip in strips).split())
+                for phrase in expected:
+                    self.assertIn(phrase, rendered, f"终端宽度 {width}")
+
+    async def test_sidebar_uses_task_facts_and_toggles_without_affecting_input(self):
+        from recapcli.tui.status import usage_text
+        app = self._app(self._state(profiles=MISSING))
+        async with app.run_test(size=(144, 40)) as pilot:
+            await pilot.pause()
+            app.driver.presenter.task_update({
+                "id": "a" * 32, "status": "returned", "duration_seconds": 2.5,
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+                "events": [{"kind": "tool_result", "data": {"name": "edit_file", "result": {
+                    "ok": True, "changed": True, "path": "README.md"}}}],
+            })
+            await pilot.pause()
+            self.assertIn("120", usage_text(app._task_status))
+            self.assertIn("120", str(app.query_one("#usage").render()))
+            self.assertIn("README.md", str(app.query_one("#modified-files").render()))
+            self.assertIn("已回答", str(app.query_one("#task-status").render()))
+            app._lock()
+            app.begin_approval("请审批")
+            self.assertIn("等待审批", str(app.query_one("#task-status").render()))
+            app.end_approval()
+            app._unlock()
+            await pilot.press("ctrl+g")
+            self.assertFalse(app.query_one("#inspector").display)
+            await pilot.press("ctrl+g")
+            self.assertTrue(app.query_one("#inspector").display)
+            self.assertIs(app.focused, app.query_one("#prompt"))
+            await app.replace_transcript_sync([])
+            self.assertEqual(app._task_status.task_id, "")
+            self.assertEqual(list(self.workspace.iterdir()), [])
 
     async def test_submit_without_config_reports_failure_and_keeps_running(self):
         app = self._app(self._state(profiles=MISSING))
@@ -387,13 +454,20 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         turn.assert_not_called()
         self.assertEqual(list(self.workspace.iterdir()), [])
 
-    async def test_submit_shows_tool_events_and_whole_answer(self):
+    async def test_submit_shows_answer_without_routine_request_noise(self):
         from recapcli.tui.driver import ShellDriver as Driver
 
         def fake_turn(client, model, workspace, store, ui, session, prompt, **kwargs):
+            ui.info("任务 ID：offline-task（/task ID 查看事实）")
+            ui.info("长期记忆：本轮选用 1 条，省略 0 条。")
             ui.event("[模型] 第 1 次请求")
             ui.event("[工具] read_file")
             ui.event("[结果] 成功")
+            ui.event("[analysis] [模型] 第 2 次请求")
+            ui.event("[review] [工具] read_file")
+            ui.event("[analysis] [结果] 成功")
+            ui.event("[操作] 已修改 README.md")
+            ui.event("[结果] 失败：文件不存在")
             answer = "已读取 README"
             session["messages"].extend([
                 {"role": "user", "content": prompt},
@@ -425,12 +499,71 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(144, 40)) as pilot:
                 await pilot.press(*"你好", "enter")
                 visible = await wait_for(pilot, lambda: "已读取 README" in transcript(app))
-        self.assertIn("[工具] read_file", visible)
-        self.assertIn("[结果] 成功", visible)
+        self.assertNotIn("任务 ID：", visible)
+        self.assertNotIn("长期记忆：本轮选用", visible)
+        self.assertNotIn("[模型]", visible)
+        self.assertNotIn("[工具]", visible)
+        self.assertNotIn("[结果] 成功", visible)
+        self.assertIn("[操作] 已修改 README.md", visible)
+        self.assertIn("[结果] 失败：文件不存在", visible)
         self.assertNotIn("Working on the summary", visible)
         self.assertFalse(app.query("#stream-cursor"))
 
-    async def test_history_and_help_buttons(self):
+    async def test_long_replies_follow_the_bottom_after_layout_and_resize(self):
+        app = self._app(self._state(profiles=MISSING))
+        async with app.run_test(size=(144, 40)) as pilot:
+            await pilot.pause()
+            conversation = app.query_one("#conversation")
+            app.append_line("\n".join(f"旧回答第 {index} 行" for index in range(60)), "assistant")
+            await pilot.pause()
+            self.assertGreater(conversation.max_scroll_y, 0)
+            self.assertEqual(conversation.scroll_y, conversation.max_scroll_y)
+
+            conversation.scroll_home(animate=False, immediate=True)
+            await pilot.pause()
+            self.assertEqual(conversation.scroll_y, 0)
+            app.append_line("新回答：" + "这是一段会自动换行的中文回答。" * 160, "assistant")
+            await pilot.pause()
+            self.assertEqual(conversation.scroll_y, conversation.max_scroll_y)
+
+            await pilot.resize_terminal(60, 24)
+            await pilot.pause()
+            self.assertEqual(conversation.scroll_y, conversation.max_scroll_y)
+
+            await app.replace_transcript_sync([
+                ("user", "恢复之前的会话"),
+                ("assistant", "\n".join(f"恢复回答第 {index} 行" for index in range(80))),
+            ])
+            await pilot.pause()
+            self.assertEqual(conversation.scroll_y, conversation.max_scroll_y)
+            self.assertIs(app.focused, app.query_one("#prompt"))
+
+    async def test_stream_updates_one_answer_before_completion_and_marks_interruptions(self):
+        app = self._app(self._state(profiles=MISSING))
+        async with app.run_test(size=(80, 28)) as pilot:
+            await pilot.pause()
+            presenter = app.driver.presenter
+            count = len(app.query(".turn"))
+            presenter.stream_update("start", "")
+            presenter.stream_update("delta", "第一部分")
+            await pilot.pause()
+            self.assertIn("第一部分", transcript(app))
+            self.assertEqual(len(app.query(".turn")), count + 1)
+            presenter.stream_update("delta", "\n" + "追加内容\n" * 45)
+            await pilot.pause()
+            conversation = app.query_one("#conversation")
+            self.assertEqual(conversation.scroll_y, conversation.max_scroll_y)
+            presenter.stream_update("end", "")
+            presenter.answer("第一部分\n" + "追加内容\n" * 45)
+            await pilot.pause()
+            self.assertEqual(len(app.query(".turn")), count + 1)
+            presenter.stream_update("start", "")
+            presenter.stream_update("delta", "未收齐")
+            presenter.stream_update("abort", "")
+            await pilot.pause()
+            self.assertIn("[回答未完成]", transcript(app))
+
+    async def test_history_and_help_commands(self):
         from recapcli.storage.session import SessionStore
         store = SessionStore(self.workspace)
         session = store.new_session("demo-model")
@@ -438,11 +571,11 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         store.save(session)
         app = self._app(self._state(profiles=MISSING))
         async with app.run_test(size=(144, 40)) as pilot:
-            await pilot.click("#rail-history")
-            await pilot.pause()
+            app._submit_value("/sessions")
+            await wait_for(pilot, lambda: not app._busy)
             self.assertIn(session["id"], transcript(app))
-            await pilot.click("#rail-help")
-            await pilot.pause()
+            app._submit_value("/help")
+            await wait_for(pilot, lambda: not app._busy)
             self.assertIn("Ctrl+Q", transcript(app))
             self.assertIn("/open", transcript(app))
 
@@ -457,9 +590,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press(*"hi", "enter")
                 await pilot.pause()
                 self.assertIn("未发送给模型", transcript(app))
-                await pilot.press("ctrl+b")
-                await pilot.pause()
-                self.assertFalse(app.query_one("#rail").display)
+                self.assertFalse(app.query("#rail"))
         turn.assert_not_called()
 
 

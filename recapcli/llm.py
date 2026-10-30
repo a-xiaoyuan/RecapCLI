@@ -5,6 +5,9 @@ import json
 
 from openai.types.chat import ChatCompletion
 
+from .images import wire_messages
+from .streaming import chat_stream, responses_stream
+
 
 class ModelResponseError(RuntimeError):
     """服务已返回响应，但协议内容无法执行；仍保留已返回的用量。"""
@@ -121,7 +124,12 @@ def _chat_messages(messages):
 
 def portable_messages(messages):
     """用于摘要与跨协议上下文；不把不透明推理状态当成普通文字。"""
-    return _chat_messages(messages)
+    result = _chat_messages(messages)
+    for original, message in zip(messages, result):
+        if original.get("attachments"):
+            message["content"] += "\n[历史图片仅保留附件名称，摘要未重新观察图片：" + ", ".join(
+                item["name"] for item in original["attachments"]) + "]"
+    return result
 
 
 def _responses_input(messages, origin):
@@ -151,8 +159,12 @@ def _responses_input(messages, origin):
         content = message.get("content") or ""
         if message.get("tool_calls"):
             content += "\n[历史工具请求，仅为资料] " + json.dumps(message["tool_calls"], ensure_ascii=False)
-        if not isinstance(content, str):
-            raise ValueError("当前模型适配仅支持文本消息")
+        if isinstance(content, list):
+            content = [{"type": "input_text", "text": part["text"]} if part["type"] == "text"
+                       else {"type": "input_image", "image_url": part["image_url"]["url"], "detail": "auto"}
+                       for part in content]
+        elif not isinstance(content, str):
+            raise ValueError("模型消息正文格式不正确")
         if content:
             items.append({"role": role, "content": content})
     if native_calls:
@@ -192,14 +204,23 @@ def _check_context(messages, context_bytes):
             raise ValueError("转换后的模型消息超过上下文 JSON 字节预算，未发送请求")
 
 
-def complete(client, protocol, *, model, messages, tools=None, tools_allowed=True, timeout=30, origin="", context_bytes=None):
+def complete(client, protocol, *, model, messages, tools=None, tools_allowed=True, timeout=30, origin="", context_bytes=None,
+             workspace=None, on_delta=None, check=None):
     """执行一次模型请求；错误由调用方记录，不探测、不重试或切换。"""
+    # 文本预算包含附件描述；图片编码另受 images.py 的单图/请求大小限制。
+    if any(message.get("attachments") for message in messages):
+        _check_context(messages, context_bytes)
+        messages = wire_messages(messages, workspace)
+        context_bytes = None
     if protocol == "chat_completions":
         converted = _chat_messages(messages)
         _check_context(converted, context_bytes)
         options = {} if tools_allowed else {"tool_choice": "none"}
         if tools:
             options["tools"] = deepcopy(tools)
+        if on_delta is not None:
+            return chat_stream(client, model=model, messages=converted, options=options, timeout=timeout,
+                               on_delta=on_delta, check=check)
         return client.chat.completions.create(model=model, messages=converted, timeout=timeout, **options)
     if protocol != "responses":
         raise ValueError("不支持的模型协议")
@@ -218,8 +239,12 @@ def complete(client, protocol, *, model, messages, tools=None, tools_allowed=Tru
         options["tools"] = response_tools
     converted = _responses_input(messages, origin)
     _check_context(converted, context_bytes)
-    response = client.responses.create(model=model, input=converted, store=False,
-                                       include=["reasoning.encrypted_content"], timeout=timeout, **options)
+    if on_delta is not None:
+        response = responses_stream(client, model=model, messages=converted, options=options, timeout=timeout,
+                                    on_delta=on_delta, check=check)
+    else:
+        response = client.responses.create(model=model, input=converted, store=False,
+                                           include=["reasoning.encrypted_content"], timeout=timeout, **options)
     try:
         return _responses_completion(response, model, origin)
     except (ValueError, RuntimeError) as error:

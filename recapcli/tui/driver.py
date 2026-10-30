@@ -26,10 +26,10 @@ from .state import _sessions
 _EOF = object()
 
 TUI_HELP = """终端壳：
-  Enter           发送给当前模型；回答整段显示，不做逐字动画
+  Enter           发送给当前模型；支持流式时逐段显示回答
   /open 会话ID    保存当前会话并恢复已有会话
   Ctrl+L          清屏，不删除已保存会话
-  Ctrl+B          显示或隐藏图标轨
+  Ctrl+G          显示或隐藏右侧状态栏（宽窗口）
   Ctrl+Q          退出并保存
 启动时 --continue 或 --session ID 也会恢复会话。
 界面演示：python -m recapcli.tui --demo（不请求模型）。
@@ -77,16 +77,32 @@ class Presenter:
         return self.app.call_from_thread(method, *args)
 
     def info(self, message):
-        self._call(self.app.append_line, str(message), "info")
+        message = str(message)
+        if message.startswith(("任务 ID：", "长期记忆：本轮选用")):
+            return
+        self._call(self.app.append_line, message, "info")
 
     def error(self, message):
         self._call(self.app.append_line, str(message), "error")
 
     def event(self, message):
-        self._call(self.app.append_line, str(message), "event")
+        message = str(message)
+        event = message
+        for role in ("analysis", "review", "aggregate"):
+            event = event.removeprefix(f"[{role}] ")
+        # 请求次数和正常读取过程留在任务追溯中；审批、失败和实际操作仍展示。
+        if event.startswith(("[模型]", "[工具]")) or event == "[结果] 成功":
+            return
+        self._call(self.app.append_line, message, "event")
 
     def answer(self, message):
-        self._call(self.app.append_line, str(message), "assistant")
+        self._call(self.app.finish_answer, str(message))
+
+    def stream_update(self, kind, text):
+        self._call(self.app.stream_update, kind, str(text))
+
+    def task_update(self, task):
+        self._call(self.app.apply_task, task)
 
     def show_approval(self, message):
         self._call(self.app.begin_approval, str(message))
@@ -184,12 +200,6 @@ class ShellDriver:
                 content = message.get("content")
                 if isinstance(content, str) and content:
                     rows.append(("assistant", content))
-                for call in message.get("tool_calls") or []:
-                    function = call.get("function") if isinstance(call, dict) else None
-                    name = (function or {}).get("name") or "工具"
-                    rows.append(("event", f"[工具] {name}"))
-            elif role == "tool":
-                rows.append(("event", "[结果] （已保存的工具结果）"))
         return rows
 
     def show_help(self):
@@ -302,7 +312,7 @@ class ShellDriver:
             return
         self.session = updated
         if updated.get("id") != before:
-            self.presenter.clear_transcript()
+            self.presenter.replace_transcript(())
             self.presenter.info(f"已开始新会话：{updated['id']}")
 
     def _open(self, session_id):

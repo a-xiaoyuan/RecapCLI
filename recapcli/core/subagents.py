@@ -25,7 +25,8 @@ HEADER = "只读协作结果：analysis/review 为模型分析与审查意见；
 
 
 def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps, capabilities,
-                  history, memory_text, summary, new_summary, on_event, on_trace, approver=None):
+                  history, memory_text, summary, new_summary, on_event, on_trace, approver=None,
+                  user_message=None, on_stream=None):
     from .agent import TraceError, TurnResult, run_agent
 
     # 父任务即使带有网页、写入或命令，子代理也只保留本地读取。
@@ -59,6 +60,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
                 memory_text=memory_text, on_event=lambda text: event(role, text),
                 on_trace=lambda kind, data: trace(role, kind, data),
                 approver=approver, _budget=budget, _role=role, _request_reserve=1,
+                _user_message=deepcopy(user_message),
             )
             report = {"role": role, "status": result.status, "answer": result.answer,
                       "stop_reason": result.stop_reason}
@@ -110,7 +112,15 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
         cap = limits.max_context_bytes // 4
         payload.append({**report, "answer": raw[:cap].decode("utf-8", errors="ignore"),
                         "truncated": len(raw) > cap})
-    aggregate_prompt = prompt + "\n\n以下 JSON 为子代理报告（truncated=true 表示正文截断，完整报告见任务追溯）：\n" + json.dumps(payload, ensure_ascii=False)
+    aggregate_prompt = user_message["content"] + "\n\n以下 JSON 为子代理报告（truncated=true 表示正文截断，完整报告见任务追溯）：\n" + json.dumps(payload, ensure_ascii=False)
+    states = "；".join(f"{item['role']}={item['status']}（{item['stop_reason']}）" for item in reports)
+    prefix = HEADER + "\n" + states + "\n\n"
+
+    def aggregate_stream(kind, text):
+        if on_stream is not None:
+            on_stream(kind, text)
+            if kind == "start":
+                on_stream("delta", prefix)
     fallback_reason = ""
     try:
         aggregate = run_agent(
@@ -119,6 +129,8 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
             on_event=lambda text: event("aggregate", text),
             on_trace=lambda kind, data: trace("aggregate", kind, data),
             approver=approver, _budget=budget, _role="aggregate", _tools_enabled=False,
+            _user_message={**deepcopy(user_message), "content": aggregate_prompt},
+            on_stream=aggregate_stream if on_stream is not None else None,
         )
         body = aggregate.answer
     except TraceError:
@@ -130,8 +142,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
         body = "\n\n".join(f"{item['role']}：\n{item['answer'] or item['stop_reason']}" for item in reports)
 
     incomplete = bool(fallback_reason) or any(item["status"] != "returned" for item in reports)
-    states = "；".join(f"{item['role']}={item['status']}（{item['stop_reason']}）" for item in reports)
     answer = HEADER + "\n" + states + ("\n" + fallback_reason if fallback_reason else "") + "\n\n" + body
     trace("parent", "subagent_budget", budget.snapshot())
-    return TurnResult(answer, [{"role": "user", "content": prompt}, {"role": "assistant", "content": answer}],
+    return TurnResult(answer, [deepcopy(user_message), {"role": "assistant", "content": answer}],
                       "incomplete" if incomplete else "returned", states + "；任务验收未验证", new_summary)

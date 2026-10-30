@@ -56,6 +56,7 @@ class PackageTests(unittest.TestCase):
     def test_config_and_tool_guard_use_project_root_env_file(self):
         values = {"OPENAI_API_KEY": "offline-key", "OPENAI_MODEL": "offline-model"}
         with patch.dict(os.environ, {}, clear=True), \
+                patch("recapcli.config.MODELS_FILE", PROJECT_ROOT / "_testtmp" / "no-models.toml"), \
                 patch("recapcli.config.dotenv_values", return_value=values) as dotenv:
             config = load_config()
         dotenv.assert_called_once_with(PROJECT_ROOT / ".env")

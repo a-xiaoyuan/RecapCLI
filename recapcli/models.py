@@ -67,23 +67,31 @@ class ModelClient:
         sdk = self._open(candidate)
         self.config, self._sdk = candidate, sdk
 
-    def complete(self, *, model, messages, tools=None, tools_allowed=True, timeout=30, context_bytes=None):
+    def complete(self, *, model, messages, tools=None, tools_allowed=True, timeout=30, context_bytes=None,
+                 workspace=None, on_delta=None, check=None):
         if model != self.model:
             raise ValueError("请求模型与当前配置不一致；请通过模型配置切换，避免混用协议私有状态")
         if tools_allowed and tools and not getattr(self.config, "tools", True):
             raise ValueError("当前模型配置 tools=false，不支持工具调用；请切换模型配置")
+        if any(message.get("attachments") for message in messages) and not getattr(self.config, "images", False):
+            raise ValueError("当前模型配置 images=false；请确认模型支持视觉后开启 images 或切换视觉模型")
+        if not getattr(self.config, "streaming", False):
+            on_delta = None
         maximum = getattr(self.config, "context_bytes", 256 * 1024)
         if context_bytes is not None:
             maximum = min(maximum, context_bytes)
         return complete(self._sdk, getattr(self.config, "protocol", "chat_completions"),
                         model=model, messages=messages, tools=tools, tools_allowed=tools_allowed,
-                        timeout=timeout, origin=self.origin, context_bytes=maximum)
+                        timeout=timeout, origin=self.origin, context_bytes=maximum,
+                        workspace=workspace, on_delta=on_delta, check=check)
 
 
-def request_completion(client, *, model, messages, tools=None, tools_allowed=True, timeout=30, context_bytes=None):
+def request_completion(client, *, model, messages, tools=None, tools_allowed=True, timeout=30, context_bytes=None,
+                       workspace=None, on_delta=None, check=None):
     if isinstance(client, ModelClient):
         return client.complete(model=model, messages=messages, tools=tools, tools_allowed=tools_allowed,
-                               timeout=timeout, context_bytes=context_bytes)
+                               timeout=timeout, context_bytes=context_bytes, workspace=workspace, on_delta=on_delta, check=check)
     # 保留 Python API 接收现有 OpenAI 客户端的兼容性。
     return complete(client, "chat_completions", model=model, messages=messages, tools=tools,
-                    tools_allowed=tools_allowed, timeout=timeout, context_bytes=context_bytes)
+                    tools_allowed=tools_allowed, timeout=timeout, context_bytes=context_bytes,
+                    workspace=workspace, on_delta=on_delta, check=check)

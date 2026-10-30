@@ -98,7 +98,7 @@ class TerminalUITests(unittest.TestCase):
             return TurnResult(ANSWER, [{"role": "user", "content": prompt},
                                        {"role": "assistant", "content": ANSWER}])
 
-        config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model"}
+        config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model", "OPENAI_STREAMING": "false"}
         output = io.StringIO()
         with patch.dict(os.environ, {}, clear=True), patch("recapcli.config.dotenv_values", return_value=config):
             with patch("recapcli.cli.OpenAI"), patch("recapcli.cli.run_agent", side_effect=fake_agent):

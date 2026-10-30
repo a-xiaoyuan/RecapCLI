@@ -357,7 +357,8 @@ class SubagentTests(unittest.TestCase):
     def test_cli_persists_one_parent_turn_role_traces_usage_and_unverified_status(self):
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict("os.environ", {}, clear=True), \
-                patch("recapcli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "test-model"}), \
+                patch("recapcli.config.MODELS_FILE", self.workspace / "no-models.toml"), \
+                patch("recapcli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "test-model", "OPENAI_STREAMING": "false"}), \
                 patch("recapcli.cli.OpenAI", side_effect=lambda **options: self.client(self.reading)), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = main(["分析", "--workspace", str(self.workspace), "--mode", "multi",

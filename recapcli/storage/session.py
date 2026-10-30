@@ -74,6 +74,11 @@ def _validate_messages(messages):
         if pending and role != "tool":
             raise ValueError("工具请求缺少对应结果")
         content = message.get("content")
+        if "attachments" in message:
+            from ..images import validate_attachments
+            if role != "user":
+                raise ValueError("只有用户消息可以携带图片附件")
+            validate_attachments(message["attachments"])
         if role == "tool":
             call_id = message.get("tool_call_id")
             if not isinstance(call_id, str) or call_id not in pending:

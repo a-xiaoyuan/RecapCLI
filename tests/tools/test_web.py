@@ -431,7 +431,8 @@ class NetworkFlowTests(unittest.TestCase):
         search_data = json.dumps({"results": [{"title": "Python", "url": "https://python.org/doc", "content": "docs"}]}).encode()
         with tempfile.TemporaryDirectory() as directory, \
                 patch.dict(os.environ, {}, clear=True), \
-                patch("recapcli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "offline", "TAVILY_API_KEY": "secret-test-marker"}), \
+                patch("recapcli.config.MODELS_FILE", Path(directory) / "no-models.toml"), \
+                patch("recapcli.config.dotenv_values", return_value={"OPENAI_API_KEY": "offline", "OPENAI_MODEL": "offline", "OPENAI_STREAMING": "false", "TAVILY_API_KEY": "secret-test-marker"}), \
                 patch("recapcli.cli.OpenAI", side_effect=factory), \
                 patch.object(web, "_request", side_effect=[(web.TAVILY_SEARCH_URL, media, search_data, False),
                                                                ("https://python.org/doc", media, b"<p>Python docs</p>", False)]), \

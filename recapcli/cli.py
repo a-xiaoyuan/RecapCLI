@@ -123,7 +123,18 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         except (OSError, ValueError) as error:
             raise RuntimeError(f"任务 {task_id} 的记录失败，停止后续执行：{error}") from error
 
+    def publish_task():
+        receiver = getattr(ui, "task_update", None)
+        if receiver is not None:
+            try:
+                task = tasks.get(task_id)
+            except (OSError, ValueError):
+                # 状态栏读取失败不改变已持久化的任务事实或重复执行操作。
+                return
+            receiver(task)
+
     try:
+        publish_task()
         ui.info(f"任务 ID：{task_id}（/task ID 查看事实）")
         trace("project_version", project_version(Path(workspace).resolve()))
         memory_text = ""
@@ -141,8 +152,11 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
                            memory_text=memory_text, max_steps=max_steps, limits=limits, on_event=ui.event,
                            capabilities=capabilities, mode=mode, on_trace=trace,
                            summary=session.get("summary"), auto_compact=auto_compact, compact_only=compact_only,
-                           cancel_event=cancel_event, approver=approver)
+                           cancel_event=cancel_event, approver=approver,
+                           on_stream=getattr(ui, "stream_update", None) if isinstance(client, ModelClient) else None)
     except BaseException as error:
+        if getattr(ui, "stream_update", None) is not None:
+            ui.stream_update("abort", "")
         status = "cancelled" if isinstance(error, KeyboardInterrupt) else "failed"
         reason = f"模型请求失败（{type(error).__name__}）" if isinstance(error, APIError) else f"{type(error).__name__}: {error}"
         try:
@@ -150,12 +164,14 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
             tasks.finish(task_id, status, reason, duration=time.monotonic() - started)
         except (OSError, ValueError, RuntimeError) as record_error:
             ui.error(f"任务 {task_id} 的终态未保存：{record_error}；请核对现有操作记录，勿重复执行。")
+        publish_task()
         raise
     try:
         tasks.finish(task_id, result.status, result.stop_reason, answer=result.answer,
                      duration=time.monotonic() - started)
     except (OSError, ValueError) as error:
         ui.error(f"任务 {task_id} 的终态未保存：{error}；回答仍保留，请勿重复执行。")
+    publish_task()
     session["messages"].extend(result.messages)
     session["model"] = model
     if model_config is not None:

@@ -26,6 +26,7 @@ from recapcli.ui.terminal_ui import TerminalUI
 
 PROFILES = '''
 [models.fast]
+streaming = false
 model = "fast-model"
 base_url = "https://fast.invalid/v1"
 api_key_env = "FAST_KEY"
@@ -84,7 +85,7 @@ class ModelTestCase(unittest.TestCase):
         self.workspace.mkdir()
         self.env_file = self.root / ".env"
         self.models_file = self.root / "models.toml"
-        self.env_file.write_text("OPENAI_API_KEY=file-offline-key\nOPENAI_MODEL=legacy-model\n"
+        self.env_file.write_text("OPENAI_API_KEY=file-offline-key\nOPENAI_MODEL=legacy-model\nOPENAI_STREAMING=false\n"
                                  "OPENAI_BASE_URL=https://legacy.invalid/v1\n"
                                  "FAST_KEY=fast-offline-key\nREASONING_KEY=reasoning-offline-key\n",
                                  encoding="utf-8")

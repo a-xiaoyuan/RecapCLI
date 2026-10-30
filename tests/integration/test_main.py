@@ -265,7 +265,7 @@ class AgentTests(unittest.TestCase):
     def test_cli_loads_own_config_and_environment_key_takes_priority(self):
         app_config = self.root / ".env"
         app_config.write_text(
-            "OPENAI_BASE_URL=https://app.local.invalid/v1\nOPENAI_MODEL=local-model\n"
+            "OPENAI_BASE_URL=https://app.local.invalid/v1\nOPENAI_MODEL=local-model\nOPENAI_STREAMING=false\n"
             "OPENAI_API_KEY=file-test-key\n", encoding="utf-8",
         )
         (self.workspace / ".env").write_text(
@@ -285,7 +285,7 @@ class AgentTests(unittest.TestCase):
             )
 
         with patch.dict("os.environ", {"OPENAI_API_KEY": "environment-test-key"}, clear=True):
-            with patch("recapcli.config.ENV_FILE", app_config), patch("recapcli.cli.OpenAI", side_effect=client_factory):
+            with patch("recapcli.config.ENV_FILE", app_config), patch("recapcli.config.MODELS_FILE", self.root / "no-models.toml"), patch("recapcli.cli.OpenAI", side_effect=client_factory):
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = main(["你好", "--workspace", str(self.workspace)])
         self.assertEqual(result, 0)
@@ -301,7 +301,7 @@ class ConversationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.workspace = Path(self.temp.name).resolve()
-        self.config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model"}
+        self.config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model", "OPENAI_STREAMING": "false"}
 
     def run_main(self, argv, replies):
         requests = []
@@ -318,6 +318,7 @@ class ConversationTests(unittest.TestCase):
                           http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
 
         with patch.dict("os.environ", {}, clear=True), \
+                patch("recapcli.config.MODELS_FILE", self.workspace / "no-models.toml"), \
                 patch("recapcli.config.dotenv_values", return_value=self.config), \
                 patch("recapcli.cli.OpenAI", side_effect=factory):
             with contextlib.redirect_stdout(self.output), contextlib.redirect_stderr(self.errors):

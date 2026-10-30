@@ -10,6 +10,8 @@ from openai import APIError
 
 from ..llm import ModelResponseError, assistant_record
 from ..models import ModelClient, request_completion
+from ..images import has_image_references, prepare_user_message
+from ..streaming import IncompleteStreamError
 from .budget import AgentBudget, OUTPUT_LIMIT_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text, validate_summary
 from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, select_history
@@ -75,7 +77,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
               history=None, memory_text="", limits=None, capabilities=("read",), mode="react",
               on_trace=None, summary=None, auto_compact=False, compact_only=False,
               cancel_event=None, approver=None, _budget=None, _role=None, _request_reserve=0,
-              _tools_enabled=True):
+              _tools_enabled=True, on_stream=None, _user_message=None):
     """成功时返回完整的一轮；失败时不修改调用方的任何历史。"""
     workspace = Path(workspace).resolve(strict=True)
     if mode not in ("react", "plan", "multi"):
@@ -103,7 +105,11 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         from .subagents import ROLE_INSTRUCTIONS
         system_text += "\n\n" + ROLE_INSTRUCTIONS[_role]
     planner = PlanController(on_event) if mode == "plan" else None
-    turn = [{"role": "user", "content": prompt}]
+    if (has_image_references(prompt) and _user_message is None and isinstance(client, ModelClient)
+            and not client.metadata()["capabilities"]["images"]):
+        raise ValueError("当前模型配置 images=false；请确认模型支持视觉后开启图片能力")
+    user_message = _user_message if _user_message is not None else prepare_user_message(prompt, workspace)
+    turn = [user_message]
     definitions = tool_definitions(capabilities) if _tools_enabled else []
     history = history or []
     validate_summary(summary, history)
@@ -142,16 +148,35 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
               history_messages=history_messages, context_bytes=json_size(messages), tools_allowed=tools_allowed,
               messages=messages, tools=[item["function"]["name"] for item in (tools or [])])
         on_event(f"[模型] 第 {request_index} 次请求" + ("（历史压缩）" if phase == "compact" else ""))
+        visible_stream = (on_stream is not None and phase in {"react", "summary"}
+                          and _role not in {"analysis", "review"}
+                          and (not isinstance(client, ModelClient) or client.metadata()["capabilities"]["streaming"]))
+
+        def delta(text):
+            remaining_time()
+            on_stream("delta", text)
+
+        if visible_stream:
+            on_stream("start", "")
         try:
             response = request_completion(client, model=model, messages=messages, tools=tools,
                                           tools_allowed=tools_allowed, timeout=min(30.0, remaining_time()),
-                                          context_bytes=limits.max_context_bytes)
-        except ModelResponseError as error:
+                                          context_bytes=limits.max_context_bytes, workspace=workspace,
+                                          on_delta=delta if visible_stream else None, check=remaining_time)
+        except (ModelResponseError, IncompleteStreamError) as error:
             trace("model_response", response=error.response, usage=error.usage)
+            if visible_stream:
+                on_stream("abort", "")
+            raise
+        except BaseException:
+            if visible_stream:
+                on_stream("abort", "")
             raise
         trace("model_response", response=response.model_dump(exclude_none=True),
               usage=response.usage.model_dump(exclude_none=True) if response.usage else None)
         remaining_time()
+        if visible_stream:
+            on_stream("end", "")
         return response
 
     covered = summary["covered_messages"] if summary else 0
@@ -190,7 +215,8 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         return run_subagents(client, model, prompt, workspace, budget=budget, limits=limits,
                              max_steps=max_steps, capabilities=capabilities, history=history,
                              memory_text=memory_text, summary=summary, new_summary=new_summary,
-                             on_event=on_event, on_trace=on_trace, approver=approver)
+                             on_event=on_event, on_trace=on_trace, approver=approver,
+                             user_message=user_message, on_stream=on_stream)
 
     base_system_text = system_text
     system_text += ("\n\n" + summary_text(summary)) if summary else ""

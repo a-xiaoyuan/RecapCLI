@@ -45,6 +45,8 @@ class TerminalUI:
         self.stream = sys.stdout if stream is None else stream
         self.error_stream = sys.stderr if error_stream is None else error_stream
         self.mode = {"auto": "auto", "always": "color", "never": "plain"}[color]
+        self._stream_text = ""
+        self._stream_visible = False
 
     def _output(self, draw, *, error=False):
         stream = self.error_stream if error else self.stream
@@ -75,6 +77,7 @@ class TerminalUI:
         return input()
 
     def event(self, event):
+        self._finish_stream()
         if event.startswith("[结果]"):
             style = "success" if event.startswith("[结果] 成功") else "error"
         elif event.startswith("[工具]") or event.startswith("[审批]"):
@@ -85,6 +88,14 @@ class TerminalUI:
 
     def answer(self, answer):
         answer = clean_output(answer)
+        if self._stream_visible:
+            streamed = self._stream_text
+            self._finish_stream()
+            if answer == streamed:
+                return
+            if streamed and answer.endswith(streamed):
+                self.info(answer[:-len(streamed)].strip())
+                return
 
         def draw(console, color):
             console.print()
@@ -98,10 +109,38 @@ class TerminalUI:
 
         self._output(draw)
 
+    def _finish_stream(self):
+        if self._stream_visible:
+            write_terminal(self.stream, "\n\n")
+        self._stream_visible = False
+        self._stream_text = ""
+
+    def stream_update(self, kind, text):
+        if kind == "start":
+            self._finish_stream()
+        elif kind == "delta":
+            if not self._stream_visible:
+                self._print("\nRecapCLI> ", style="assistant", end="")
+                self._stream_visible = True
+            text = clean_output(text)
+            self._stream_text += text
+            write_terminal(self.stream, text)
+        elif kind == "end":
+            # 正文保留到 answer()，最终回答不再重复打印。
+            pass
+        elif kind == "abort":
+            if self._stream_visible:
+                write_terminal(self.stream, "\n[回答未完成]\n")
+            self._stream_visible = False
+            self._stream_text = ""
+
     def error(self, message):
+        self._finish_stream()
         self._print(message, style="error", error=True)
 
     def info(self, message):
+        if self._stream_visible:
+            self._finish_stream()
         self._print(message, style="muted")
 
     def show_approval(self, message):

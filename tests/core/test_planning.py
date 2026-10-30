@@ -253,8 +253,9 @@ class PlanningTests(unittest.TestCase):
     def run_cli(self, argv, replies):
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict("os.environ", {}, clear=True), \
+                patch("recapcli.config.MODELS_FILE", self.workspace / "no-models.toml"), \
                 patch("recapcli.config.dotenv_values", return_value={
-                    "OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model"}), \
+                    "OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model", "OPENAI_STREAMING": "false"}), \
                 patch("recapcli.cli.OpenAI", side_effect=lambda **options: self.client(replies)), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = main([*argv, "--workspace", str(self.workspace), "--banner", "off", "--color", "never"])

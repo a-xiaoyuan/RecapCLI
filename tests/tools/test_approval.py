@@ -312,7 +312,7 @@ class ApprovalCliTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.workspace = Path(self.temp.name).resolve()
         (self.workspace / "app.py").write_text("print(1)\n", encoding="utf-8")
-        self.config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model"}
+        self.config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model", "OPENAI_STREAMING": "false"}
 
     def run_main(self, argv, replies):
         requests = []
@@ -327,6 +327,7 @@ class ApprovalCliTests(unittest.TestCase):
 
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict("os.environ", {}, clear=True), \
+                patch("recapcli.config.MODELS_FILE", self.workspace / "no-models.toml"), \
                 patch("recapcli.config.dotenv_values", return_value=self.config), \
                 patch("recapcli.cli.OpenAI", side_effect=factory), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):

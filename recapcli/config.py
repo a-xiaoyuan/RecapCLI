@@ -40,6 +40,15 @@ def load_values():
     return {**dotenv_values(ENV_FILE), **os.environ}
 
 
+def _boolean(values, name, default):
+    value = values.get(name)
+    if value is None or value == "":
+        return default
+    if isinstance(value, str) and value.strip().lower() in {"true", "false", "1", "0"}:
+        return value.strip().lower() in {"true", "1"}
+    raise ConfigError(f"{name} 必须是 true 或 false")
+
+
 def _model_profiles():
     """配置只来自 RecapCLI 自身；列举配置不要求密钥，也不发送探测请求。"""
     values = load_values()
@@ -48,6 +57,8 @@ def _model_profiles():
         "protocol": (values.get("OPENAI_PROTOCOL") or "chat_completions").strip(),
         "base_url": (values.get("OPENAI_BASE_URL") or "").strip() or None,
         "api_key_env": "OPENAI_API_KEY",
+        "images": _boolean(values, "OPENAI_IMAGES", False),
+        "streaming": _boolean(values, "OPENAI_STREAMING", True),
     }}
     document = {}
     if MODELS_FILE.is_file():
@@ -104,7 +115,7 @@ def list_model_profiles():
              "default": name == default, "configured": bool(spec["model"].strip() and
                  (values.get(spec.get("api_key_env", "OPENAI_API_KEY")) or "").strip()),
              "tools": spec.get("tools", True), "images": spec.get("images", False),
-             "streaming": spec.get("streaming", False), "context_bytes": spec.get("context_bytes", 256 * 1024)}
+             "streaming": spec.get("streaming", True), "context_bytes": spec.get("context_bytes", 256 * 1024)}
             for name, spec in profiles.items()]
 
 
@@ -122,4 +133,4 @@ def load_config(profile=None):
     return Config(api_key=api_key, model=spec["model"].strip(), base_url=spec.get("base_url"), profile=name,
                   protocol=spec.get("protocol", "chat_completions"), tools=spec.get("tools", True),
                   context_bytes=spec.get("context_bytes", 256 * 1024), images=spec.get("images", False),
-                  streaming=spec.get("streaming", False))
+                  streaming=spec.get("streaming", True))
