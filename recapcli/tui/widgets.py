@@ -5,7 +5,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static, TextArea
+from rich.text import Text
+from textual.widgets import Button, OptionList, Static, TextArea
+from textual.widgets.option_list import Option
 
 
 class PromptInput(TextArea):
@@ -19,7 +21,10 @@ class PromptInput(TextArea):
                          highlight_cursor_line=False, **kwargs)
 
     async def _on_key(self, event: events.Key):
-        if event.key == "enter":
+        if self.app.command_menu_key(event):
+            event.stop()
+            event.prevent_default()
+        elif event.key == "enter":
             event.stop()
             event.prevent_default()
             self.post_message(self.Submitted())
@@ -43,6 +48,30 @@ class PromptInput(TextArea):
         height = max(1, min(limit, self.wrapped_document.height))
         if self.styles.height is None or self.styles.height.value != height:
             self.styles.height = height
+
+
+class CommandMenu(OptionList):
+    """与输入共用焦点的命令候选，不遮盖整个终端。"""
+
+    can_focus = False
+
+    def __init__(self, **kwargs):
+        super().__init__(markup=False, **kwargs)
+        self.commands = []
+        self.display = False
+
+    def show_commands(self, commands, max_rows):
+        self.commands = commands
+        self.clear_options()
+        for name, arguments, description, _ in commands:
+            label = Text(name + (" " + arguments if arguments else ""), style="#80b6ad", no_wrap=True, overflow="ellipsis")
+            label.truncate(30, overflow="ellipsis", pad=True)
+            label.append(description, style="#b3b1ad")
+            self.add_option(Option(label, id=name))
+        self.styles.height = min(len(commands), max_rows)
+        self.display = bool(commands)
+        if commands:
+            self.highlighted = 0
 
 
 class ConversationView(VerticalScroll):

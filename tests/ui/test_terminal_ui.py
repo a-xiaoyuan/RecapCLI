@@ -101,7 +101,7 @@ class TerminalUITests(unittest.TestCase):
         config = {"OPENAI_API_KEY": "offline-test-key", "OPENAI_MODEL": "test-model", "OPENAI_STREAMING": "false"}
         output = io.StringIO()
         with patch.dict(os.environ, {}, clear=True), patch("recapcli.config.dotenv_values", return_value=config):
-            with patch("recapcli.cli.OpenAI"), patch("recapcli.cli.run_agent", side_effect=fake_agent):
+            with patch("recapcli.cli.OpenAI"), patch("recapcli.application.runtime.run_agent", side_effect=fake_agent):
                 with contextlib.redirect_stdout(output), tempfile.TemporaryDirectory() as workspace:
                     self.assertEqual(main(["你好", "--workspace", workspace, "--banner", "off", "--color", "always"]), 0)
         text = output.getvalue()

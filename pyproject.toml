@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "openai>=3.35,<4",
     "python-dotenv>=1.2,<2",
+    "tomlkit>=0.13,<1",
     "rich>=14,<15",
     "pillow>=11,<14",
 ]

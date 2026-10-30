@@ -10,7 +10,7 @@ import warnings
 
 from PIL import Image, UnidentifiedImageError
 
-from .storage.files import data_root, state_directory
+from ..storage.files import data_root, state_directory
 
 MAX_IMAGES = 4
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
@@ -97,7 +97,7 @@ def prepare_user_message(prompt, workspace):
             if cursor.is_symlink() or cursor.is_junction():
                 raise ValueError("图片路径不能经过链接")
         # 图片不跟随链接；凭据和运行数据不能借助图片输入读取。
-        from .tools.filesystem import _checked_target, SKIP_DIRS
+        from ..tools.filesystem import _checked_target, SKIP_DIRS
         target = _checked_target(workspace, target)
         relative = target.relative_to(workspace)
         if any(part in SKIP_DIRS for part in relative.parts):

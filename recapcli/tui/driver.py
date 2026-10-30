@@ -8,37 +8,17 @@ from types import SimpleNamespace
 
 from openai import APIError
 
-from ..cli import (
-    HELP_TEXT,
-    handle_command,
-    run_turn,
-    save_session,
-    show_models,
-    show_tasks as show_task_report,
-)
+from ..application.runtime import run_turn, save_session
+from ..application.commands import handle_command, show_models, show_tasks as show_task_report
+from ..application.help import help_text
 from ..config import ConfigError, load_config
 from ..core.agent import AgentLimits, DEFAULT_STEPS
-from ..models import ModelClient, api_error_message
+from ..llm.client import ModelClient, api_error_message
 from ..storage.tasks import TaskStore
 from ..tools.approval import InteractiveApprover, approve_all
 from .state import _sessions
 
 _EOF = object()
-
-TUI_HELP = """终端壳：
-  Enter           发送给当前模型；支持流式时逐段显示回答
-  Shift+Enter     换行；终端不支持时可用 Ctrl+J
-  Esc             停止本轮，保留会话和已输入草稿
-  /open 会话ID    保存当前会话并恢复已有会话
-  Ctrl+L          清屏，不删除已保存会话
-  Ctrl+G          查看模型、用量、工具和任务详情
-  Ctrl+End        回到底部并恢复跟随
-  Alt+PageUp/Down 上翻或下翻对话历史
-  Ctrl+Q          退出并保存
-启动时 --continue 或 --session ID 也会恢复会话。
-界面演示：python -m recapcli.tui --demo（不请求模型）。
-降级入口：python -m recapcli.cli"""
-
 
 @dataclass
 class ShellOptions:
@@ -212,8 +192,8 @@ class ShellDriver:
                     rows.append(("assistant", content))
         return rows
 
-    def show_help(self):
-        self.presenter.info(HELP_TEXT + "\n\n" + TUI_HELP)
+    def show_help(self, topic="common"):
+        self.presenter.info(help_text(topic))
 
     def show_sessions(self):
         try:
@@ -259,7 +239,7 @@ class ShellDriver:
         if head in {"/exit", "/quit"}:
             return self._exit()
         if head == "/help":
-            self.show_help()
+            self.show_help(prompt.partition(" ")[2].strip() or "common")
             return None
         if head == "/open":
             argument = prompt.split(maxsplit=1)[1] if len(prompt.split(maxsplit=1)) == 2 else ""
@@ -362,16 +342,21 @@ class ShellDriver:
                     current = getattr(self.client.config, "profile", "default")
                 show_models(self.presenter, current, parts[1] if len(parts) == 2 else "*")
                 return
-            if not self._require_client(sending=False):
-                return
-            if not isinstance(self.client, ModelClient):
-                raise ValueError("当前 Python 客户端未启用配置切换；请从命令行启动")
             if len(parts) == 1:
+                if not self._require_client(sending=False):
+                    return
                 info = self.client.metadata()
                 self.presenter.info(f"当前模型：{info['profile']} · {info['protocol']} · {info['model']}")
             elif len(parts) == 2:
-                self.client.switch(parts[1])
+                if self.client is None:
+                    if not self._require_client(sending=False, profile=parts[1]):
+                        return
+                elif isinstance(self.client, ModelClient):
+                    self.client.switch(parts[1])
+                else:
+                    raise ValueError("当前 Python 客户端未启用配置切换；请从命令行启动")
                 self.model = self.client.model
+                self.options.profile = parts[1]
                 self.session["model"] = self.model
                 self.session["model_profile"] = getattr(self.client.config, "profile", "default")
                 self.ready = True
@@ -379,7 +364,6 @@ class ShellDriver:
                 self.presenter.info(
                     f"已切换：{parts[1]} · {getattr(self.client.config, 'protocol', 'chat_completions')} · {self.model}；尚未请求接口。"
                 )
-                self.presenter.info("历史问答与工具事实继续保留；协议私有状态仅回送原配置，切换不代表新端点已经验证可用。")
                 save_session(self.store, self.session, self.presenter)
             else:
                 raise ValueError("用法：/model [配置名称]")
@@ -416,10 +400,10 @@ class ShellDriver:
         if not save_session(self.store, self.session, self.presenter):
             self.presenter.info("当前消息仍保留在内存，输入 /save 重试，无需重新提问。")
 
-    def _require_client(self, *, sending):
+    def _require_client(self, *, sending, profile=None):
         if self.client is not None:
             return True
-        profile = self.options.profile
+        profile = profile or self.options.profile
         if profile is None and self.session is not None:
             profile = self.session.get("model_profile")
         try:

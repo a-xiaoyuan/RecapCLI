@@ -6,7 +6,7 @@ import hashlib
 import json
 
 from .context import json_size
-from ..llm import portable_messages
+from ..llm.protocols import portable_messages
 
 SUMMARY_FIELDS = ("goal", "constraints", "decisions", "actions", "verification", "pending")
 KEEP_RECENT_TURNS = 2

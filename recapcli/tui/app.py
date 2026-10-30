@@ -1,4 +1,4 @@
-"""行式终端布局：随历史滚动的欢迎区、纯正文与固定输入行。"""
+"""流式对话、输入区命令补全与审批交互。"""
 
 import asyncio
 import queue
@@ -14,15 +14,17 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.theme import Theme
-from textual.widgets import Static
+from textual.widgets import OptionList, Static, TextArea
 
 from .driver import Presenter, ShellDriver, ShellOptions
 from .state import ShellState
 from .status import TaskStatus, task_text, usage_text
 from .theme import DISPLAY_LIMIT, PALETTE, render_line, render_wordmark
-from .widgets import ConversationView, PromptInput, StatusScreen
+from .widgets import CommandMenu, ConversationView, PromptInput, StatusScreen
+from .settings import ModelConfigScreen, ModelPickerScreen
 from ..ui.terminal_ui import clean_output
-from ..config import PROJECT_ROOT
+from ..config import ConfigError, PROJECT_ROOT, list_model_profiles
+from ..application.help import command_items, help_text
 
 
 TERMINAL_THEME = Theme(
@@ -41,7 +43,7 @@ DEMO_REPLY = (
     "直接告诉我你想完成什么，也可以粘贴代码和报错。\n\n"
     "*这是界面演示，没有发送模型请求。*"
 )
-MISSING_CONFIG = "模型配置未齐。发送前请在 RecapCLI 的 .env 或环境变量中设置 OPENAI_API_KEY 和 OPENAI_MODEL。"
+MISSING_CONFIG = "还没有可用的模型配置。按 F3 填写模型、接口地址和 API Key；F2 可选择已有配置。"
 
 
 def version_label():
@@ -113,7 +115,10 @@ class RecapShell(App):
     CSS_PATH = "violet.tcss"
     TITLE = "RecapCLI"
     ENABLE_COMMAND_PALETTE = False
-    BINDINGS = [Binding("ctrl+l", "clear", "清屏"),
+    BINDINGS = [Binding("f1", "show_help", "帮助", priority=True),
+                Binding("f2", "choose_model", "选择模型", priority=True),
+                Binding("f3", "configure_model", "配置模型", priority=True),
+                Binding("ctrl+l", "clear", "清屏"),
                 Binding("ctrl+g", "show_status", "详情", priority=True),
                 Binding("escape", "cancel_turn", "停止本轮", priority=True),
                 Binding("ctrl+end", "jump_latest", "回到底部", priority=True),
@@ -146,6 +151,9 @@ class RecapShell(App):
         self._response_text = ""
         self._task_status = TaskStatus()
         self._display_model = ""
+        self._profiles = list(state.profiles)
+        self._command_dismissed = None
+        self._command_anchor = None
         selected = next((p for p in state.profiles if p.get("name") == self.options.profile), {}) if self.options.profile else (state.active_profile or {})
         self._model_ready = bool(selected.get("configured"))
         self.ui_thread = None
@@ -167,8 +175,8 @@ class RecapShell(App):
             session = self.driver.session if self.driver is not None else None
             name = self.options.profile or (session or {}).get("model_profile")
         if name:
-            return next((p for p in self.state.profiles if p.get("name") == name), {"name": name})
-        return self.state.active_profile or {}
+            return next((p for p in self._profiles if p.get("name") == name), {"name": name})
+        return next((p for p in self._profiles if p.get("default")), self._profiles[0] if self._profiles else {})
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="shell"):
@@ -179,6 +187,9 @@ class RecapShell(App):
                             yield Static(render_wordmark(0), id="brand", markup=False)
                             yield Static(version_label(), id="version", markup=False)
                         yield Vertical(id="transcript")
+                yield CommandMenu(id="command-menu")
+                yield Static("", id="command-help", markup=False)
+                yield Static("", id="command-hint", markup=False)
                 with Horizontal(id="status-row"):
                     yield Static("", id="status-line", markup=False)
                     yield GlyphButton("↓ 回到底部", "latest", "回到底部并恢复自动跟随（Ctrl+End）", id="jump-latest")
@@ -382,7 +393,7 @@ class RecapShell(App):
         if isinstance(total, int):
             label += f" · {total:,} tokens"
         if not self.demo and not self._busy and not self._task_status.task_id:
-            label = "" if self._model_ready else "模型配置未齐 · /help 查看帮助"
+            label = "" if self._model_ready else "模型配置未齐 · /config 设置"
         color = PALETTE["error"] if self._task_status.status == "failed" and not self._busy else (PALETTE["accent"] if self._busy else PALETTE["faint"])
         self.query_one("#status-line", Static).update(Text(label, style=color, no_wrap=True, overflow="ellipsis"))
         send = self.query_one("#send", GlyphButton)
@@ -401,14 +412,88 @@ class RecapShell(App):
             hint = "输入 approve / reject / cancel · esc 停止本轮"
         elif self._busy:
             hint = "esc 停止 · 可编辑下一条草稿 · ctrl+g 详情"
-        elif self.size.width < 65:
-            hint = "enter 发送 · ctrl+j 换行 · ctrl+g 详情"
         else:
-            hint = "enter 发送 · shift+enter 换行 · ctrl+g 详情 · /help 帮助"
-        self.query_one("#key-hints", Static).update(hint)
+            hint = "/model 切换 · /config 设置 · /help 命令"
+        model = self._display_model or self._selected_profile().get("model") or "未配置模型"
+        label = Text(clean_output(model) + " · " + hint, style=PALETTE["faint"], no_wrap=True, overflow="ellipsis")
+        self.query_one("#key-hints", Static).update(label)
+
+    def _hide_commands(self):
+        self._command_anchor = None
+        for selector in ("#command-menu", "#command-help", "#command-hint"):
+            self.query_one(selector).display = False
+
+    def _show_commands(self, topic="common", query=""):
+        if len(self.screen_stack) > 1:
+            return
+        self._command_anchor = self.query_one("#prompt", PromptInput).text
+        menu = self.query_one("#command-menu", CommandMenu)
+        items = command_items(query, topic)
+        menu.show_commands(items, max(3, min(7, self.size.height // 3)))
+        body = self.query_one("#command-help", Static)
+        body.display = topic == "keys" or (not items and topic not in {"all", "common"})
+        if body.display:
+            body.update(help_text(topic))
+        hint = self.query_one("#command-hint", Static)
+        hint.display = menu.display or body.display
+        hint.update("Esc 收起" if body.display else "↑↓ 选择 · Tab 补全 · Enter 确认 · Esc 收起")
+
+    def on_text_area_changed(self, event: TextArea.Changed):
+        if event.text_area.id != "prompt" or not self.query("#command-menu"):
+            return
+        value = event.text_area.text
+        if value == self._command_anchor:
+            return
+        if self._busy or self._approval or value == self._command_dismissed or not value.startswith("/") or any(char.isspace() for char in value):
+            self._hide_commands()
+        else:
+            self._show_commands("all", value)
+
+    def command_menu_key(self, event):
+        menu = self.query_one("#command-menu", CommandMenu)
+        if not menu.display:
+            return False
+        if event.key in {"up", "down"}:
+            if event.key == "up":
+                menu.action_cursor_up()
+            else:
+                menu.action_cursor_down()
+        elif event.key in {"tab", "enter"}:
+            self._choose_command(insert_only=event.key == "tab")
+        else:
+            return False
+        return True
+
+    def _choose_command(self, *, insert_only=False):
+        menu = self.query_one("#command-menu", CommandMenu)
+        if menu.highlighted is None:
+            return
+        name, arguments, _, _ = menu.commands[menu.highlighted]
+        prompt = self.query_one("#prompt", PromptInput)
+        required = bool(arguments and not (arguments.startswith("[") and arguments.endswith("]")))
+        if insert_only or required:
+            value = name + (" " if arguments else "")
+            self._command_dismissed = value
+            prompt.load_text(value)
+            prompt.move_cursor((0, len(value)))
+            self._hide_commands()
+        elif self._busy:
+            self.notify("本轮仍在处理，Esc 停止后可执行命令。")
+        else:
+            self._hide_commands()
+            prompt.load_text("")
+            self._submit_value(name)
+        if len(self.screen_stack) == 1:
+            prompt.focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
+        if event.option_list.id == "command-menu":
+            event.stop()
+            self._choose_command()
 
     def begin_approval(self, message):
-        if isinstance(self.screen, StatusScreen):
+        self._hide_commands()
+        if len(self.screen_stack) > 1:
             self.pop_screen()
         self.append_line(message, "event")
         self._approval = True
@@ -450,11 +535,21 @@ class RecapShell(App):
                 break
         prompt = self.query_one("#prompt", PromptInput)
         prompt.placeholder = "界面演示，不发送请求" if self.demo else "输入问题…"
-        if not isinstance(self.screen, StatusScreen):
+        if len(self.screen_stack) == 1:
             prompt.focus()
         self._refresh_status()
 
     def _submit_value(self, value):
+        head, _, argument = value.strip().partition(" ")
+        if not self._approval and head.lower() in {"/help", "/config"}:
+            if head.lower() == "/help":
+                self._show_commands(argument or "common")
+            else:
+                self.action_configure_model()
+            return
+        if not self._approval and head.lower() in {"/model", "/models"} and not argument:
+            self.action_choose_model()
+            return
         if self.demo:
             if value in {"/exit", "/quit"}:
                 self.exit()
@@ -507,7 +602,8 @@ class RecapShell(App):
             return
         prompt.load_text("")
         self._submit_value(value)
-        prompt.focus()
+        if len(self.screen_stack) == 1:
+            prompt.focus()
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted):
         await self._submit()
@@ -520,7 +616,8 @@ class RecapShell(App):
                 await self._submit()
         elif event.action == "latest":
             self.action_jump_latest()
-        self.query_one("#prompt", PromptInput).focus()
+        if len(self.screen_stack) == 1:
+            self.query_one("#prompt", PromptInput).focus()
 
     async def action_clear(self):
         await self.clear_transcript_sync()
@@ -532,6 +629,56 @@ class RecapShell(App):
         else:
             self.push_screen(StatusScreen(self._status_details()))
 
+    def action_show_help(self):
+        if self.query_one("#command-menu").display or self.query_one("#command-help").display:
+            self._hide_commands()
+        else:
+            self._show_commands()
+
+    def _settings_available(self):
+        if self.demo:
+            self.notify("演示模式不修改本机配置；正常启动后按 F2 / F3。")
+            return False
+        if self._busy:
+            self.notify("本轮运行中，结束后可切换模型；Esc 停止本轮。")
+            return False
+        return len(self.screen_stack) == 1
+
+    def action_choose_model(self):
+        if self._settings_available():
+            self.push_screen(ModelPickerScreen(self._selected_profile().get("name")), self._model_picked)
+
+    def _model_picked(self, result):
+        if not result:
+            return
+        action, name = result
+        if action == "edit":
+            self._open_config(name)
+        else:
+            profile = next((p for p in list_model_profiles() if p["name"] == name), {})
+            if not profile.get("configured"):
+                self._open_config(name)
+            else:
+                self._submit_value("/model " + name)
+
+    def action_configure_model(self):
+        if self._settings_available():
+            self._open_config(self._selected_profile().get("name"))
+
+    def _open_config(self, name):
+        try:
+            profiles = list_model_profiles()
+        except ConfigError as error:
+            self.notify(str(error), severity="error")
+            return
+        profile = next((p for p in profiles if p["name"] == name), None)
+        self.push_screen(ModelConfigScreen(profile), self._config_saved)
+
+    def _config_saved(self, name):
+        if name:
+            self._profiles = list_model_profiles()
+            self._submit_value("/model " + name)
+
     def action_jump_latest(self):
         self._follow_latest(force=True)
 
@@ -542,8 +689,12 @@ class RecapShell(App):
         self.query_one("#conversation", ConversationView).scroll_page_down(animate=False)
 
     def action_cancel_turn(self):
-        if isinstance(self.screen, StatusScreen):
+        if len(self.screen_stack) > 1:
             self.pop_screen()
+            return
+        if self.query_one("#command-menu").display or self.query_one("#command-help").display:
+            self._command_dismissed = self.query_one("#prompt", PromptInput).text
+            self._hide_commands()
             return
         if self._busy and self.driver is not None and not self._cancel_requested:
             self._cancel_requested = True

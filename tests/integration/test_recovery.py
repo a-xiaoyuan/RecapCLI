@@ -12,10 +12,10 @@ from unittest.mock import patch
 import httpx2
 from openai import APIConnectionError, APIStatusError, OpenAI
 
-from recapcli.cli import run_turn
+from recapcli.application.runtime import run_turn
 from recapcli.core.agent import AgentLimits, run_agent
 from recapcli.core.budget import AgentCancelled
-from recapcli.models import request_completion
+from recapcli.llm.client import request_completion
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
 from recapcli.tools.approval import approve_all

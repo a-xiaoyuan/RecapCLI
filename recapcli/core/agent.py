@@ -8,10 +8,10 @@ import sys
 
 from openai import APIError
 
-from ..llm import ModelResponseError, assistant_record
-from ..models import ModelClient, request_completion
-from ..images import has_image_references, prepare_user_message
-from ..streaming import IncompleteStreamError
+from ..llm.protocols import ModelResponseError, assistant_record
+from ..llm.client import ModelClient, request_completion
+from ..llm.images import has_image_references, prepare_user_message
+from ..llm.streaming import IncompleteStreamError
 from .budget import AgentBudget, OUTPUT_LIMIT_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text, validate_summary
 from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, select_history

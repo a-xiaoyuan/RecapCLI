@@ -65,7 +65,7 @@ def _validate_messages(messages):
             raise ValueError("每条消息必须是对象")
         role = message.get("role")
         if "provider_state" in message:
-            from ..llm import validate_provider_state
+            from ..llm.protocols import validate_provider_state
             if role != "assistant":
                 raise ValueError("只有 assistant 消息可以携带模型私有状态")
             validate_provider_state(message["provider_state"])
@@ -75,7 +75,7 @@ def _validate_messages(messages):
             raise ValueError("工具请求缺少对应结果")
         content = message.get("content")
         if "attachments" in message:
-            from ..images import validate_attachments
+            from ..llm.images import validate_attachments
             if role != "user":
                 raise ValueError("只有用户消息可以携带图片附件")
             validate_attachments(message["attachments"])

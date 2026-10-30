@@ -36,7 +36,7 @@ OPENAI_MODEL=your-model-id
 uv run --extra tui python -m recapcli
 ```
 
-交互终端会打开 Textual 壳，输入发给当前模型配置。配置只读 RecapCLI 根目录的 `.env`，环境变量优先，不读目标工作区。模型请求会计入所配置服务的用量。没有密钥时壳仍能打开，发送会提示配置缺失并且不会崩溃。
+交互终端会打开 Textual 壳，也可以跳过手动编辑配置，直接按 **F3** 填写模型和密钥，保存后使用。顶部始终显示当前模型；**F2** 选择其他配置。配置只读 RecapCLI 根目录的 `.env`，环境变量优先，不读目标工作区。模型请求会计入所配置服务的用量。没有密钥时仍可打开界面进行设置。
 
 单次提问不进入壳：
 
@@ -156,7 +156,8 @@ Ctrl+C 会停掉后续调度。Python API：`run_agent(..., mode="multi", cancel
 
 | 命令 | 用途 |
 | --- | --- |
-| `/help` | 查看全部交互命令 |
+| `/help` | 常用命令与分类帮助；TUI 按 F1 |
+| `/model`、`/config` | TUI 选择模型 / 配置模型；按 F2 / F3 也可打开 |
 | `/exit` | 保存并退出 |
 | `/new` | 开始新会话 |
 | `/compact`、`/summary` | 压缩旧历史、查看摘要 |
@@ -177,7 +178,9 @@ uv run python -X utf8 -m unittest discover -s tests
 
 ## 终端壳
 
-默认交互入口是 Textual 壳：顶部细灰边框内只保留银白色 `RECAP CLI` 像素字标和从项目元数据读取的版本号，不附加介绍标语；模型、配置、模式和工作区用 Ctrl+G 查看。空间不足时收成普通标题，启动区随对话历史滚动。正文直接排版，代码高亮不铺大色块；底部固定细线输入区，支持自适应多行输入。处理中显示已等待的秒数，超时或连接错误会给出明确提示。底色使用终端默认背景，壁纸和透明度由终端自身设置。
+默认交互入口是 Textual 壳，执行核心与行式 CLI 共用。欢迎区只保留字标与版本，底部一行显示当前模型和命令入口。输入 `/` 出现贴近输入框的命令候选，继续输入筛选，↑↓ 选择、Tab 补全、Enter 确认、Esc 收起；需要参数的命令先填入输入框。`/model` 选择模型，`/config` 配置模型，Ctrl+G 查看协议、工作区、工具权限和任务详情。底色使用终端默认背景，壁纸和透明度由终端自身设置。
+
+F2 列表可以按配置名或模型 ID 筛选，Enter 使用所选配置；缺少密钥时进入设置。F3 可以编辑当前配置，或从模型列表添加配置，填写模型 ID、接口根地址、协议和 API Key，保存后用于下一轮。模型列表写入 RecapCLI 自身的 `models.toml`，密钥只写入自身 `.env`；两个文件均不提交 Git。已有密钥不会回填显示，留空保留；环境变量优先于 `.env`。新配置自动生成独立的密钥变量名，现有配置沿用原变量名，共用该变量的配置会共用密钥。保存配置不请求接口。运行中先结束或停止本轮，再切换模型。
 
 Windows 可双击 `start.cmd`，或在项目终端运行 `.\start.cmd`：优先在独立的 Windows Terminal 打开，避免 IDE 内置终端的中文显示差异；未安装 Windows Terminal 时在当前终端启动。支持传入原有参数，例如 `.\start.cmd --continue` 或 `.\start.cmd --demo`。
 
@@ -193,9 +196,31 @@ uv run --extra tui python -m recapcli.tui --demo
 - 输入框完整保留多行粘贴及缩进，按内容换行扩展，最多显示 6 行，更多内容可在框内滚动。Enter 发送，Shift+Enter 换行；终端不支持组合键时用 Ctrl+J。
 - Esc 或输入框右侧停止按钮仅取消本轮，保留会话和下一条草稿；停止后可继续提问。在途模型请求或工具操作仍需等待返回或超时，停止后不再继续调度。忙时按 Ctrl+Q 会显示“停止中”，等待在途操作返回后保存退出。
 - 底部显示当前模型请求或工具名称、本轮耗时和实际返回的总 token 用量；Ctrl+G 在宽、窄窗口均可打开完整详情，包括模型、工具能力、完整任务 ID、用量和编辑 / 恢复工具确认的修改文件。未返回的用量显示未知。
-- `/help` 查看命令。`/new` 新会话，`/save` 保存，`/open 会话ID` 恢复，`/history` 查看当前会话，`/sessions` 查看已保存会话，`/tasks` 查看任务。
+- `/help` 或 F1 在输入区展开常用命令，不打开居中弹窗，也不把帮助写进聊天。`/help models`、`/help sessions`、`/help tasks`、`/help memory` 按场景筛选，`/help keys` 查看快捷键，`/help all` 浏览全部。
 - 编辑和命令仍逐次等待 `approve`、`reject` 或 `cancel`。
 - `--demo` 只演示界面，不请求模型。
 - `--banner` / `--color` 控制行式界面；指定非 `auto` 值会使用行式 CLI。强制 TUI 或 `--demo` 同时指定这两个参数时会给出提示。
 - Ctrl+L 清屏（不删除已保存会话），Ctrl+G 查看详情，Ctrl+Q 退出并保存。生成中可编辑下一条草稿，Enter 不会自动排队发送；审批到达时暂存草稿，完成或取消审批后恢复。
 - 未安装 textual 时会提示 `uv sync --extra tui`，并给出降级入口 `python -m recapcli.cli`。
+
+## 包结构
+
+当前入口和职责：
+
+```text
+recapcli/
+  __main__.py       选择 TUI 或行式 CLI
+  cli.py            参数解析、行式交互入口
+  config.py         本机模型配置读写
+  application/      两种界面共用的任务流程、命令和帮助
+    runtime.py      一轮任务、执行事实、失败恢复与会话更新
+    commands.py     会话 / 任务 / 记忆命令
+  core/             Agent 循环、预算、规划、压缩与上下文
+  llm/              模型客户端、协议、流式和图片处理
+  tools/            文件、检索、编辑、命令、审批与网页工具
+  storage/          会话、任务与运行文件持久化
+  tui/              Textual 界面、模型设置与执行驱动
+  ui/               行式输出和共用终端字标
+```
+
+一次提问：`tui/app.py → tui/driver.py → application/runtime.py → core/agent.py → llm/ + tools/`；行式入口从 `cli.py` 进入同一个 `application/runtime.py`。共享流程不依赖 Textual，TUI 驱动也不再依赖 CLI 入口。

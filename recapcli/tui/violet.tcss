@@ -1,9 +1,4 @@
-/* THESIS: 细灰框只呈现银白 RECAP CLI 字标与实际版本，无介绍标语。
-   OWN-WORLD: 终端默认底色，银白标题、深灰圆角边框；启动区随历史滚动。
-   STORY: 识别产品与版本，直接提问，运行配置按需查看。
-   FIRST VIEWPORT: 居中像素字标与版本；底部细线输入。
-   FORM: 借鉴通用终端交互，不复刻 Claude 的欢迎卡、双栏或吉祥物。
-   FINISH: 宽窄截图、模型选择及超时反馈回归、一次真实 GLM 连接验证。 */
+/* 正文保留终端底色；命令候选贴近输入区，模型信息收在底部。 */
 Screen { background: ansi_default; color: #dededc; }
 #shell { height: 100%; }
 #stage { width: 1fr; height: 100%; }
@@ -33,6 +28,11 @@ Screen { background: ansi_default; color: #dededc; }
 #jump-latest { width: auto; height: 1; padding-left: 2; color: #80b6ad; }
 #jump-latest:hover, #jump-latest:focus { text-style: bold; }
 #key-hints { height: 1; margin: 0 1 1 1; color: #a09d97; }
+#command-menu { display: none; height: auto; max-height: 7; margin: 0 1; border: none; padding: 0 1; background: ansi_default; scrollbar-size-vertical: 1; }
+#command-menu > .option-list--option { padding: 0; }
+#command-menu > .option-list--option-highlighted { background: #202422; color: #dededc; text-style: bold; }
+#command-help { display: none; height: auto; max-height: 7; margin: 0 2; color: #b3b1ad; }
+#command-hint { display: none; height: 1; margin: 0 2; color: #a09d97; }
 Screen.-narrow #welcome { margin-bottom: 1; }
 Screen.-narrow .assistant-turn { padding: 0 1; }
 StatusScreen { align: center middle; background: #0c0c0c 70%; }
@@ -43,3 +43,17 @@ StatusScreen { align: center middle; background: #0c0c0c 70%; }
 #close-status:focus { color: #80b6ad; text-style: bold; }
 #status-scroll { height: 1fr; scrollbar-size-vertical: 1; }
 #status-body { height: auto; }
+ModelPickerScreen, ModelConfigScreen { align: center middle; background: #0c0c0c 70%; }
+.settings-dialog { width: 86; max-width: 96%; height: 90%; max-height: 40; border: solid #777777; padding: 1 2; background: #191919; }
+.dialog-title { height: 2; color: #dededc; text-style: bold; }
+.dialog-note { height: auto; margin-bottom: 1; color: #b3b1ad; }
+.dialog-scroll { height: 1fr; scrollbar-size-vertical: 1; }
+.settings-dialog Input, .settings-dialog Select { height: 3; margin-bottom: 0; }
+.settings-dialog Label { height: auto; margin-top: 0; }
+.settings-dialog Checkbox { height: 3; }
+.settings-dialog Collapsible { padding: 0; }
+.dialog-actions { height: 3; margin-top: 1; }
+.dialog-actions Button { min-width: 10; margin-right: 1; }
+#model-options { height: 1fr; margin-top: 1; scrollbar-size-vertical: 1; }
+#model-count { height: auto; color: #b3b1ad; }
+#config-error { height: auto; max-height: 3; color: #f28b91; }

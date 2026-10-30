@@ -9,7 +9,9 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from recapcli.cli import handle_command, main, run_turn
+from recapcli.cli import main
+from recapcli.application.runtime import run_turn
+from recapcli.application.commands import handle_command
 from recapcli.core.agent import AgentLimits, run_agent
 from recapcli.core.compaction import prepare_compaction, turn_ends
 from recapcli.storage.session import SessionStore

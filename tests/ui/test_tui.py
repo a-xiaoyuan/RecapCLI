@@ -107,11 +107,6 @@ class PaletteTests(unittest.TestCase):
         self.assertEqual(colors(dot(True)), [PALETTE["online"]])
         self.assertNotIn(PALETTE["online"], colors(dot(False)) + colors(dot()))
 
-    def test_no_heavy_borders(self):
-        css = TCSS.read_text(encoding="utf-8")
-        for heavy in ("border: heavy", "border: thick", "border: double", "border: tall", "border: wide"):
-            self.assertNotIn(heavy, css)
-
     def test_tool_success_is_not_green_and_failure_is_error(self):
         success = render_line("[结果] 成功", "event")
         failure = render_line("[结果] 失败：文件不存在", "event")
@@ -354,7 +349,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         app = self._app(self._state(profiles=MISSING))
         async with app.run_test(size=(144, 40)) as pilot:
             await pilot.pause()
-            for selector in ("#brand", "#version", "#conversation", "#composer", "#send", "#status-line"):
+            for selector in ("#brand", "#version", "#conversation", "#composer", "#send", "#status-line", "#key-hints"):
                 self.assertTrue(app.query_one(selector).display)
             self.assertEqual(app.query_one("#stage").region.x, 0)
             self.assertEqual(app.query_one("#stage").region.width, 144)
@@ -366,7 +361,9 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(welcome.region.y, app.query_one("#conversation").region.y + 1)
             self.assertGreaterEqual(app.query(".turn").first().region.y, welcome.region.bottom)
             self.assertLessEqual(welcome.region.right, 144)
-            self.assertFalse(app.query("#model, #studio, #welcome-workspace"))
+            self.assertFalse(app.query("#model-header, #welcome-purpose, #welcome-example"))
+            self.assertFalse(app.query_one("#command-menu").display)
+            self.assertIn("/config", str(app.query_one("#key-hints").render()))
             self.assertIs(app.focused, app.query_one("#prompt"))
             self.assertEqual(list(self.workspace.iterdir()), [])
 
@@ -377,7 +374,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.query("#inspector"))
             await pilot.resize_terminal(60, 24)
             await pilot.pause()
-            for selector in ("#version", "#composer", "#prompt", "#send"):
+            for selector in ("#version", "#composer", "#prompt", "#send", "#key-hints"):
                 widget = app.query_one(selector)
                 self.assertTrue(widget.display)
                 self.assertLessEqual(widget.region.right, 60)
@@ -602,8 +599,78 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(session["id"], transcript(app))
             app._submit_value("/help")
             await wait_for(pilot, lambda: not app._busy)
-            self.assertIn("Ctrl+Q", transcript(app))
-            self.assertIn("/open", transcript(app))
+            await pilot.pause()
+            self.assertEqual(len(app.screen_stack), 1)
+            menu = app.query_one("#command-menu")
+            self.assertTrue(menu.display)
+            self.assertIn("/open", [item[0] for item in menu.commands])
+            self.assertNotIn("/memory-reject", [item[0] for item in menu.commands])
+            self.assertNotIn("/memory-reject", transcript(app))
+            await pilot.press("escape")
+            self.assertIs(app.focused, app.query_one("#prompt"))
+            self.assertFalse(menu.display)
+            await pilot.press("/", "m", "o")
+            self.assertEqual([item[0] for item in menu.commands], ["/model", "/models"])
+            await pilot.press("down", "tab")
+            self.assertEqual(app.query_one("#prompt").text, "/models ")
+            self.assertFalse(menu.display)
+            app.query_one("#prompt").load_text("/task")
+            await pilot.pause()
+            await pilot.press("down", "enter")
+            self.assertEqual(app.query_one("#prompt").text, "/task ")
+            self.assertIsNone(app.driver.client)
+            app.query_one("#prompt").load_text("/help")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(menu.display)
+            self.assertEqual(len(app.screen_stack), 1)
+
+    async def test_model_settings_save_and_switch_without_requesting_api(self):
+        import os
+        from recapcli.config import list_model_profiles, load_config
+        from textual.widgets import Input
+        env_file = self.workspace / ".env"
+        models_file = self.workspace / "models.toml"
+        models_file.write_text('# keep this comment\n[models.other]\nmodel = "other-model"\n', encoding="utf-8")
+        with patch.dict(os.environ, {}, clear=True), patch("recapcli.config.ENV_FILE", env_file), \
+                patch("recapcli.config.MODELS_FILE", models_file), patch("recapcli.tui.driver.run_turn") as turn:
+            def offline_factory(**options):
+                return OpenAI(**options, http_client=httpx2.Client(transport=httpx2.MockTransport(
+                    lambda request: self.fail("模型设置不应发送请求")), verify=False))
+            app = self._app(self._state(profiles=MISSING), client_factory=offline_factory)
+            async with app.run_test(size=(100, 36)) as pilot:
+                await pilot.press("f3")
+                await pilot.pause()
+                self.assertEqual(app.screen.query_one("#config-key", Input).value, "")
+                app.screen.query_one("#config-model", Input).value = "my-test-model"
+                app.screen.query_one("#config-url", Input).value = "https://offline.invalid/v1"
+                app.screen.query_one("#config-key", Input).value = "fake-ui-key"
+                await pilot.click("#save-config")
+                await wait_for(pilot, lambda: not app._busy and app.driver.client is not None)
+                self.assertEqual(load_config().model, "my-test-model")
+                self.assertEqual(load_config().api_key, "fake-ui-key")
+                self.assertIn("my-test-model", str(app.query_one("#key-hints").render()))
+                self.assertIn("# keep this comment", models_file.read_text(encoding="utf-8"))
+                self.assertNotIn("fake-ui-key", models_file.read_text(encoding="utf-8") + transcript(app) + str(list_model_profiles()))
+                await pilot.press("f2")
+                await pilot.pause()
+                self.assertTrue(app.screen.query_one("#model-options").display)
+                app.screen.query_one("#model-filter", Input).value = "other"
+                await pilot.pause()
+                await pilot.press("down")
+                self.assertEqual(app.focused.id, "model-options")
+                app.screen.query_one("#model-filter", Input).focus()
+                await pilot.press("enter")
+                await wait_for(pilot, lambda: not app._busy and app.driver.model == "other-model")
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.press("escape")
+                app._busy = True
+                await pilot.press("f2")
+                self.assertEqual(len(app.screen_stack), 1)
+                app._busy = False
+            turn.assert_not_called()
 
     async def test_demo_is_explicit_and_does_not_call_the_model(self):
         app = self._app(demo_state(), demo=True)

@@ -9,7 +9,8 @@ import re
 import tomllib
 from urllib.parse import urlsplit
 
-from dotenv import dotenv_values
+from dotenv import dotenv_values, set_key
+import tomlkit
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -70,6 +71,12 @@ def _model_profiles():
         if set(document) - {"default", "models"} or not isinstance(document.get("models", {}), dict):
             raise ConfigError("models.toml 只支持 default 和 [models.名称] 配置")
         profiles.update(document.get("models", {}))
+    default = document.get("default", "default")
+    _validate_profiles(profiles, default)
+    return profiles, default, values
+
+
+def _validate_profiles(profiles, default):
     for name, spec in profiles.items():
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) or not isinstance(spec, dict):
             raise ConfigError("模型配置名只能使用 1–64 个英文字母、数字、下划线或连字符")
@@ -103,10 +110,8 @@ def _model_profiles():
                 valid = False
             if not valid:
                 raise ConfigError(f"模型配置 {name} 的 base_url 必须是无凭据、无查询参数的 HTTP(S) 根地址")
-    default = document.get("default", "default")
     if not isinstance(default, str) or default not in profiles:
         raise ConfigError("models.toml 的 default 必须指向已有模型配置")
-    return profiles, default, values
 
 
 def list_model_profiles():
@@ -115,8 +120,41 @@ def list_model_profiles():
              "default": name == default, "configured": bool(spec["model"].strip() and
                  (values.get(spec.get("api_key_env", "OPENAI_API_KEY")) or "").strip()),
              "tools": spec.get("tools", True), "images": spec.get("images", False),
-             "streaming": spec.get("streaming", True), "context_bytes": spec.get("context_bytes", 256 * 1024)}
+             "streaming": spec.get("streaming", True), "context_bytes": spec.get("context_bytes", 256 * 1024),
+             "base_url": spec.get("base_url") or "", "api_key_env": spec.get("api_key_env", "OPENAI_API_KEY"),
+             "key_source": "环境变量" if os.environ.get(spec.get("api_key_env", "OPENAI_API_KEY")) else ".env"}
             for name, spec in profiles.items()]
+
+
+def save_model_profile(name, *, model, protocol, base_url="", api_key_env="OPENAI_API_KEY", api_key="",
+                       tools=True, images=False, streaming=True, make_default=False):
+    """设置界面显式保存；只在 .env 写密钥，保留其他配置及 TOML 注释。"""
+    profiles, default, _ = _model_profiles()
+    spec = {**profiles.get(name, {}), "model": model.strip(), "protocol": protocol,
+            "api_key_env": api_key_env.strip(), "tools": tools, "images": images, "streaming": streaming}
+    spec.pop("base_url", None)
+    if base_url.strip():
+        spec["base_url"] = base_url.strip()
+    if not spec["model"]:
+        raise ConfigError("请填写接口实际接受的模型 ID")
+    _validate_profiles({**profiles, name: spec}, name if make_default else default)
+    if any(char in api_key for char in "\r\n\x00"):
+        raise ConfigError("API Key 不能包含换行或空字符")
+    key_env = spec["api_key_env"]
+    if api_key and os.environ.get(key_env) and api_key != os.environ[key_env]:
+        raise ConfigError(f"{key_env} 已被进程环境变量覆盖，请先修改或移除该环境变量再保存新密钥")
+    document = tomlkit.parse(MODELS_FILE.read_text(encoding="utf-8")) if MODELS_FILE.exists() else tomlkit.document()
+    models = document.setdefault("models", tomlkit.table())
+    target = models.setdefault(name, tomlkit.table())
+    for key in list(target):
+        if key not in spec:
+            del target[key]
+    target.update(spec)
+    if make_default:
+        document["default"] = name
+    MODELS_FILE.write_text(tomlkit.dumps(document), encoding="utf-8")
+    if api_key:
+        set_key(ENV_FILE, key_env, api_key, quote_mode="always")
 
 
 def load_config(profile=None):

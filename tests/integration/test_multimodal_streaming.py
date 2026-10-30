@@ -13,16 +13,16 @@ import httpx2
 from openai import OpenAI
 from PIL import Image
 
-from recapcli.cli import run_turn
+from recapcli.application.runtime import run_turn
 from recapcli.config import Config, ConfigError, load_config
 from recapcli.core.agent import run_agent
 from recapcli.core.budget import AgentCancelled
 from recapcli.core.compaction import prepare_compaction
-from recapcli.images import image_data_url, prepare_user_message
-from recapcli.models import ModelClient
+from recapcli.llm.images import image_data_url, prepare_user_message
+from recapcli.llm.client import ModelClient
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
-from recapcli.streaming import IncompleteStreamError
+from recapcli.llm.streaming import IncompleteStreamError
 from recapcli.ui.terminal_ui import TerminalUI
 
 

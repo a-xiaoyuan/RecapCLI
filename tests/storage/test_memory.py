@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from recapcli.cli import handle_command
+from recapcli.application.commands import handle_command
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
 from recapcli.ui.terminal_ui import TerminalUI

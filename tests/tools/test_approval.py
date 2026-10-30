@@ -12,7 +12,9 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from recapcli.cli import build_parser, main, make_approver, run_turn, show_tasks
+from recapcli.cli import build_parser, main, make_approver
+from recapcli.application.runtime import run_turn
+from recapcli.application.commands import show_tasks
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
 from recapcli.tools import execute_tool

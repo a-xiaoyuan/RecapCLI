@@ -11,7 +11,8 @@ from unittest.mock import patch
 import httpx2
 from openai import OpenAI
 
-from recapcli.cli import main, run_turn
+from recapcli.cli import main
+from recapcli.application.runtime import run_turn
 from recapcli.core.agent import AgentLimits, TraceError, run_agent
 from recapcli.core.budget import AgentBudget, AgentCancelled
 from recapcli.core.compaction import SUMMARY_FIELDS

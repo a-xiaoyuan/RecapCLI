@@ -6,8 +6,8 @@ import json
 
 from openai import OpenAI, APITimeoutError, APIConnectionError, APIStatusError
 
-from .config import load_config
-from .llm import complete
+from ..config import load_config
+from .protocols import complete
 
 
 def api_error_message(error, model="模型"):

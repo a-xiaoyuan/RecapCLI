@@ -15,7 +15,9 @@ from unittest.mock import patch
 import httpx2
 from openai import APIError, OpenAI
 
-from recapcli.cli import handle_command, main, run_turn, show_tasks
+from recapcli.cli import main
+from recapcli.application.runtime import run_turn
+from recapcli.application.commands import handle_command, show_tasks
 from recapcli.tools.approval import approve_all
 from recapcli.core.agent import AgentLimits
 from recapcli.storage.session import SessionStore
