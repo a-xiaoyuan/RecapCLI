@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from openai import APIError
+from openai import APIError, APITimeoutError, APIConnectionError, APIStatusError
 
 from ..cli import (
     HELP_TEXT,
@@ -27,9 +27,13 @@ _EOF = object()
 
 TUI_HELP = """终端壳：
   Enter           发送给当前模型；支持流式时逐段显示回答
+  Shift+Enter     换行；终端不支持时可用 Ctrl+J
+  Esc             停止本轮，保留会话和已输入草稿
   /open 会话ID    保存当前会话并恢复已有会话
   Ctrl+L          清屏，不删除已保存会话
-  Ctrl+G          显示或隐藏右侧状态栏（宽窗口）
+  Ctrl+G          查看模型、用量、工具和任务详情
+  Ctrl+End        回到底部并恢复跟随
+  Alt+PageUp/Down 上翻或下翻对话历史
   Ctrl+Q          退出并保存
 启动时 --continue 或 --session ID 也会恢复会话。
 界面演示：python -m recapcli.tui --demo（不请求模型）。
@@ -158,6 +162,9 @@ class ShellDriver:
 
     def request_stop(self):
         self.quitting = True
+        self.cancel_turn()
+
+    def cancel_turn(self):
         self.cancel_event.set()
         push = getattr(self.presenter, "push_cancel", None)
         if push is not None:
@@ -228,10 +235,13 @@ class ShellDriver:
             return True
         return save_session(self.store, self.session, self.presenter)
 
-    def handle_line(self, line):
-        prompt = (line or "").strip()
-        if not prompt or self.quitting:
+    def handle_line(self, line, *, cancel_event=None):
+        prompt = line or ""
+        if not prompt.strip() or self.quitting:
             return None
+        if prompt.lstrip().startswith("/"):
+            prompt = prompt.strip()
+        self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         try:
             return self._dispatch(prompt)
         except KeyboardInterrupt:
@@ -376,7 +386,6 @@ class ShellDriver:
     def _turn(self, prompt, *, compact_only):
         if self.quitting:
             return
-        self.cancel_event.clear()
         if not self._require_client(sending=True):
             return
         approver = approve_all if self.options.yes else InteractiveApprover(
@@ -391,11 +400,19 @@ class ShellDriver:
                 cancel_event=self.cancel_event, approver=approver,
             )
         except KeyboardInterrupt:
-            self.presenter.error("已取消本轮。")
+            self.presenter.info("已停止本轮，可以继续提问。")
             self._save_quiet()
             return
         except APIError as error:
-            self.presenter.error(f"模型请求失败（{type(error).__name__}），请检查网络、协议和模型配置。")
+            if isinstance(error, APITimeoutError):
+                message = f"等待 {self.model} 返回数据超时，本轮未获得完整回答。可稍后重试，或用 /models 查看其他配置。"
+            elif isinstance(error, APIConnectionError):
+                message = f"无法连接 {self.model} 的模型服务，请检查网络和 OPENAI_BASE_URL。"
+            elif isinstance(error, APIStatusError):
+                message = f"模型服务返回 HTTP {error.status_code}（{self.model}），请核对密钥、模型权限及服务状态。"
+            else:
+                message = f"模型请求失败（{type(error).__name__}），请检查协议和模型配置。"
+            self.presenter.error(message)
             return
         except (OSError, ValueError, RuntimeError) as error:
             self.presenter.error(f"任务停止：{error}")

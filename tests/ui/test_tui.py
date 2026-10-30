@@ -101,9 +101,9 @@ def texts(recording, kind=None):
 
 
 class PaletteTests(unittest.TestCase):
-    def test_mint_accents_and_local_config_status(self):
+    def test_terminal_accents_and_local_config_status(self):
         css = TCSS.read_text(encoding="utf-8").lower()
-        self.assertIn(PALETTE["mint"].lower(), css)
+        self.assertIn(PALETTE["accent"].lower(), css)
         self.assertEqual(colors(dot(True)), [PALETTE["online"]])
         self.assertNotIn(PALETTE["online"], colors(dot(False)) + colors(dot()))
 
@@ -348,44 +348,61 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         from recapcli.tui.app import RecapShell
         return RecapShell(state or self._state(), **options)
 
-    def test_only_model_ready_dot_is_green(self):
-        from recapcli.tui.app import model_label
-        ready = model_label(demo_state())
-        missing = model_label(demo_state(MISSING))
-        self.assertIn(PALETTE["online"], colors(ready))
-        self.assertNotIn(PALETTE["online"], colors(missing))
-        self.assertIn("demo-model", ready.plain)
-        self.assertIn("未配置模型", missing.plain)
-
-    async def test_terminal_layout_is_plain_and_input_is_single_line(self):
+    async def test_terminal_layout_gives_conversation_full_width(self):
         app = self._app(self._state(profiles=MISSING))
         async with app.run_test(size=(144, 40)) as pilot:
             await pilot.pause()
-            for selector in ("#brand", "#studio", "#model", "#conversation", "#composer", "#send", "#inspector"):
+            for selector in ("#brand", "#version", "#conversation", "#composer", "#send", "#status-line"):
                 self.assertTrue(app.query_one(selector).display)
-            self.assertLessEqual(app.query_one("#stage").region.right, app.query_one("#inspector").region.x)
             self.assertEqual(app.query_one("#stage").region.x, 0)
+            self.assertEqual(app.query_one("#stage").region.width, 144)
             self.assertEqual(app.query_one("#prompt").size.height, 1)
-            self.assertFalse(app.query("#rail, .rail-button"))
+            self.assertFalse(app.query("#rail, .rail-button, #inspector"))
             self.assertFalse(app.query(".bubble, #pills, #toolbar"))
             self.assertFalse(app.query("#stream-cursor"))
-            self.assertLess(app.query(".turn").first().region.y, app.query_one("#conversation").region.y + 3)
+            welcome = app.query_one("#welcome")
+            self.assertEqual(welcome.region.y, app.query_one("#conversation").region.y + 1)
+            self.assertGreaterEqual(app.query(".turn").first().region.y, welcome.region.bottom)
+            self.assertLessEqual(welcome.region.right, 144)
+            self.assertFalse(app.query("#model, #studio, #welcome-workspace"))
             self.assertIs(app.focused, app.query_one("#prompt"))
             self.assertEqual(list(self.workspace.iterdir()), [])
 
-    async def test_narrow_terminal_retains_model_input_and_focus(self):
+    async def test_narrow_terminal_retains_version_input_and_focus(self):
         app = self._app(self._state(profiles=MISSING))
         async with app.run_test(size=(80, 28)) as pilot:
             await pilot.pause()
-            self.assertFalse(app.query_one("#studio").display)
-            self.assertFalse(app.query_one("#inspector").display)
+            self.assertFalse(app.query("#inspector"))
             await pilot.resize_terminal(60, 24)
             await pilot.pause()
-            for selector in ("#model", "#composer", "#prompt", "#send"):
+            for selector in ("#version", "#composer", "#prompt", "#send"):
                 widget = app.query_one(selector)
                 self.assertTrue(widget.display)
                 self.assertLessEqual(widget.region.right, 60)
             self.assertIs(app.focused, app.query_one("#prompt"))
+
+    async def test_restored_profile_and_override_remain_available_in_details(self):
+        from recapcli.storage.session import SessionStore
+        store = SessionStore(self.workspace)
+        session = store.new_session("saved-vision-model")
+        session["model_profile"] = "vision"
+        session["messages"].append({"role": "user", "content": "旧问题"})
+        store.save(session)
+        profiles = [
+            dict(name="default", model="original-model", default=True, configured=True),
+            dict(name="vision", model="saved-vision-model", default=False, configured=True),
+        ]
+        for explicit, expected in ((None, "saved-vision-model"), ("default", "original-model")):
+            with self.subTest(profile=explicit):
+                options = ShellOptions(workspace=self.workspace, continue_session=True, profile=explicit)
+                app = self._app(self._state(profiles=profiles), options=options)
+                with patch("recapcli.tui.driver.run_turn") as turn:
+                    async with app.run_test(size=(80, 24)) as pilot:
+                        await pilot.pause()
+                        self.assertIn(explicit or "vision", str(app._status_details()))
+                        self.assertIn(expected, str(app._status_details()))
+                        self.assertIsNone(app.driver.client)
+                turn.assert_not_called()
 
     async def test_chinese_survives_markdown_styles_and_terminal_resize(self):
         from textual.geometry import Region
@@ -406,7 +423,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 for phrase in expected:
                     self.assertIn(phrase, rendered, f"终端宽度 {width}")
 
-    async def test_sidebar_uses_task_facts_and_toggles_without_affecting_input(self):
+    async def test_status_details_use_task_facts_and_restore_focus(self):
         from recapcli.tui.status import usage_text
         app = self._app(self._state(profiles=MISSING))
         async with app.run_test(size=(144, 40)) as pilot:
@@ -419,18 +436,21 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             })
             await pilot.pause()
             self.assertIn("120", usage_text(app._task_status))
-            self.assertIn("120", str(app.query_one("#usage").render()))
-            self.assertIn("README.md", str(app.query_one("#modified-files").render()))
-            self.assertIn("已回答", str(app.query_one("#task-status").render()))
+            self.assertIn("120", str(app.query_one("#status-line").render()))
+            self.assertIn("已回答", str(app.query_one("#status-line").render()))
+            await pilot.press("ctrl+g")
+            self.assertIn("README.md", str(app.screen.query_one("#status-body").render()))
+            self.assertIn("120", str(app.screen.query_one("#status-body").render()))
+            await pilot.press("escape")
             app._lock()
             app.begin_approval("请审批")
-            self.assertIn("等待审批", str(app.query_one("#task-status").render()))
+            self.assertIn("等待审批", str(app.query_one("#status-line").render()))
             app.end_approval()
             app._unlock()
             await pilot.press("ctrl+g")
-            self.assertFalse(app.query_one("#inspector").display)
+            self.assertTrue(app.screen.query_one("#status-dialog").display)
             await pilot.press("ctrl+g")
-            self.assertTrue(app.query_one("#inspector").display)
+            self.assertFalse(app.query("#status-dialog"))
             self.assertIs(app.focused, app.query_one("#prompt"))
             await app.replace_transcript_sync([])
             self.assertEqual(app._task_status.task_id, "")
@@ -446,7 +466,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 visible = transcript(app)
                 self.assertIn("[b]hello[/b]", visible)
                 self.assertIn("OPENAI_API_KEY", visible)
-                self.assertEqual(app.query_one("#prompt").value, "")
+                self.assertEqual(app.query_one("#prompt").text, "")
                 await pilot.press("ctrl+l")
                 await pilot.pause()
                 self.assertEqual(len(app.query(".turn")), 0)
@@ -524,6 +544,10 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(conversation.scroll_y, 0)
             app.append_line("新回答：" + "这是一段会自动换行的中文回答。" * 160, "assistant")
             await pilot.pause()
+            self.assertEqual(conversation.scroll_y, 0)
+            self.assertTrue(app.query_one("#jump-latest").display)
+            await pilot.press("ctrl+end")
+            await pilot.pause()
             self.assertEqual(conversation.scroll_y, conversation.max_scroll_y)
 
             await pilot.resize_terminal(60, 24)
@@ -584,7 +608,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         with patch("recapcli.tui.driver.run_turn") as turn:
             async with app.run_test(size=(144, 40)) as pilot:
                 await pilot.pause()
-                self.assertIn("preview", str(app.query_one("#model").render()))
+                self.assertIn("不请求模型", str(app.query_one("#status-line").render()))
                 self.assertEqual(len(app.query(".turn")), 2)
                 self.assertTrue(app.query_one("#stream-cursor").display)
                 await pilot.press(*"hi", "enter")
