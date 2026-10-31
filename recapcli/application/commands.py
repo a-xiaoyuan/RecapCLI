@@ -4,6 +4,7 @@ import json
 
 from ..config import list_model_profiles
 from ..core.memory import active
+from ..core.project_rules import project_rules_description
 from ..storage.tasks import TaskStore
 from .runtime import save_session
 from .help import help_text, config_help
@@ -68,6 +69,8 @@ def show_tasks(ui, tasks, task_id=None, *, as_json=False):
         kind, entry = event["kind"], event["data"]
         if kind == "project_version":
             ui.info("项目版本：" + json.dumps(entry, ensure_ascii=False))
+        elif kind == "project_rules" and not entry.get("agent"):
+            ui.info("项目规则：" + project_rules_description(entry))
         elif kind == "tool_start":
             starts[entry["action_id"]] = entry
             ui.info(f"动作 {entry['call_id']} · {entry['name']} · 参数：{entry['arguments']}")

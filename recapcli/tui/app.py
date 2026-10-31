@@ -25,6 +25,7 @@ from .settings import ModelConfigScreen, ModelPickerScreen
 from ..ui.terminal_ui import clean_output
 from ..config import ConfigError, PROJECT_ROOT, list_model_profiles
 from ..application.help import command_items, help_text
+from ..core.project_rules import project_rules_description
 
 
 TERMINAL_THEME = Theme(
@@ -357,6 +358,7 @@ class RecapShell(App):
         for title, content in (
             ("模型", model + " · " + profile.get("name", "default") + "\n" + " · ".join(flags) + "\n" + ("本地配置齐全，接口尚需实际请求验证" if self._model_ready else "模型配置未齐")),
             ("工作区", str(self.state.workspace)),
+            ("项目规则", project_rules_description(task.project_rules)),
             ("模式与工具", self.options.mode + "\n" + (granted if capabilities.get("tools", True) else "当前模型未开放工具")),
             ("本次任务", task_text(task, busy=self._busy, approval=self._approval) + "\n" + (task.task_id or "还没有任务")),
             ("Token 用量", usage_text(task)),

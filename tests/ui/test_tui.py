@@ -197,7 +197,8 @@ class DriverTests(unittest.TestCase):
         self.assertIn("使用 hello 作为正文", texts(self.recording, "answer"))
         self.assertEqual(len(requests), 2)
         tasks = texts(self.recording, "task")
-        self.assertEqual([task["status"] for task in tasks], ["running", "returned"])
+        self.assertEqual(tasks[0]["status"], "running")
+        self.assertEqual(tasks[-1]["status"], "returned")
         self.assertEqual(tasks[-1]["usage"]["total_tokens"], 50)
         saved = list((self.workspace / ".recapcli" / "sessions").glob("*.json"))
         self.assertEqual(len(saved), 1)
@@ -430,7 +431,8 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             app.driver.presenter.task_update({
                 "id": "a" * 32, "status": "returned", "duration_seconds": 2.5,
                 "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
-                "events": [{"kind": "tool_result", "data": {"name": "edit_file", "result": {
+                "events": [{"kind": "project_rules", "data": {"source": "AGENTS.md", "status": "loaded", "bytes": 80}},
+                           {"kind": "tool_result", "data": {"name": "edit_file", "result": {
                     "ok": True, "changed": True, "path": "README.md"}}}],
             })
             await pilot.pause()
@@ -439,6 +441,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("已回答", str(app.query_one("#status-line").render()))
             await pilot.press("ctrl+g")
             self.assertIn("README.md", str(app.screen.query_one("#status-body").render()))
+            self.assertIn("AGENTS.md · 已加载 80 字节", str(app.screen.query_one("#status-body").render()))
             self.assertIn("120", str(app.screen.query_one("#status-body").render()))
             await pilot.press("escape")
             app._lock()

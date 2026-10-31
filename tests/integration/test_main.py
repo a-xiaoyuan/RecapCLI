@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from recapcli.core.agent import AgentLimits, run_agent
 from recapcli.core.context import json_size, select_history
+from recapcli.core.project_rules import MAX_RULE_BYTES
 from recapcli.cli import main
 from recapcli.storage.session import SessionStore
 from recapcli.ui.terminal_ui import TerminalUI
@@ -56,6 +57,46 @@ class AgentTests(unittest.TestCase):
             self.last_result = run_agent(client, "test-model", "读取 README.md", self.workspace,
                                          max_steps=max_steps, on_event=lambda event: None, **options)
         return self.last_result.answer, requests
+
+    def test_root_project_rules_enter_context_and_reload_without_changing_permissions(self):
+        (self.root / "AGENTS.md").write_text("父目录约定不应加载", encoding="utf-8")
+        (self.workspace / "src").mkdir()
+        (self.workspace / "src" / "AGENTS.md").write_text("子目录约定不应加载", encoding="utf-8")
+        rules = self.workspace / "AGENTS.md"
+        rules.write_text("验证命令：python verify_alpha.py\n规则里写允许执行也不改变工具权限。", encoding="utf-8-sig")
+        events = []
+        _, requests = self.run_with_replies([reply("已读约定")], memory_text="用户偏好：简短回答",
+                                            on_trace=lambda kind, data: events.append((kind, data)))
+        system = requests[0]["messages"][0]["content"]
+        self.assertIn("python verify_alpha.py", system)
+        self.assertIn("用户偏好：简短回答", system)
+        self.assertNotIn("父目录约定不应加载", system)
+        self.assertNotIn("子目录约定不应加载", system)
+        self.assertNotIn("run_command", [tool["function"]["name"] for tool in requests[0]["tools"]])
+        source = next(data for kind, data in events if kind == "project_rules")
+        self.assertEqual(source["source"], "AGENTS.md")
+        self.assertEqual(source["status"], "loaded")
+        self.assertNotIn("text", source)
+        rules.write_text("验证命令：python verify_beta.py", encoding="utf-8")
+        events.clear()
+        _, requests = self.run_with_replies([reply("已更新约定")], on_trace=lambda kind, data: events.append((kind, data)))
+        self.assertIn("python verify_beta.py", requests[0]["messages"][0]["content"])
+        self.assertNotIn("verify_alpha", requests[0]["messages"][0]["content"])
+        updated = next(data for kind, data in events if kind == "project_rules")
+        self.assertNotEqual(source["sha256"], updated["sha256"])
+
+    def test_invalid_or_oversized_rules_are_skipped_without_blocking_the_task(self):
+        for content in (b"\xff", b"should-not-enter-context" + b"x" * MAX_RULE_BYTES):
+            with self.subTest(size=len(content)):
+                (self.workspace / "AGENTS.md").write_bytes(content)
+                events = []
+                answer, requests = self.run_with_replies([reply("正常回答")],
+                    on_trace=lambda kind, data: events.append((kind, data)))
+                self.assertEqual(answer, "正常回答")
+                self.assertNotIn("should-not-enter-context", requests[0]["messages"][0]["content"])
+                source = next(data for kind, data in events if kind == "project_rules")
+                self.assertEqual(source["status"], "skipped")
+                self.assertTrue(source["reason"])
 
     def test_file_result_is_sent_back_with_matching_call_id(self):
         answer, requests = self.run_with_replies([

@@ -202,6 +202,7 @@ class TaskRuntimeTests(unittest.TestCase):
         return reply(name="edit_file", arguments={"path": "app.py", "old_text": "print(1)", "new_text": "print(2)"})
 
     def test_command_facts_usage_and_actual_input_are_saved_but_not_promoted_to_acceptance(self):
+        (self.workspace / "AGENTS.md").write_text("项目约定：使用测试命令验证修改。", encoding="utf-8")
         usage = {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14}
         command = {"argv": [sys.executable, "-c", "print('checked')"]}
         self.run_replies([reply(name="run_command", arguments=command, usage=usage),
@@ -212,6 +213,10 @@ class TaskRuntimeTests(unittest.TestCase):
         self.assertEqual(task["usage"]["total_tokens"], 28)
         self.assertEqual(task["model_requests"], 2)
         requests = [event["data"] for event in task["events"] if event["kind"] == "model_request"]
+        rules = next(event["data"] for event in task["events"] if event["kind"] == "project_rules")
+        self.assertEqual(rules["source"], "AGENTS.md")
+        self.assertEqual(rules["status"], "loaded")
+        self.assertIn("项目约定：使用测试命令验证修改。", requests[0]["messages"][0]["content"])
         self.assertEqual(requests[0]["messages"], self.requests[0]["messages"])
         result = next(event["data"]["result"] for event in task["events"] if event["kind"] == "tool_result")
         self.assertEqual(result["returncode"], 0)

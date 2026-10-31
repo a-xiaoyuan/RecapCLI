@@ -12,11 +12,15 @@ class TaskStatus:
     usage: dict | None = None
     modified_files: tuple = ()
     stop_reason: str = ""
+    project_rules: dict | None = None
 
     @classmethod
     def from_task(cls, task):
         paths = []
+        rules = None
         for event in task.get("events", []):
+            if event.get("kind") == "project_rules" and not event.get("data", {}).get("agent"):
+                rules = event["data"]
             if event.get("kind") != "tool_result":
                 continue
             data = event.get("data", {})
@@ -29,7 +33,8 @@ class TaskStatus:
                             paths.append(path)
         return cls(task_id=task.get("id", ""), status=task.get("status", ""),
                    requests=task.get("model_requests", 0), duration=task.get("duration_seconds"),
-                   usage=task.get("usage"), modified_files=tuple(paths), stop_reason=task.get("stop_reason", ""))
+                   usage=task.get("usage"), modified_files=tuple(paths), stop_reason=task.get("stop_reason", ""),
+                   project_rules=rules)
 
 
 def token_count(value):

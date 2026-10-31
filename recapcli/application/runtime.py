@@ -55,6 +55,8 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
             tasks.append(task_id, kind, data)
         except (OSError, ValueError) as error:
             raise RuntimeError(f"任务 {task_id} 的记录失败，停止后续执行：{error}") from error
+        if kind == "project_rules" and not data.get("agent"):
+            publish_task()
 
     def publish_task():
         receiver = getattr(ui, "task_update", None)
