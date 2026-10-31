@@ -70,12 +70,9 @@ jobs:
 
       - name: Install and run in a clean environment
         run: |
-          python -m venv .pkgtest
-          . .pkgtest/bin/activate
-          pip install --upgrade pip
-          pip install dist/*.whl
-          pip install "textual>=8,<9"
-          recapcli --version
-          recapcli --help
-          python -c "from importlib.resources import files; assert (files('recapcli.tui') / 'violet.tcss').is_file()"
-          python -c "from recapcli import config; assert config.ENV_FILE.parent == config.CONFIG_DIR; assert config.CONFIG_DIR != config.PROJECT_ROOT"
+          python -m venv "$RUNNER_TEMP/recapcli-package-venv"
+          . "$RUNNER_TEMP/recapcli-package-venv/bin/activate"
+          wheels=("$GITHUB_WORKSPACE"/dist/*.whl)
+          python -m pip install "${wheels[0]}[tui]"
+          cd "$RUNNER_TEMP"
+          python -I "$GITHUB_WORKSPACE/tests/check_installed.py"
