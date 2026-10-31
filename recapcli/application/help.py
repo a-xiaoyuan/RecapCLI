@@ -10,6 +10,7 @@ COMMANDS = (
     ("/new", "", "保存并开始新会话", "sessions"),
     ("/open", "ID", "恢复已保存的会话（TUI）", "sessions"),
     ("/tasks", "", "查看最近任务", "tasks"),
+    ("/diff", "[任务ID]", "查看本轮差异、原有改动与命令结果", "tasks"),
     ("/help", "[分类]", "查看命令与快捷键", "common"),
     ("/exit", "", "保存并退出", "common"),
     ("/models", "[筛选词]", "筛选本地模型配置", "models"),
@@ -20,6 +21,7 @@ COMMANDS = (
     ("/compact", "", "请求模型压缩旧历史，原文保留", "sessions"),
     ("/summary", "", "查看历史摘要", "sessions"),
     ("/task", "ID", "查看工具事实与命令结果", "tasks"),
+    ("/undo", "[组ID]", "审批后撤销编辑组，需要 --allow-write", "tasks"),
     ("/task-verify", "ID passed|failed 命令ID 说明", "登记人工验收", "tasks"),
     ("/memory", "", "查看长期记忆", "memory"),
     ("/remember", "[preference|fact] 文本", "添加偏好或项目事实", "memory"),
@@ -33,7 +35,7 @@ COMMANDS = (
     ("/memory-accept", "ID", "接纳经验候选", "memory"),
     ("/memory-reject", "ID", "拒绝经验候选", "memory"),
 )
-COMMON = {"/model", "/config", "/new", "/open", "/tasks", "/help", "/exit"}
+COMMON = {"/model", "/config", "/new", "/open", "/tasks", "/diff", "/help", "/exit"}
 GROUPS = {"common": "常用", "models": "模型", "sessions": "会话", "tasks": "任务与审批", "memory": "记忆", "keys": "快捷键"}
 KEYS = """Enter 发送 · Shift+Enter / Ctrl+J 换行
 ↑↓ 选择命令 · Tab 补全 · Esc 收起列表

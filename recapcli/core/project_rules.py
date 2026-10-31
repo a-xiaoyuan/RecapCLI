@@ -29,7 +29,7 @@ def load_project_rules(workspace, max_bytes=MAX_RULE_BYTES):
 
 def project_rules_description(rules):
     if rules is None:
-        return "尚未开始任务；发送时读取根目录 AGENTS.md"
+        return "本轮未记录项目规则；普通提问时读取根目录 AGENTS.md"
     status = rules["status"]
     if status == "loaded":
         return f"{rules['source']} · 已加载 {rules['bytes']} 字节"

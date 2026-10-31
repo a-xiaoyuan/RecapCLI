@@ -26,6 +26,7 @@ from ..ui.terminal_ui import clean_output
 from ..config import ConfigError, PROJECT_ROOT, list_model_profiles
 from ..application.help import command_items, help_text
 from ..core.project_rules import project_rules_description
+from ..application.changes import change_report, git_summary, files_summary, commands_summary
 
 
 TERMINAL_THEME = Theme(
@@ -354,15 +355,18 @@ class RecapShell(App):
         tools = {"read": "读取与检索", "write": "编辑与恢复", "exec": "执行命令", "web": "网页搜索"}
         granted = "\n".join("• " + label for key, label in tools.items() if key in self.options.capabilities)
         task = self._task_status
+        report = task.changes or change_report({})
         text = Text()
         for title, content in (
             ("模型", model + " · " + profile.get("name", "default") + "\n" + " · ".join(flags) + "\n" + ("本地配置齐全，接口尚需实际请求验证" if self._model_ready else "模型配置未齐")),
             ("工作区", str(self.state.workspace)),
             ("项目规则", project_rules_description(task.project_rules)),
+            ("开始时的 Git 状态 · 左列暂存区 / 右列工作区", git_summary(report["git"])),
             ("模式与工具", self.options.mode + "\n" + (granted if capabilities.get("tools", True) else "当前模型未开放工具")),
             ("本次任务", task_text(task, busy=self._busy, approval=self._approval) + "\n" + (task.task_id or "还没有任务")),
             ("Token 用量", usage_text(task)),
-            ("修改文件 · 编辑 / 恢复工具记录", "\n".join(task.modified_files) or "暂无编辑记录"),
+            ("本轮文件 · 编辑 / 恢复工具记录", files_summary(report)),
+            ("本轮命令记录", commands_summary(report)),
         ):
             text.append(title + "\n", style=PALETTE["accent"] + " bold")
             text.append(clean_output(content) + "\n\n", style=PALETTE["text"])

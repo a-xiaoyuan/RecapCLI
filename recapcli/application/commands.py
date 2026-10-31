@@ -6,7 +6,8 @@ from ..config import list_model_profiles
 from ..core.memory import active
 from ..core.project_rules import project_rules_description
 from ..storage.tasks import TaskStore
-from .runtime import save_session
+from .runtime import run_undo, save_session
+from .changes import show_changes
 from .help import help_text, config_help
 
 
@@ -100,7 +101,7 @@ def show_tasks(ui, tasks, task_id=None, *, as_json=False):
         ui.info("已返回回答：\n" + task["answer"])
 
 
-def handle_command(command, ui, store, session, model):
+def handle_command(command, ui, store, session, model, *, capabilities=("read",), approver=None):
     """处理会话命令；返回新的 session 或退出标记。"""
     parts = command.split(maxsplit=1)
     name = parts[0].lower()
@@ -115,6 +116,16 @@ def handle_command(command, ui, store, session, model):
         ui.info(help_text(argument or "common"))
     elif name == "/config":
         ui.info(config_help())
+    elif name in {"/diff", "/undo"}:
+        try:
+            if name == "/diff":
+                show_changes(ui, TaskStore(store.workspace, create=False), argument or None)
+            else:
+                result = run_undo(store, ui, session, model, group_id=argument or None,
+                                  capabilities=capabilities, approver=approver)
+                (ui.info if result["ok"] else ui.error)(result.get("error") or result.get("summary", "撤销未完成"))
+        except (OSError, ValueError, RuntimeError) as error:
+            ui.error(f"命令执行失败：{error}")
     elif name == "/save":
         if save_session(store, session, ui, allow_empty=True):
             ui.info("会话已保存。")

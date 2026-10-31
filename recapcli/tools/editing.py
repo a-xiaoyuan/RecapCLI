@@ -184,23 +184,27 @@ def edit_files(workspace, edits, *, on_record=None):
     """一次审批一组编辑；先验证全部替换，再逐文件写入并保存各自收据。"""
     plans = _plan_edits(workspace, edits)
     group_id, files, diffs = uuid.uuid4().hex, [], []
+    failure = None
     for planned in plans:
         try:
             receipt = _commit_edit(workspace, planned, on_record, group_id)
             diffs.append(receipt.pop("diff", ""))
             files.append(receipt)
         except (OSError, ValueError) as error:
-            return {"ok": False, "files": files, "group_id": group_id,
-                    "error": f"批量编辑在 {planned['path']} 停止：{error}；已完成的文件与备份见 files，后续未执行。"}
+            failure = f"批量编辑在 {planned['path']} 停止：{error}；已完成的文件与备份见 files，后续未执行。"
+            break
     backups = [item["backup_id"] for item in files if item.get("changed")]
     diff = "\n".join(diffs).encode("utf-8")
-    return {"files": files, "group_id": group_id, "backup_ids": backups,
+    return {**({"ok": False, "error": failure} if failure else {}),
+            "files": files, "group_id": group_id, "backup_ids": backups,
             "diff": diff[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore"),
             "diff_truncated": len(diff) > MAX_DIFF_BYTES or any(item.get("diff_truncated") for item in files),
             "summary": f"已编辑 {len(backups)} 个文件，操作组：{group_id}；undo_edit 可撤销本组。"}
 
 
-def _undo_records(workspace):
+def _undo_records(workspace, group_id=None):
+    if group_id is not None and (not isinstance(group_id, str) or not re.fullmatch(r"[0-9a-f]{32}", group_id)):
+        raise ToolError("group_id 必须是完整的 32 位操作组 ID")
     records = []
     for path in (data_root(workspace) / "backups").glob("*.json"):
         if path.is_symlink() or path.is_junction() or path.stat().st_size > MAX_EDIT_BYTES * 2:
@@ -208,7 +212,7 @@ def _undo_records(workspace):
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or not {"id", "path", "after_sha256", "created_at"} <= data.keys():
             raise ToolError(f"备份记录格式不正确：{path.name}")
-        if not data.get("restored_at"):
+        if not data.get("restored_at") and (group_id is None or data.get("group_id", data["id"]) == group_id):
             records.append(data)
     if not records:
         raise ToolError("没有可撤销的编辑")
@@ -217,14 +221,25 @@ def _undo_records(workspace):
     return [item for item in reversed(records) if item.get("group_id", item["id"]) == group]
 
 
-def undo_edit(workspace):
-    records = _undo_records(workspace)
+def undo_edit(workspace, group_id=None):
+    records = _undo_records(workspace, group_id)
     for item in records:
         target = _target(workspace, item["path"])
         if not target.is_file() or _hash(_read_bytes(target)) != item["after_sha256"]:
             raise ToolError(f"{item['path']} 已有后续变化，未撤销；请先核对文件")
-    files = [restore_file(workspace, item["id"]) for item in records]
-    return {"files": files, "summary": f"已撤销最近一组编辑，共 {len(files)} 个文件。"}
+    files, failure = [], None
+    for item in records:
+        try:
+            files.append(restore_file(workspace, item["id"]))
+        except (OSError, ValueError) as error:
+            failure = f"恢复 {item['path']} 时停止：{error}；已完成项见 files。"
+            break
+    group = records[0].get("group_id", records[0]["id"])
+    diff = "\n".join(item.pop("diff") for item in files).encode("utf-8")
+    return {**({"ok": False, "error": failure} if failure else {}),
+            "files": files, "group_id": group, "diff": diff[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore"),
+            "diff_truncated": len(diff) > MAX_DIFF_BYTES or any(item["diff_truncated"] for item in files),
+            "summary": f"操作组 {group} 已恢复 {len(files)} 个文件。"}
 
 
 def restore_file(workspace, backup_id):
@@ -247,6 +262,7 @@ def restore_file(workspace, backup_id):
     if _hash(current) != data.get("after_sha256"):
         raise ToolError("文件已有后续修改，未覆盖；请先核对当前内容")
     encoded = data.get("before_base64")
+    original = b""
     if encoded is None:
         target.unlink()
     else:
@@ -258,5 +274,7 @@ def restore_file(workspace, backup_id):
         _replace_file(workspace, data["path"], current, original)
     data["restored_at"] = datetime.now().astimezone().isoformat()
     write_json(record, data)
+    diff, truncated = _diff(current.decode("utf-8-sig"), original.decode("utf-8-sig"), data["path"])
     return {"path": data["path"], "restored": True, "backup_id": backup_id,
+            "diff": diff, "diff_truncated": truncated,
             "summary": f"已恢复 {data['path']}，备份 ID：{backup_id}"}

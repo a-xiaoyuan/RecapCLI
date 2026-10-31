@@ -241,6 +241,25 @@ class DriverTests(unittest.TestCase):
         self.assertTrue(any("approve" in item[1] for item in self.recording.events if item[0] == "approval"))
         from recapcli.tui.status import TaskStatus
         self.assertEqual(TaskStatus.from_task(texts(self.recording, "task")[-1]).modified_files, ("README.md",))
+        approvals = sum(item[0] == "approval" for item in self.recording.events)
+
+        def approve_undo():
+            for _ in range(200):
+                if sum(item[0] == "approval" for item in self.recording.events) > approvals:
+                    self.recording.queue.put("approve")
+                    return
+                threading.Event().wait(0.01)
+
+        waiter = threading.Thread(target=approve_undo)
+        waiter.start()
+        try:
+            with patch("recapcli.tui.driver.load_config", side_effect=AssertionError("撤销不应打开模型")):
+                driver.handle_line("/undo")
+        finally:
+            waiter.join(timeout=2)
+        self.assertEqual((self.workspace / "README.md").read_text(encoding="utf-8"), "hello\n")
+        self.assertEqual(len(requests), 2)
+        self.assertIsNone(driver.client)
 
     def test_open_restores_saved_messages(self):
         from recapcli.storage.session import SessionStore
@@ -431,7 +450,8 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             app.driver.presenter.task_update({
                 "id": "a" * 32, "status": "returned", "duration_seconds": 2.5,
                 "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
-                "events": [{"kind": "project_rules", "data": {"source": "AGENTS.md", "status": "loaded", "bytes": 80}},
+                "events": [{"kind": "project_version", "data": {"dirty": True, "files": [{"path": "README.md", "status": " M"}]}},
+                           {"kind": "project_rules", "data": {"source": "AGENTS.md", "status": "loaded", "bytes": 80}},
                            {"kind": "tool_result", "data": {"name": "edit_file", "result": {
                     "ok": True, "changed": True, "path": "README.md"}}}],
             })
@@ -442,6 +462,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("ctrl+g")
             self.assertIn("README.md", str(app.screen.query_one("#status-body").render()))
             self.assertIn("AGENTS.md · 已加载 80 字节", str(app.screen.query_one("#status-body").render()))
+            self.assertIn("开始时已有改动", str(app.screen.query_one("#status-body").render()))
             self.assertIn("120", str(app.screen.query_one("#status-body").render()))
             await pilot.press("escape")
             app._lock()

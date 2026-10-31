@@ -272,10 +272,11 @@ class ShellDriver:
         if head == "/sessions":
             self.show_sessions()
             return None
-        if head in {"/tasks", "/task"}:
+        if head in {"/tasks", "/task", "/diff", "/undo"}:
             store = self.store if self.store is not None else SimpleNamespace(workspace=self.options.workspace)
             session = self.session if self.session is not None else {"id": "", "messages": [], "summary": None}
-            handle_command(prompt, self.presenter, store, session, self.model or "")
+            handle_command(prompt, self.presenter, store, session, self.model or "",
+                           capabilities=self.options.capabilities, approver=self._approver() if head == "/undo" else None)
             return None
         if head == "/new":
             self._new_session()
@@ -375,9 +376,7 @@ class ShellDriver:
             return
         if not self._require_client(sending=True):
             return
-        approver = approve_all if self.options.yes else InteractiveApprover(
-            self.presenter, timeout=self.options.approval_timeout, reader=self.presenter.read_approval,
-        )
+        approver = self._approver()
         try:
             answer = run_turn(
                 self.client, self.model, self.options.workspace, self.store, self.presenter, self.session,
@@ -399,6 +398,10 @@ class ShellDriver:
         self.presenter.answer(answer)
         if not save_session(self.store, self.session, self.presenter):
             self.presenter.info("当前消息仍保留在内存，输入 /save 重试，无需重新提问。")
+
+    def _approver(self):
+        return approve_all if self.options.yes else InteractiveApprover(
+            self.presenter, timeout=self.options.approval_timeout, reader=self.presenter.read_approval)
 
     def _require_client(self, *, sending, profile=None):
         if self.client is not None:

@@ -132,8 +132,9 @@ TOOL_REGISTRY = {
     },
     "undo_edit": {
         "handler": undo_edit, "capability": "write",
-        "description": "撤销最近一组未撤销编辑（单文件或 edit_files 批量操作）。先核对全组文件；有后续改动时拒绝覆盖。需一次人工审批。",
-        "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        "description": "按 group_id 撤销指定操作组；省略时撤销最近一组编辑。先核对全组文件；有后续改动时拒绝覆盖。需一次人工审批。",
+        "parameters": {"type": "object", "properties": {"group_id": {"type": "string", "description": "完整操作组 ID；单文件编辑可用 backup_id"}},
+                       "required": [], "additionalProperties": False},
     },
     "restore_file": {
         "handler": restore_file,

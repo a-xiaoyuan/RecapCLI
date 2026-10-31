@@ -3,6 +3,7 @@
 from dataclasses import asdict, replace
 from pathlib import Path
 import time
+import json
 
 from openai import APIError
 
@@ -10,6 +11,8 @@ from ..core.agent import AgentLimits, DEFAULT_STEPS, run_agent
 from ..core.recovery import TurnRecovery
 from ..llm.client import ModelClient
 from ..storage.tasks import TaskStore, project_version
+from ..tools import execute_tool
+from .changes import change_report, short_change_report
 
 
 def save_session(store, session, ui, *, allow_empty=False):
@@ -24,6 +27,20 @@ def save_session(store, session, ui, *, allow_empty=False):
         ui.error("会话保存已取消，消息尚未保存。")
         return False
     return True
+
+
+def _publish_task(tasks, task_id, ui, *, show_changes=False):
+    try:
+        task = tasks.get(task_id)
+    except (OSError, ValueError):
+        return
+    receiver = getattr(ui, "task_update", None)
+    if receiver is not None:
+        receiver(task)
+    if show_changes:
+        report = change_report(task)
+        if report["files"] or report["commands"]:
+            ui.info(short_change_report(report))
 
 
 def run_turn(client, model, workspace, store, ui, session, prompt, *,
@@ -58,15 +75,8 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         if kind == "project_rules" and not data.get("agent"):
             publish_task()
 
-    def publish_task():
-        receiver = getattr(ui, "task_update", None)
-        if receiver is not None:
-            try:
-                task = tasks.get(task_id)
-            except (OSError, ValueError):
-                # 状态栏读取失败不改变已持久化的任务事实或重复执行操作。
-                return
-            receiver(task)
+    def publish_task(show_changes=False):
+        _publish_task(tasks, task_id, ui, show_changes=show_changes)
 
     try:
         publish_task()
@@ -99,7 +109,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
             tasks.finish(task_id, status, reason, duration=time.monotonic() - started)
         except (OSError, ValueError, RuntimeError) as record_error:
             ui.error(f"任务 {task_id} 的终态未保存：{record_error}；请核对现有操作记录，勿重复执行。")
-        publish_task()
+        publish_task(show_changes=True)
         recovered_messages = recovery.finish(task_id)
         if recovered_messages:
             session["messages"].extend(recovered_messages)
@@ -114,7 +124,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
                      duration=time.monotonic() - started)
     except (OSError, ValueError) as error:
         ui.error(f"任务 {task_id} 的终态未保存：{error}；回答仍保留，请勿重复执行。")
-    publish_task()
+    publish_task(show_changes=True)
     session["messages"].extend(result.messages)
     session["model"] = model
     if model_config is not None:
@@ -122,3 +132,39 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
     if result.summary is not None:
         session["summary"] = {**result.summary, "task_id": task_id}
     return result.answer
+
+
+def run_undo(store, ui, session, model, *, group_id=None, capabilities=("read",), approver=None):
+    """手动撤销走现有工具权限和审批，不请求模型；操作事实独立落任务。"""
+    tasks = TaskStore(store.workspace)
+    prompt = "/undo" + (" " + group_id if group_id else "")
+    task_id = tasks.start(session.get("id", ""), prompt, model, "undo", {"capabilities": list(capabilities)})
+    ui.info(f"任务 ID：{task_id}（本地撤销，不请求模型）")
+    started = time.monotonic()
+    params = {"group_id": group_id} if group_id else {}
+    action = {"action_id": task_id, "call_id": "manual-undo", "name": "undo_edit"}
+    try:
+        tasks.append(task_id, "project_version", project_version(Path(store.workspace).resolve()))
+        tasks.append(task_id, "tool_start", {**action, "arguments": json.dumps(params)})
+        _publish_task(tasks, task_id, ui)
+        result = execute_tool("undo_edit", params, store.workspace, capabilities=capabilities, approver=approver,
+                              on_approval=lambda payload: tasks.append(task_id, "approval", {**action, **payload}))
+        tasks.append(task_id, "tool_result", {**action, "result": result})
+        tasks.finish(task_id, "returned" if result["ok"] else "blocked",
+                     result.get("error") or "本地撤销完成，未调用模型", answer=result.get("summary", ""),
+                     duration=time.monotonic() - started)
+    except BaseException as error:
+        try:
+            tasks.append(task_id, "tool_interrupted", {**action, "error_type": type(error).__name__, "outcome": "unknown"})
+            tasks.finish(task_id, "cancelled" if isinstance(error, KeyboardInterrupt) else "failed", str(error),
+                         duration=time.monotonic() - started)
+        except (OSError, ValueError) as record_error:
+            ui.error(f"撤销任务 {task_id} 的终态未保存：{record_error}；请先核对文件和备份。")
+        _publish_task(tasks, task_id, ui, show_changes=True)
+        raise
+    _publish_task(tasks, task_id, ui, show_changes=True)
+    if session.get("id"):
+        session["messages"].extend([{"role": "user", "content": prompt},
+                                    {"role": "assistant", "content": "本地操作事实：" + json.dumps(result, ensure_ascii=False)}])
+        save_session(store, session, ui)
+    return result

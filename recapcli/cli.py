@@ -70,7 +70,7 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
             ui.error("用法：/compact（不需要参数）")
             continue
         if prompt.startswith("/") and not compact_only:
-            session = handle_command(prompt, ui, store, session, model)
+            session = handle_command(prompt, ui, store, session, model, capabilities=capabilities, approver=approver)
             if session is None:
                 return 0
             continue

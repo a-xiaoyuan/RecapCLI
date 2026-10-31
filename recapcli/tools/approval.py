@@ -214,7 +214,7 @@ def collect_fingerprints(tool, workspace, params):
         if tool == "edit_files":
             return [_file_fingerprint(workspace, item.get("path", "")) for item in params.get("edits", [])]
         if tool == "undo_edit":
-            return [fingerprint for item in _undo_records(workspace)
+            return [fingerprint for item in _undo_records(workspace, params.get("group_id"))
                     for fingerprint in _restore_fingerprints(workspace, {"backup_id": item["id"]})]
         if tool == "restore_file":
             return _restore_fingerprints(workspace, params)
@@ -262,7 +262,7 @@ def _action_hint(tool, workspace, params):
         except (OSError, ValueError, TypeError) as error:
             return f"执行前检查未通过：{error}"
     if tool == "undo_edit":
-        return "撤销最近一组未撤销编辑；文件已有后续变化时不会覆盖。"
+        return "撤销指定操作组或最近一组未撤销编辑；文件已有后续变化时不会覆盖。"
     if tool == "restore_file":
         return "将按备份恢复目标文件；目标或备份已变化时不会覆盖。"
     if tool == "run_command":

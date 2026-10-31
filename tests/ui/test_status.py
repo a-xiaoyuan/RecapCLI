@@ -17,6 +17,9 @@ class StatusTests(unittest.TestCase):
             return {"kind": "tool_result", "data": {"name": name, "result": result}}
 
         task = TaskStatus.from_task({"id": "a", "events": [
+            {"kind": "tool_start", "data": {"name": "run_command", "action_id": "interrupted",
+                "arguments": '{"argv":["python","verify.py"]}'}},
+            {"kind": "tool_interrupted", "data": {"name": "run_command", "action_id": "interrupted"}},
             event("edit_file", ok=True, changed=True, path="a.py"),
             event("edit_file", ok=True, changed=True, path="a.py"),
             event("edit_file", ok=False, changed=True, path="failed.py"),
@@ -26,6 +29,9 @@ class StatusTests(unittest.TestCase):
             event("restore_file", ok=True, restored=True, path="b.py"),
         ]})
         self.assertEqual(task.modified_files, ("a.py", "b.py"))
+        interrupted = next(command for command in task.changes["commands"] if command["argv"] == ["python", "verify.py"])
+        self.assertIsNone(interrupted["returncode"])
+        self.assertIn("结果未知", interrupted["error"])
 
     def test_busy_and_approval_take_precedence_over_saved_terminal_state(self):
         status = TaskStatus(status="returned", duration=1.25)

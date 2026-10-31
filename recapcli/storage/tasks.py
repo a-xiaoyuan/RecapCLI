@@ -72,9 +72,15 @@ def project_version(workspace):
         ).stdout
 
     try:
-        head = git("rev-parse", "HEAD").decode().strip()
+        prefix = git("rev-parse", "--show-prefix").decode().strip()
+        try:
+            head = git("rev-parse", "HEAD").decode().strip()
+        except subprocess.SubprocessError:
+            head = None  # 已初始化、尚无首次提交的仓库。
         status = git("status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".")
-        diff = git("diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", ".")
+        diff = git("diff", "--no-ext-diff", "--no-textconv", "--binary", *(["HEAD"] if head else []), "--", ".")
+        if head is None:
+            diff += git("diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "--", ".")
         untracked = git("ls-files", "--others", "--exclude-standard", "-z", "--", ".")
     except (OSError, subprocess.SubprocessError):
         return {"head": None, "dirty": None, "fingerprint": None, "complete": False}
@@ -102,7 +108,18 @@ def project_version(workspace):
             digest.update(raw_path + b"\0" + content)
         except OSError:
             complete = False
-    return {"head": head, "dirty": bool(status), "fingerprint": digest.hexdigest(), "complete": complete}
+    entries = []
+    records = iter(status.split(b"\0"))
+    for record in records:
+        if not record:
+            continue
+        code, path = record[:2].decode("ascii"), os.fsdecode(record[3:])
+        item = {"path": path.removeprefix(prefix), "status": code}
+        if "R" in code or "C" in code:
+            item["original_path"] = os.fsdecode(next(records)).removeprefix(prefix)
+        entries.append(item)
+    return {"head": head, "dirty": bool(status), "fingerprint": digest.hexdigest(), "complete": complete,
+            "files": entries[:200], "files_truncated": len(entries) > 200}
 
 
 class TaskStore:

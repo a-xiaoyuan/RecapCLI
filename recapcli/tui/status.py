@@ -1,6 +1,7 @@
 """从实际任务记录提取状态栏数据，不估算费用或伪造上下文占比。"""
 
 from dataclasses import dataclass
+from ..application.changes import change_report
 
 
 @dataclass(frozen=True)
@@ -13,28 +14,19 @@ class TaskStatus:
     modified_files: tuple = ()
     stop_reason: str = ""
     project_rules: dict | None = None
+    changes: dict | None = None
 
     @classmethod
     def from_task(cls, task):
-        paths = []
+        report = change_report(task)
         rules = None
         for event in task.get("events", []):
             if event.get("kind") == "project_rules" and not event.get("data", {}).get("agent"):
                 rules = event["data"]
-            if event.get("kind") != "tool_result":
-                continue
-            data = event.get("data", {})
-            result = data.get("result", {})
-            if data.get("name") in {"edit_file", "edit_files", "restore_file", "undo_edit"}:
-                for item in result.get("files", [result]):
-                    if item.get("ok", True) and (item.get("changed") or item.get("restored")):
-                        path = item.get("path")
-                        if isinstance(path, str) and path not in paths:
-                            paths.append(path)
         return cls(task_id=task.get("id", ""), status=task.get("status", ""),
                    requests=task.get("model_requests", 0), duration=task.get("duration_seconds"),
-                   usage=task.get("usage"), modified_files=tuple(paths), stop_reason=task.get("stop_reason", ""),
-                   project_rules=rules)
+                   usage=task.get("usage"), modified_files=tuple(item["path"] for item in report["files"]),
+                   stop_reason=task.get("stop_reason", ""), project_rules=rules, changes=report)
 
 
 def token_count(value):
