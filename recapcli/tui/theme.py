@@ -32,10 +32,6 @@ def render_wordmark(width, *, compact=False):
     return Text("\n".join(padding + row for row in rows), style="#e4e3de", no_wrap=True, overflow="crop")
 
 
-def spaced(text, gap=" "):
-    return gap.join(text)
-
-
 def dot(ready=None):
     color = PALETTE["online"] if ready is True else PALETTE["faint"]
     return Text.assemble(("●" if ready is True else "○", color))

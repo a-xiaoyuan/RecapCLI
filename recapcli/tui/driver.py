@@ -36,19 +36,6 @@ class ShellOptions:
     approval_timeout: float = 120.0
 
 
-def describe_runtime(options):
-    labels = {"react": "ReAct", "plan": "Plan and Execute", "multi": "Multi（仅本地只读）"}
-    names = (("read", "读取"), ("write", "编辑"), ("exec", "命令"), ("web", "网页"))
-    granted = "、".join(name for key, name in names if key in options.capabilities)
-    approval = ""
-    if options.mode != "multi" and ({"write", "exec"} & set(options.capabilities)):
-        approval = (
-            "本进程内的写入和命令按 --yes 批准，执行前仍复核指纹。"
-            if options.yes else "写入和命令会逐次审批。"
-        )
-    return f"{labels[options.mode]} · {granted}。{approval}/help 查看命令，Ctrl+Q 退出。"
-
-
 class Presenter:
     """把工作线程里的界面调用送回 Textual。"""
 

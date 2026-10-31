@@ -4,7 +4,6 @@ import asyncio
 import queue
 import threading
 import time
-import tomllib
 
 from rich.markdown import Markdown
 from rich.text import Text
@@ -22,8 +21,9 @@ from .status import TaskStatus, task_text, usage_text
 from .theme import DISPLAY_LIMIT, PALETTE, render_line, render_wordmark
 from .widgets import CommandMenu, ConversationView, PromptInput, StatusScreen
 from .settings import ModelConfigScreen, ModelPickerScreen
+from ..ui.terminal_art import project_version
 from ..ui.terminal_ui import clean_output
-from ..config import ConfigError, PROJECT_ROOT, list_model_profiles
+from ..config import ConfigError, list_model_profiles
 from ..application.help import command_items, help_text
 from ..core.project_rules import project_rules_description
 from ..application.changes import change_report, git_summary, files_summary, commands_summary
@@ -50,12 +50,8 @@ MISSING_CONFIG = "还没有可用的模型配置。按 F3 填写模型、接口�
 
 def version_label():
     """版本读取项目元数据，避免在界面里维护第二份版本号。"""
-    try:
-        with (PROJECT_ROOT / "pyproject.toml").open("rb") as source:
-            release = tomllib.load(source)["project"]["version"]
-        label = "v" + clean_output(str(release))
-    except (OSError, KeyError, TypeError, ValueError):
-        label = "开发版"
+    release = project_version()
+    label = "v" + clean_output(release) if release else "开发版"
     return Text(label, style=PALETTE["muted"], justify="center", no_wrap=True)
 
 

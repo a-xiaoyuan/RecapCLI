@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --extra tui
+
+      - name: Compile
+        run: uv run python -m compileall -q recapcli
+
+      - name: Test
+        run: uv run python -X utf8 -m unittest discover -s tests
+
+      - name: Smoke
+        run: |
+          uv run python -X utf8 -m recapcli --version
+          uv run python -X utf8 -m recapcli --help

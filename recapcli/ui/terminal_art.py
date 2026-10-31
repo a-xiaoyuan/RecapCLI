@@ -144,13 +144,17 @@ def _clean(text):
     return "".join(char if char.isprintable() else "?" for char in str(text))
 
 
-def _title():
+def project_version():
     try:
         with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
-            version = tomllib.load(file)["project"]["version"]
-        return "RecapCLI  v" + _clean(version)
+            return str(tomllib.load(file)["project"]["version"])
     except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
-        return "RecapCLI"
+        return None
+
+
+def _title():
+    version = project_version()
+    return "RecapCLI" + ("  v" + _clean(version) if version else "")
 
 
 def _supports_color(stream, mode):

@@ -1,5 +1,5 @@
 {
-  "include": ["recapcli", "main.py", "tests"],
+  "include": ["recapcli", "tests"],
   "exclude": [
     ".venv",
     "venv",
