@@ -1,6 +1,7 @@
 """加载 RecapCLI 自身的模型和搜索配置。
 
-只读取 RecapCLI 目录下的 `.env`，环境变量优先；不读取目标工作区的配置。
+源码树使用项目根目录；安装后的命令使用用户配置目录。环境变量优先，
+不读取目标工作区的配置。
 """
 
 import os
@@ -13,8 +14,24 @@ from dotenv import dotenv_values, set_key
 import tomlkit
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_FILE = PROJECT_ROOT / ".env"
-MODELS_FILE = PROJECT_ROOT / "models.toml"
+
+
+def _default_config_dir():
+    override = os.environ.get("RECAPCLI_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
+    if (PROJECT_ROOT / "pyproject.toml").is_file():
+        return PROJECT_ROOT
+    if os.name == "nt":
+        base = os.environ.get("APPDATA")
+        return Path(base) / "recapcli" if base else Path.home() / "AppData" / "Roaming" / "recapcli"
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base) if base else Path.home() / ".config") / "recapcli"
+
+
+CONFIG_DIR = _default_config_dir()
+ENV_FILE = CONFIG_DIR / ".env"
+MODELS_FILE = CONFIG_DIR / "models.toml"
 PROTOCOLS = {"chat_completions", "responses"}
 
 
@@ -143,6 +160,7 @@ def save_model_profile(name, *, model, protocol, base_url="", api_key_env="OPENA
     key_env = spec["api_key_env"]
     if api_key and os.environ.get(key_env) and api_key != os.environ[key_env]:
         raise ConfigError(f"{key_env} 已被进程环境变量覆盖，请先修改或移除该环境变量再保存新密钥")
+    MODELS_FILE.parent.mkdir(parents=True, exist_ok=True)
     document = tomlkit.parse(MODELS_FILE.read_text(encoding="utf-8")) if MODELS_FILE.exists() else tomlkit.document()
     models = document.setdefault("models", tomlkit.table())
     target = models.setdefault(name, tomlkit.table())
@@ -154,6 +172,7 @@ def save_model_profile(name, *, model, protocol, base_url="", api_key_env="OPENA
         document["default"] = name
     MODELS_FILE.write_text(tomlkit.dumps(document), encoding="utf-8")
     if api_key:
+        ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
         set_key(ENV_FILE, key_env, api_key, quote_mode="always")
 
 

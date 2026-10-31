@@ -2,6 +2,7 @@
 name = "recapcli"
 version = "0.6.0"
 description = "支持历史压缩、长期记忆检索、任务追溯和本地工具的终端代码 Agent"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "openai>=3.35,<4",
@@ -11,6 +12,9 @@ dependencies = [
     "pillow>=11,<14",
 ]
 
+[project.scripts]
+recapcli = "recapcli.tui.launch:dispatch"
+
 [project.optional-dependencies]
 tui = [
     "textual>=8,<9",
@@ -18,3 +22,10 @@ tui = [
 
 [dependency-groups]
 dev = ["httpx2"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["recapcli"]

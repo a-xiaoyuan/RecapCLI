@@ -6,6 +6,7 @@ import shutil
 import sys
 import tomllib
 import unicodedata
+from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 
 from ..config import PROJECT_ROOT
@@ -145,6 +146,10 @@ def _clean(text):
 
 
 def project_version():
+    try:
+        return distribution_version("recapcli")
+    except PackageNotFoundError:
+        pass
     try:
         with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
             return str(tomllib.load(file)["project"]["version"])

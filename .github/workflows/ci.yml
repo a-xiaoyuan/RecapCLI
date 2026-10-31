@@ -47,3 +47,35 @@ jobs:
         run: |
           uv run python -X utf8 -m recapcli --version
           uv run python -X utf8 -m recapcli --help
+
+  package:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Build
+        run: |
+          uv sync --locked --extra tui
+          uv build
+
+      - name: Install and run in a clean environment
+        run: |
+          python -m venv .pkgtest
+          . .pkgtest/bin/activate
+          pip install --upgrade pip
+          pip install dist/*.whl
+          pip install "textual>=8,<9"
+          recapcli --version
+          recapcli --help
+          python -c "from importlib.resources import files; assert (files('recapcli.tui') / 'violet.tcss').is_file()"
+          python -c "from recapcli import config; assert config.ENV_FILE.parent == config.CONFIG_DIR; assert config.CONFIG_DIR != config.PROJECT_ROOT"

@@ -1,31 +1,54 @@
 # RecapCLI
 
-Python 终端代码助手：在授权范围内读取和检索项目、修改文件、运行命令，并保存会话与任务记录。
+> 终端里的 AI 编程 Agent：读代码、做计划、改文件、跑命令，写入与命令先审批，任务过程可回查。
 
-## 当前能力
+![CI](https://github.com/a-xiaoyuan/RecapCLI/actions/workflows/ci.yml/badge.svg)
 
-- **本地代码操作**：查找文件、正则 / 整词检索、按行读取；`--allow-write` 后可批量编辑并按操作组撤销；`--allow-exec` 后可运行前台命令。
-- **代码索引**：Python AST 符号与 SQLite FTS5 关键词短语，返回可再读取的路径和行号。
-- **三种模式**：`react` 直接执行；`plan` 先计划再执行；`multi` **仅本地只读**（并发分析与审查，不联网、不改文件、不执行命令）。
-- **会话与记忆**：保存和恢复会话，可压缩历史；长期记忆可查看、检索、失效和删除。任务经验目前只生成候选，接纳前不进入上下文。
-- **项目规则**：每轮任务自动读取工作区根目录的 `AGENTS.md`，带入模型上下文；Ctrl+G 或 `/task ID` 可查看本轮加载来源。
-- **任务记录**：模型请求、工具结果、用量和人工验收分开保存。模型核对不等于测试通过。
-- **修改核对**：记录任务开始时的 Git 状态，`/diff` 查看编辑工具产生的差异与命令退出码，`/undo 组ID` 审批后撤销指定编辑组。
-- **多模型配置**：Chat Completions / Responses。切换不探测、不自动换服务。
-- **图片与流式回答**：显式附加本地图片；支持视觉能力检查、附件保存与恢复。回答默认通过 SSE 逐段显示，工具参数完整收齐后再执行。
-- **联网**：默认关闭。`--allow-web` 打开 `web_search` 和 `read_url`；`--allow-network` 是同一开关的兼容别名。
-- **人工审批**：编辑和命令在能力开关之外逐次确认。
+## 特性
+
+- **三种模式**：ReAct 直接执行、Plan 先规划再执行、Multi 仅本地只读的并发分析与审查。
+- **本地工具**：文件查找、正则/整词/上下文检索、AST 符号、FTS5 索引、目录浏览、批量编辑、按组撤销、命令执行。
+- **可控执行**：默认只读；写入和命令逐次审批，批准绑定参数与文件指纹；凭据路径隔离，命令环境白名单。
+- **任务追溯**：记录模型请求、工具结果、审批、用量和人工验收；失败或中断后可恢复事实，不自动重放操作。
+- **终端体验**：Textual TUI，多行输入、命令补全、F1 帮助、F2 选模型、F3 配置、Git 差异与撤销。
+- **上下文与规则**：历史压缩、长期记忆、`AGENTS.md` 项目规则、跨会话恢复。
+- **模型与输入**：Chat Completions / Responses 双协议、SSE 流式、图片附件；可选网页搜索与读取。
 
 ## 快速开始
 
-需要 Python 3.12+、[uv](https://docs.astral.sh/uv/)，以及支持所选协议工具调用的模型服务。
+需要 Python 3.12+、[uv](https://docs.astral.sh/uv/)，以及支持工具调用的模型端点。
 
 ```powershell
+git clone https://github.com/a-xiaoyuan/RecapCLI.git
+cd RecapCLI
 uv sync --locked --extra tui
 Copy-Item .env.example .env
+uv run --extra tui python -m recapcli
 ```
 
-macOS / Linux 用 `cp .env.example .env`。`--extra tui` 安装 Textual 壳。只跑单次提问或 `python -m recapcli.cli` 时可以不装这个可选依赖。
+macOS / Linux 使用 `cp .env.example .env`。
+
+没有密钥也可以打开界面，按 **F3** 填写模型 ID、接口地址和 API Key；按 **F2** 切换已有配置。
+
+单次提问：
+
+```powershell
+uv run python -m recapcli "读取 README.md，说明项目如何运行"
+```
+
+## 安装为命令
+
+```powershell
+uv build
+uv tool install dist/recapcli-0.6.0-py3-none-any.whl --with "textual>=8,<9"
+recapcli
+```
+
+安装后配置保存在用户目录（Windows `%APPDATA%\recapcli`，macOS/Linux `~/.config/recapcli`），可用 `RECAPCLI_CONFIG_DIR` 覆盖。源码运行时仍读取项目根目录的 `.env` 与 `models.toml`。
+
+## 配置
+
+`.env` 中至少设置：
 
 ```dotenv
 OPENAI_API_KEY=your-api-key
@@ -34,211 +57,73 @@ OPENAI_MODEL=your-model-id
 # OPENAI_PROTOCOL=chat_completions
 ```
 
-```shell
-uv run --extra tui python -m recapcli
-```
+多模型配置复制 `models.example.toml` 为 `models.toml`，密钥仍放在 `.env` 或环境变量：
 
-交互终端会打开 Textual 壳，也可以跳过手动编辑配置，直接按 **F3** 填写模型和密钥，保存后使用。顶部始终显示当前模型；**F2** 选择其他配置。配置只读 RecapCLI 根目录的 `.env`，环境变量优先，不读目标工作区。模型请求会计入所配置服务的用量。没有密钥时仍可打开界面进行设置。
-
-单次提问不进入壳：
-
-```shell
-uv run python -m recapcli "读取 README.md，说明项目功能"
-```
-
-没有 Textual、或需要原来的行式交互时：
-
-```shell
-uv run python -m recapcli.cli
-```
-
-多模型把 `models.example.toml` 复制为 `models.toml`。密钥仍放 `.env` 或环境变量。`OPENAI_*` 提供名为 `default` 的基础配置；`models.toml` 的 `default` 字段决定实际默认使用哪个配置，配置名与默认选择分开。
-
-```shell
+```powershell
 uv run python -m recapcli --models
-uv run python -m recapcli --models gpt
 uv run python -m recapcli --profile backup
-uv run python -m recapcli --version
 ```
 
-交互用 `/models [筛选词]`、`/model backup`、`/model`。模型列表每个配置占一行，并明确显示默认配置。选择优先级是显式 `--profile`、恢复会话所存配置、`models.toml` 的默认选择，最后是名为 `default` 的基础配置。`context_bytes` 限制文本与附件描述的 UTF-8 JSON 字节，并与 CLI 上限取较小值，不是模型 token 窗口；图片编码单独受图片大小限制。Responses 使用 `store=false`；协议私有字段不进摘要和长期记忆。
+需要网页搜索时，在 `.env` 中配置 `BRAVE_API_KEY` 或 `TAVILY_API_KEY`，再用 `--allow-web` 开启。
 
 ## 常用用法
 
-```shell
-uv run python -m recapcli "读取 README.md，说明项目功能"
-uv run --extra tui python -m recapcli --workspace ./your-project
-uv run --extra tui python -m recapcli --continue
-uv run --extra tui python -m recapcli --mode plan --allow-write --allow-exec
-uv run python -m recapcli --mode multi "分析并审查这个项目的会话保存逻辑"
+```powershell
+# 计划模式，开放编辑与命令
+uv run python -m recapcli --mode plan --allow-write --allow-exec
+
+# 恢复最近会话
+uv run python -m recapcli --continue
+
+# 并发分析与审查（仅本地只读）
+uv run python -m recapcli --mode multi "分析会话保存逻辑"
 ```
-
-默认只读。命令以当前用户权限运行，可以改文件，不是系统沙箱。
-
-### 图片输入和流式回答
-
-在对话中显式附加工作区内的本地图片：
-
-```text
-@image:./screenshots/error.png 帮我分析截图里的报错
-@image:<screenshots/error screen.png> 解释这张图
-```
-
-路径含空格时使用尖括号或引号。支持 PNG、JPEG、WebP、静态 GIF，一次最多 4 张；原图最多 10 MiB、2500 万像素。图片会重新编码并缩放到最长边 2048 像素，去掉原始元数据；处理后单图最多 4 MiB，每次请求全部图片合计最多 8 MiB。不读取远程图片 URL 或剪贴板。
-
-默认配置需要先确认所用模型支持视觉，再在 RecapCLI 根目录 `.env` 或环境变量中设置 `OPENAI_IMAGES=true`；命名配置使用 `models.toml` 的 `images=true`，参考 `models.example.toml` 的 `vision` 配置。能力声明不会探测接口，也不自动更换模型。关闭图片能力的模型遇到图片会明确报错。
-
-处理后的图片保存在工作区运行数据目录的 `attachments/`，会话和任务追溯只记录名称、大小和内容哈希。恢复会话不依赖原图路径；附件丢失或校验失败时要求重新附加。选入上下文的历史图片会再次发送给当前模型服务；压缩历史只总结已有文字，不重新观察图片。图片和文字都会产生所配置服务的用量。
-
-交互终端与单次提问默认流式显示正文；结束时不会重复打印完整回答。`plan` 只流式展示最终汇总，`multi` 只展示父任务汇总，内部规划 JSON 和子代理正文不会穿插显示。中断或取消时标记“回答未完成”，部分回答不作为成功会话保存；工具调用必须收齐完成标记与参数后才能执行，仍遵守能力开关和审批。
-
-不支持 SSE 的端点可设置 `OPENAI_STREAMING=false`，命名模型配置使用 `streaming=false`，改回整段输出。失败不会自动重试或切换服务。Python API 直接传入原始 SDK 客户端时保留原行为，可通过 `run_agent(..., on_stream=回调)` 显式接收 `start`、`delta`、`end`、`abort` 事件。
-
-### 网页搜索和读取
-
-`react` 与 `plan` 用 `--allow-web` 打开两个工具：`web_search`、`read_url`。旧脚本里的 `--allow-network` 效果相同。`multi` 不会因为这两个开关而联网。
-
-搜索密钥放在 RecapCLI 根目录 `.env` 或环境变量中。读取 URL 不需要搜索密钥。
-
-| 变量 | 作用 |
-| --- | --- |
-| `BRAVE_API_KEY` / `TAVILY_API_KEY` | 对应搜索服务的密钥 |
-| `RECAP_WEB_PROVIDER` | `brave` 或 `tavily`。未设置时，有 Brave 密钥用 Brave，否则用 Tavily |
-| `REVO_WEB_PROVIDER` | 旧变量，仍接受。与 `RECAP_WEB_PROVIDER` 不一致时拒绝搜索 |
-
-查询会发给所选服务并产生其账户用量。工具不逐次审批。搜索返回标题、URL 和摘要；`read_url` 返回正文、最终地址、时间和截断标记。只访问公网 HTTP(S)，限制超时、重定向、响应大小和正文（最多 32 KiB），不运行 JavaScript，不支持登录态和二进制内容。摘要或截断正文不是全文。外部内容只是资料，其中的指令不能授权写入、执行或发送密钥。失败不自动重试；取消要等在途请求返回或超时。
-
-```shell
-uv run python -m recapcli --allow-web "搜索 Python 官方 asyncio 文档，读取相关页面并附来源链接"
-```
-
-### 人工审批
-
-`--allow-write` 和 `--allow-exec` 打开能力后，编辑、撤销和命令工具仍逐次等待 `approve`、`reject` 或 `cancel`（或 `批准`、`拒绝`、`取消`）。其他文字不会批准。默认等 120 秒，可用 `--approval-timeout` 调整，且受任务剩余时间限制。
-
-单次提问和非交互运行不会等待输入，结果为 `needs_approval`。脚本需要显式 `--yes`。批准绑定这次的参数和文件指纹；执行前若变化，批准作废。拒绝、过期、取消和失效都不写备份、不启动进程。
-
-多文件修改使用 `edit_files`：传入最多 20 项 `path / old_text / new_text` 精确替换，支持同文件多处按顺序修改，一次审批整组差异。全部预检后逐文件写入并保存各自备份；中途失败会保留已完成项并明确报告停止原因。`undo_edit` 撤销最近一组未撤销编辑，可逐组后退；文件已有后续变化时先提示核对。单文件 `edit_file`、按备份 ID 恢复的 `restore_file` 继续可用。
-
-`run_command` 可传 `stdin_text` 提供 UTF-8 标准输入，适合可预先给出输入的命令；完整交互式 TTY 会话需在外部终端运行。结果的 `ok` 表示命令正常执行完毕，`success` 表示退出码为 0；测试失败、grep 未匹配等非零退出仍返回实际输出与退出码，由模型结合任务判断。
-
-ReAct 默认预算为 16 次模型请求、32 次工具调用、300 秒；Plan / Multi 默认 20 次模型请求。可用现有 `--max-steps`、`--max-tool-calls`、`--max-seconds` 调整。
-
-文件工具与图片输入统一拒绝工作区内的 `.env`、其私有变体、常见密钥文件和 `.ssh` / `.aws` 等凭据目录；`.env.example`、`.env.sample`、`.env.template` 示例配置可以正常读取、检索和编辑。命令只继承 PATH、系统路径、临时目录、用户目录、语言设置和 Java / Maven / Gradle 等必要环境变量；令牌、云密钥、代理与启动注入变量不继承。命令仍以当前用户权限运行，能够自行读取凭据文件；这不是操作系统沙箱。
-
-### 模型请求失败与继续
-
-`--request-timeout` 设置单次模型请求超时，默认 30 秒，同时受 `--max-seconds` 剩余时间限制。连接错误、超时、HTTP 408 / 429 / 5xx 默认最多重试 2 次（`--max-retries 0` 可关闭，最多 5）；401 / 403、额度不足、协议错误和已输出部分正文的流不重试。重试采用退避或服务端 Retry-After；延迟超过剩余任务时间时停止，每次重试计入 `--max-steps` 和任务追溯。SDK 内部自动重试关闭，避免重复计数。
-
-配置和参数错误只显示一行原因，完整用法通过 `--help` 查看。CLI 与 TUI 共用错误提示，区分超时、连接、密钥、权限、限流和服务异常；错误分类参考 [OpenAI 官方错误说明](https://developers.openai.com/api/docs/guides/error-codes)。
-
-失败或取消前已经开始的工具调用会保存到会话并补上“任务中断”说明，下一次提问或 `--continue` 可以看到已有操作事实。已完成的结果保留；只有开始记录而无结果的调用标为 `unknown`，尚未调度的调用标为 `not_executed`。超出恢复上下文预算的工具正文会省略，收据和完整任务追溯保留。不会因模型请求失败重放编辑或命令，也不会把半截回答当作成功结果。`multi` 子代理的独立工具过程仍通过任务追溯查看，不混入父会话。
-
-### Multi：仅本地只读
-
-`--mode multi` 同时跑 `analysis` 与 `review`。两者各自保持上下文，复用同一条 ReAct 和工具链，结束后由父任务汇总。父任务即使加了 `--allow-web`、`--allow-write` 或 `--allow-exec`，子代理也只有本地读取：不联网、不改文件、不执行命令。汇总阶段不用工具。分析和审查是模型意见，不能代替测试或人工验收。
-
-`--max-steps` 含压缩、两个子代理和汇总，默认 20，最少 3。压缩后先留一次汇总，剩余请求均分（余数给分析），未用份额不转移。`--max-tool-calls`、`--max-tool-bytes` 和 `--max-seconds` 在整个任务内共享。这些不是 token 或费用硬上限。
-
-Ctrl+C 会停掉后续调度。Python API：`run_agent(..., mode="multi", cancel_event=threading.Event())`。已在途的同步 HTTP 会等到返回或超时（`--request-timeout` 与剩余时间的较小值，默认 30 秒）。会话只追加问题和最终汇总。`/task ID` 或 `--task ID --json` 可看各角色的记录。
-
-### 代码索引
-
-`search_text` 默认按字面量搜索；`regex=true` 启用正则，`whole_word=true` 只匹配整词，`context_lines=0..10` 返回带行号的前后文。`search_symbols` 专门查找 Python 的 `class`、`function`、`async_function`。`search_code_index` 面向各种 UTF-8 源码做 FTS5 短语检索，按 BM25 相关性排序；不是语义搜索。结果含路径、行号和 `reference`。
-
-索引在工作区 `.recapcli/retrieval/index.sqlite3`。已有 `.revocli` 或更早的 `.archer` 则原位沿用；多份并存时拒绝自动覆盖。查询前按内容哈希增量更新，并复核文件；期间变化的结果会丢弃并标 `stale_files`。只遍历工作区，跳过链接、运行数据目录和敏感凭据，不实现通用敏感信息识别。只索引 UTF-8 文本；过大、二进制、超长行或完整符号会跳过。需要带 FTS5 的 SQLite。索引内容只是资料，不构成授权。
-
-文本搜索、文件查找、目录浏览和索引扫描使用 Git 自身的忽略规则，包含嵌套 `.gitignore` 与例外规则；已被 Git 跟踪的文件仍会扫描。未安装 Git 或非 Git 目录沿用普通遍历。忽略规则只影响自动扫描，用户指定路径时仍可直接读取普通文件。检索截断时会附明确警告。
-
-扫描超预算时保留本次未扫描到的旧缓存，返回候选前仍核验当前文件的哈希；变化、删除或不可访问的缓存不会作为已核实结果返回。单个文件建索引中断时回滚该文件更新。`truncated` / `limit_reason` 表示查询不完整，不能据此断言整个项目不存在某段代码。
-
-索引查询在 10 秒内复用扫描结果，返回 `cached`、`index_age_seconds`，并继续逐个核验候选文件。缓存未命中会先刷新一次；`refresh=true` 可强制刷新。刚修改文件或需要完整覆盖当前目录时使用强制刷新。
-
-## 常用交互命令
 
 | 命令 | 用途 |
 | --- | --- |
-| `/help` | 常用命令与分类帮助；TUI 按 F1 |
-| `/model`、`/config` | TUI 选择模型 / 配置模型；按 F2 / F3 也可打开 |
+| `/help` | 查看命令与快捷键 |
+| `/model`、`/config` | 选择模型 / 配置模型 |
+| `/new`、`/open ID` | 新会话 / 恢复会话 |
+| `/compact`、`/summary` | 压缩历史 / 查看摘要 |
+| `/tasks`、`/task ID` | 查看任务事实 |
+| `/diff [任务ID]` | 查看编辑差异与命令结果 |
+| `/undo [组ID]` | 审批后撤销编辑组（需要 `--allow-write`） |
 | `/exit` | 保存并退出 |
-| `/new` | 开始新会话 |
-| `/compact`、`/summary` | 压缩旧历史、查看摘要 |
-| `/remember preference 文本` | 保存常用偏好 |
-| `/remember fact 文本` | 保存项目事实 |
-| `/memory`、`/memory-search 问题` | 查看或检索长期记忆 |
-| `/tasks`、`/task ID` | 查看任务记录 |
-| `/diff [任务ID]` | 查看最近或指定任务的编辑差异、起始 Git 状态和命令结果 |
-| `/undo [组ID]` | 审批后撤销指定编辑组；省略 ID 时选择最近未撤销组，需要 `--allow-write` |
-
-其余参数见 `uv run python -m recapcli --help`。
-
-## 测试
-
-```shell
-uv run python -X utf8 -m unittest discover -s tests
-```
-
-测试按执行核心、存储、工具、集成和界面分组。模型接口使用模拟响应，不请求真实模型或搜索服务。
-
-## 终端壳
-
-默认交互入口是 Textual 壳，执行核心与行式 CLI 共用。欢迎区只保留字标与版本，底部一行显示当前模型和命令入口。输入 `/` 出现贴近输入框的命令候选，继续输入筛选，↑↓ 选择、Tab 补全、Enter 确认、Esc 收起；需要参数的命令先填入输入框。`/model` 选择模型，`/config` 配置模型，Ctrl+G 查看协议、工作区、工具权限和任务详情。底色使用终端默认背景，壁纸和透明度由终端自身设置。
-
-F2 列表可以按配置名或模型 ID 筛选，Enter 使用所选配置；缺少密钥时进入设置。F3 可以编辑当前配置，或从模型列表添加配置，填写模型 ID、接口根地址、协议和 API Key，保存后用于下一轮。模型列表写入 RecapCLI 自身的 `models.toml`，密钥只写入自身 `.env`；两个文件均不提交 Git。已有密钥不会回填显示，留空保留；环境变量优先于 `.env`。新配置自动生成独立的密钥变量名，现有配置沿用原变量名，共用该变量的配置会共用密钥。保存配置不请求接口。运行中先结束或停止本轮，再切换模型。
-
-Windows 可双击 `start.cmd`，或在项目终端运行 `.\start.cmd`：优先在独立的 Windows Terminal 打开，避免 IDE 内置终端的中文显示差异；未安装 Windows Terminal 时在当前终端启动。支持传入原有参数，例如 `.\start.cmd --continue` 或 `.\start.cmd --demo`。
-
-```shell
-uv run --extra tui python -m recapcli
-uv run --extra tui python -m recapcli --workspace ./your-project --mode plan --allow-write
-uv run --extra tui python -m recapcli.tui --demo
-```
-
-- 提问复用现有 `run_agent`、会话、任务记录、工具能力和审批。`--allow-write`、`--allow-exec`、`--allow-web`、`--mode`、`--yes` 与命令行含义相同。
-- 对话区显示问题、回答、审批、错误和工具开始 / 结果的简短过程行；模型请求次数仅放在状态栏，记忆计数不刷屏。完整执行记录仍可用 `/tasks`、`/task ID` 查看。回答逐段更新在同一条消息中。
-- 位于底部时自动跟随；手动上翻后，新内容不抢阅读位置。点击“回到底部 / 新内容”、按 Ctrl+End，或发送新问题后恢复跟随。Alt+PageUp / PageDown 可在输入时翻阅历史。
-- 输入框完整保留多行粘贴及缩进，按内容换行扩展，最多显示 6 行，更多内容可在框内滚动。Enter 发送，Shift+Enter 换行；终端不支持组合键时用 Ctrl+J。
-- Esc 或输入框右侧停止按钮仅取消本轮，保留会话和下一条草稿；停止后可继续提问。在途模型请求或工具操作仍需等待返回或超时，停止后不再继续调度。忙时按 Ctrl+Q 会显示“停止中”，等待在途操作返回后保存退出。
-- 底部显示当前模型请求或工具名称、本轮耗时和实际返回的总 token 用量；Ctrl+G 在宽、窄窗口均可打开完整详情，包括模型、工具能力、完整任务 ID、用量和编辑 / 恢复工具确认的修改文件。未返回的用量显示未知。
-- `/help` 或 F1 在输入区展开常用命令，不打开居中弹窗，也不把帮助写进聊天。`/help models`、`/help sessions`、`/help tasks`、`/help memory` 按场景筛选，`/help keys` 查看快捷键，`/help all` 浏览全部。
-- 编辑和命令仍逐次等待 `approve`、`reject` 或 `cancel`。
-- `--demo` 只演示界面，不请求模型。
-- `--banner` / `--color` 控制行式界面；指定非 `auto` 值会使用行式 CLI。强制 TUI 或 `--demo` 同时指定这两个参数时会给出提示。
-- Ctrl+L 清屏（不删除已保存会话），Ctrl+G 查看详情，Ctrl+Q 退出并保存。生成中可编辑下一条草稿，Enter 不会自动排队发送；审批到达时暂存草稿，完成或取消审批后恢复。
-- 未安装 textual 时会提示 `uv sync --extra tui`，并给出降级入口 `python -m recapcli.cli`。
 
 ## 项目规则
 
-工作区根目录可放置 UTF-8 编码的 `AGENTS.md`，记录项目结构、开发约定和验证命令。每轮任务重新读取，修改后下一轮生效；只加载当前工作区根目录，不读取父目录或嵌套目录中的规则。文件内容仍受现有凭据与工作区访问限制。
-
-规则上限为 8 KiB，同时不超过当前上下文字节预算的四分之一；超限、编码错误或读取失败时整份跳过，原因显示在任务详情里。项目规则不能开启工具权限或替代审批，当前用户要求优先；历史压缩任务不加载开发规则。
+在工作区根目录放置 `AGENTS.md`，记录项目结构、开发约定和验证命令。每轮任务会重新读取；规则不能扩大工具权限或替代审批。
 
 ## 修改与验证
 
-任务开始时记录 Git 暂存区、工作区及未跟踪路径；Ctrl+G 可查看，路径列表最多 200 项，超限会标记。编辑报告依据每次编辑实际读取的原文生成差异，标明哪些文件开始时已被 Git 标记为改动。`/diff` 显示最近任务的操作组及差异，`/diff 任务ID` 查看指定任务；任务结束或请求失败后，有编辑或命令事实时会显示简短记录。
+任务开始时记录 Git 状态；编辑工具产生的差异可用 `/diff` 查看，`/undo` 按操作组恢复。命令记录包含实际参数与退出码；命令退出成功不等于任务验收通过。
 
-`/undo` 直接调用现有撤销工具，不请求模型。可使用 `/diff` 中的组 ID 选择撤销；文件有后续变化时拒绝覆盖。撤销恢复该组编辑前的内容，保留此前的用户改动，不修改 Git 暂存区。操作需要编辑权限及审批，并记录为独立任务；当前会话也会保留操作事实。
+## 安全边界
 
-差异和撤销覆盖编辑 / 恢复工具的记录；命令造成的文件变化需另行核对。命令列表显示实际参数和退出码，非零退出、拒绝和未完成会保留，完整输出见 `/task ID`。命令退出成功不自动等于完整任务验收。
+- 默认只读，写入和命令需要显式开关并逐次审批。
+- 命令以当前用户权限运行，**不是操作系统沙箱**；不要在不可信仓库中运行。
+- 工作区内的 `.env`、密钥文件和凭据目录不会被读取或编辑。
+- 尚未接入 MCP、Skills 与外部知识库。
 
-## 包结构
+## 开发
 
-当前入口和职责：
+```powershell
+uv run python -X utf8 -m unittest discover -s tests
+```
+
+模型请求使用本地 mock，不访问真实模型服务。CI 在 Windows / Ubuntu 与 Python 3.12 / 3.13 上运行编译、测试和 CLI 冒烟。
+
+## 目录结构
 
 ```text
 recapcli/
-  __main__.py       选择 TUI 或行式 CLI
-  cli.py            参数解析、行式交互入口
-  config.py         本机模型配置读写
-  application/      两种界面共用的任务流程、命令和帮助
-    runtime.py      一轮任务、执行事实、失败恢复与会话更新
-    commands.py     会话 / 任务 / 记忆命令
-  core/             Agent 循环、预算、规划、压缩与上下文
-  llm/              模型客户端、协议、流式和图片处理
-  tools/            文件、检索、编辑、命令、审批与网页工具
-  storage/          会话、任务与运行文件持久化
-  tui/              Textual 界面、模型设置与执行驱动
-  ui/               行式输出和共用终端字标
+  application/   任务流程、命令、帮助、修改报告
+  core/          Agent 循环、预算、规划、压缩、记忆、恢复
+  llm/           模型客户端、协议、流式、图片
+  tools/         文件、检索、编辑、命令、审批、网页
+  storage/       会话、任务与运行数据
+  tui/           Textual 界面、设置与执行驱动
+  ui/            行式输出与终端字标
+tests/
+  core/ storage/ tools/ integration/ ui/
 ```
-
-一次提问：`tui/app.py → tui/driver.py → application/runtime.py → core/agent.py → llm/ + tools/`；行式入口从 `cli.py` 进入同一个 `application/runtime.py`。共享流程不依赖 Textual，TUI 驱动也不再依赖 CLI 入口。
