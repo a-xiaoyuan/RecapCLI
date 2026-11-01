@@ -90,24 +90,38 @@ class ModelConfigScreen(ModalScreen):
         with Vertical(classes="settings-dialog"):
             yield Static("配置模型 · " + profile["name"] if profile else "添加模型", classes="dialog-title")
             with VerticalScroll(classes="dialog-scroll"):
+                yield Static("连接", classes="section-title")
                 if not profile:
-                    yield Label("配置名 · 本地别名，英文 / 数字 / 下划线")
-                    yield Input(placeholder="例如 work", id="config-name")
-                yield Label("模型 ID · 填服务商提供的实际名称")
-                yield Input(profile.get("model", ""), placeholder="例如 gpt-5", id="config-model")
-                yield Label("接口根地址 · 留空使用 OpenAI 默认地址")
-                yield Input(profile.get("base_url", ""), placeholder="https://api.example.com/v1", id="config-url")
-                yield Label("接口协议")
-                yield Select([("Chat Completions", "chat_completions"), ("Responses", "responses")],
-                             value=profile.get("protocol", "chat_completions"), allow_blank=False, id="config-protocol")
-                yield Label("API Key · 留空保留已有密钥" + (f"（已从{profile['key_source']}读取）" if profile.get("configured") else ""))
-                yield Input(password=True, placeholder="只写入本机 .env，不显示已有密钥", id="config-key")
-                with Collapsible(title="工具、图片、流式与密钥变量", collapsed=True):
+                    with Horizontal(classes="field-row"):
+                        yield Label("配置名", classes="field-label")
+                        yield Input(placeholder="例如 work", id="config-name", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("模型 ID", classes="field-label")
+                    yield Input(profile.get("model", ""), placeholder="例如 gpt-5",
+                                id="config-model", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("接口地址", classes="field-label")
+                    yield Input(profile.get("base_url", ""), placeholder="https://api.example.com/v1",
+                                id="config-url", classes="field-input")
+                with Horizontal(classes="field-row"):
+                    yield Label("接口协议", classes="field-label")
+                    yield Select([("Chat Completions", "chat_completions"), ("Responses", "responses")],
+                                 value=profile.get("protocol") or "chat_completions",
+                                 allow_blank=False, id="config-protocol", classes="field-input")
+
+                yield Static("认证", classes="section-title")
+                with Horizontal(classes="field-row"):
+                    yield Label("API Key", classes="field-label")
+                    yield Input(password=True, placeholder="留空保留已有密钥",
+                                id="config-key", classes="field-input")
+
+                with Collapsible(title="高级设置 · 工具 / 图片 / 流式", collapsed=True):
                     if profile:
                         yield Label("配置名 · 本地别名")
-                        yield Input(profile["name"], id="config-name", disabled=True)
+                        yield Input(profile["name"], id="config-name", disabled=True, classes="field-input")
                     yield Label("API Key 的环境变量名")
-                    yield Input(profile.get("api_key_env", ""), placeholder="留空按配置名自动生成，避免覆盖其他配置", id="config-key-env")
+                    yield Input(profile.get("api_key_env", ""), placeholder="留空按配置名自动生成，避免覆盖其他配置",
+                                id="config-key-env", classes="field-input")
                     yield Checkbox("支持工具调用", value=profile.get("tools", True), id="config-tools")
                     yield Checkbox("支持图片输入", value=profile.get("images", False), id="config-images")
                     yield Checkbox("使用流式输出", value=profile.get("streaming", True), id="config-streaming")
@@ -118,6 +132,10 @@ class ModelConfigScreen(ModalScreen):
             with Horizontal(classes="dialog-actions"):
                 yield Button("保存并使用", id="save-config", variant="primary")
                 yield Button("取消 · Esc", id="cancel-config")
+
+    def on_mount(self):
+        target = "#config-model" if self.profile else "#config-name"
+        self.query_one(target, Input).focus()
 
     def on_button_pressed(self, event: Button.Pressed):
         if event.button.id == "cancel-config":

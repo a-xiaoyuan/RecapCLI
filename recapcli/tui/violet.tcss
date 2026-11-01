@@ -1,59 +1,99 @@
-/* 正文保留终端底色；命令候选贴近输入区，模型信息收在底部。 */
-Screen { background: ansi_default; color: #dededc; }
+/* Catppuccin 紫绿：欢迎框、提问底色、工具树与回答引导线。 */
+Screen { background: #161622; color: #cdd6f4; }
 #shell { height: 100%; }
 #stage { width: 1fr; height: 100%; }
-#conversation { height: 1fr; padding: 1 1 0 1; align-horizontal: left; scrollbar-size-vertical: 1; scrollbar-color: #555555; scrollbar-background: ansi_default; }
-#history { height: auto; min-height: 100%; }
-#welcome { height: auto; border: round #60656d; padding: 1 2 0 2; margin-bottom: 2; }
-#brand { height: auto; width: 1fr; color: #e4e3de; margin-bottom: 1; }
-#version { height: 1; color: #b3b1ad; content-align: center middle; }
+#task-inspector { display: none; dock: right; width: 32; height: 100%; border-left: solid #45475a; padding: 1 2; }
+Screen.-wide #task-inspector { display: block; }
+#conversation { width: 1fr; height: 1fr; padding: 1 2 0 2; align-horizontal: left; scrollbar-size-vertical: 1; scrollbar-gutter: stable; scrollbar-color: #585b70; scrollbar-background: #161622; }
+#history { width: 100%; height: auto; min-height: 100%; }
+#footer-frame { width: 1fr; height: auto; padding: 1 3 0 2; align-horizontal: left; }
+#footer { width: 100%; height: auto; }
+#welcome { width: 100%; max-width: 86; height: auto; border: round #cba6f7; border-title-align: left; border-title-color: #cba6f7; padding: 0 1; margin-bottom: 1; }
+#welcome-columns { height: auto; }
+#welcome-primary { width: 1fr; height: auto; padding-right: 1; }
+#welcome-message, #welcome-subtitle, #welcome-agent, #welcome-tip { height: auto; }
+#welcome-message { color: #cdd6f4; text-style: bold; }
+#welcome-subtitle { color: #a6adc8; margin-bottom: 1; }
+#welcome-tip { color: #a6adc8; }
+#welcome-environment { width: 32; height: auto; border-left: solid #45475a; padding-left: 2; }
+#welcome-environment-title { height: 1; color: #cba6f7; text-style: bold; }
+#welcome-cwd, #welcome-branch, #welcome-model { width: 1fr; height: 1; color: #a6adc8; }
+Screen.-narrow #welcome-columns { layout: vertical; }
+Screen.-narrow #welcome-environment { width: 1fr; border-left: none; padding-left: 0; margin-top: 1; }
+Screen.-narrow #welcome-subtitle, Screen.-narrow #welcome-environment-title { display: none; }
 #transcript { width: 1fr; height: auto; }
 .turn { height: auto; margin-bottom: 1; }
-.user-turn { background: #202422; }
-.assistant-turn { padding: 0 2; }
-.info-turn { color: #a09d97; }
-.error-turn { color: #f28b91; padding-left: 2; }
-#stream-cursor { height: 1; color: #80b6ad; margin-bottom: 1; }
-#composer { height: auto; min-height: 3; margin: 0 1; border-top: solid #777777; border-bottom: solid #777777; }
-#input-prefix { width: 2; height: 1; color: #b3b1ad; }
-#prompt { width: 1fr; height: 1; min-height: 1; border: none; padding: 0; background: ansi_default; color: #dededc; scrollbar-size-vertical: 1; scrollbar-size-horizontal: 0; }
-#prompt:focus { border: none; background: ansi_default; }
-#prompt > .text-area--placeholder { color: #a09d97; }
-#prompt > .text-area--cursor { background: #b3b1ad; color: #0c0c0c; }
-#prompt > .text-area--selection { background: #80b6ad 25%; }
-#send { width: 3; height: 1; color: #a09d97; content-align: right middle; }
-#send:hover, #send:focus { color: #80b6ad; }
-#status-row { height: 1; margin: 0 1; }
-#status-line { width: 1fr; height: 1; color: #a09d97; }
-#jump-latest { width: auto; height: 1; padding-left: 2; color: #80b6ad; }
+.user-turn, .assistant-turn { color: #cdd6f4; }
+.user-turn { width: auto; max-width: 100%; background: #262639; border: none; padding: 0 1; margin: 0 0 1 0; }
+.assistant-turn { width: 100%; background: transparent; border: none; padding: 0; }
+.progress-turn { padding-left: 1; color: #cdd6f4; }
+.info-turn { color: #6c7086; padding-left: 2; }
+.error-turn { color: #f38ba8; padding-left: 2; }
+#stream-cursor { height: 1; color: #cba6f7; margin-bottom: 1; }
+#composer { width: 1fr; height: auto; min-height: 3; margin: 0; border: round #45475a; background: transparent; padding: 0 1; }
+#composer:focus-within { border: round #cba6f7; }
+#input-prefix { width: 11; height: 1; color: #cba6f7; text-style: bold; }
+Screen.-narrow #input-prefix { width: 2; }
+#prompt { width: 1fr; height: 1; min-height: 1; border: none; padding: 0; background: transparent; color: #cdd6f4; scrollbar-size-vertical: 1; scrollbar-size-horizontal: 0; }
+#prompt:focus { border: none; background: transparent; }
+#prompt > .text-area--placeholder { color: #a6adc8; }
+#prompt > .text-area--suggestion { color: #6c7086; }
+#prompt > .text-area--cursor { background: #a6e3a1; color: #161622; }
+#prompt > .text-area--selection { background: #cba6f7 25%; }
+#send { width: 3; height: 1; color: #cba6f7; content-align: right middle; }
+#send:hover, #send:focus { color: #cba6f7; text-style: bold; }
+#status-row { width: 1fr; height: 1; margin: 0; }
+#status-line { width: 1fr; height: 1; color: #6c7086; }
+#jump-latest { width: auto; height: 1; padding-left: 2; color: #cba6f7; }
 #jump-latest:hover, #jump-latest:focus { text-style: bold; }
-#key-hints { height: 1; margin: 0 1 1 1; color: #a09d97; }
-#command-menu { display: none; height: auto; max-height: 7; margin: 0 1; border: none; padding: 0 1; background: ansi_default; scrollbar-size-vertical: 1; }
+#key-hints { width: 1fr; height: 1; margin: 0 0 1 0; color: #a6adc8; }
+#command-menu { display: none; width: 1fr; height: auto; max-height: 7; margin: 0 0 1 0; border: none; padding: 0 1; background: transparent; scrollbar-size-vertical: 1; }
 #command-menu > .option-list--option { padding: 0; }
-#command-menu > .option-list--option-highlighted { background: #202422; color: #dededc; text-style: bold; }
-#command-help { display: none; height: auto; max-height: 7; margin: 0 2; color: #b3b1ad; }
-#command-hint { display: none; height: 1; margin: 0 2; color: #a09d97; }
-Screen.-narrow #welcome { margin-bottom: 1; }
-Screen.-narrow .assistant-turn { padding: 0 1; }
-StatusScreen { align: center middle; background: #0c0c0c 70%; }
-#status-dialog { width: 76; max-width: 94%; height: 80%; max-height: 34; border: solid #777777; padding: 1 2; background: #191919; }
+#command-menu > .option-list--option-highlighted { background: #36304a; color: #cdd6f4; text-style: bold; }
+#command-help { display: none; width: 1fr; height: auto; max-height: 7; margin: 0; color: #a6adc8; }
+#command-hint { display: none; width: 1fr; height: 1; margin: 0; color: #6c7086; }
+StatusScreen { align: center middle; background: #161622 80%; }
+#status-dialog { width: 76; max-width: 94%; height: 80%; max-height: 34; border: round #cba6f7; padding: 1 2; background: #1e1e2e; }
 #status-heading { height: 2; }
-#status-title { width: 1fr; height: 1; color: #80b6ad; text-style: bold; }
-#close-status { width: auto; min-width: 10; height: 1; min-height: 1; border: none; padding: 0 1; background: #333333; color: #dededc; }
-#close-status:focus { color: #80b6ad; text-style: bold; }
+#status-title { width: 1fr; height: 1; color: #cba6f7; text-style: bold; }
+#close-status { width: auto; min-width: 10; height: 1; min-height: 1; border: none; padding: 0 1; background: #232334; color: #cdd6f4; }
+#close-status:focus { color: #cba6f7; text-style: bold; }
 #status-scroll { height: 1fr; scrollbar-size-vertical: 1; }
 #status-body { height: auto; }
-ModelPickerScreen, ModelConfigScreen { align: center middle; background: #0c0c0c 70%; }
-.settings-dialog { width: 86; max-width: 96%; height: 90%; max-height: 40; border: solid #777777; padding: 1 2; background: #191919; }
-.dialog-title { height: 2; color: #dededc; text-style: bold; }
-.dialog-note { height: auto; margin-bottom: 1; color: #b3b1ad; }
-.dialog-scroll { height: 1fr; scrollbar-size-vertical: 1; }
-.settings-dialog Input, .settings-dialog Select { height: 3; margin-bottom: 0; }
-.settings-dialog Label { height: auto; margin-top: 0; }
-.settings-dialog Checkbox { height: 3; }
-.settings-dialog Collapsible { padding: 0; }
-.dialog-actions { height: 3; margin-top: 1; }
-.dialog-actions Button { min-width: 10; margin-right: 1; }
-#model-options { height: 1fr; margin-top: 1; scrollbar-size-vertical: 1; }
-#model-count { height: auto; color: #b3b1ad; }
-#config-error { height: auto; max-height: 3; color: #f28b91; }
+/* 设置弹窗：固定列宽上限，字段内部滚动，操作按钮使用单行。 */
+ModelPickerScreen, ModelConfigScreen { align: center middle; background: #0b0b12 45%; }
+.settings-dialog { width: 68; max-width: 92%; height: 24; max-height: 90%; border: none; padding: 1 2; background: #1e1e2e; scrollbar-color: #585b70; scrollbar-background: #1e1e2e; }
+ModelPickerScreen .settings-dialog { height: auto; }
+.dialog-title { height: 1; margin-bottom: 0; color: #cdd6f4; text-style: bold; }
+.dialog-note { height: auto; margin-top: 1; margin-bottom: 0; color: #a6adc8; }
+.dialog-scroll { height: 1fr; padding-right: 1; scrollbar-size-vertical: 1; }
+.section-title { height: 1; margin-top: 1; color: #cba6f7; text-style: bold; }
+.settings-dialog Label { height: 1; margin-top: 1; color: #a6adc8; }
+.field-row { height: 2; }
+.settings-dialog .field-label { width: 10; height: 1; margin-top: 0; color: #a6adc8; content-align: left middle; }
+.settings-dialog .field-input { width: 1fr; height: 1; margin: 0; padding: 0 1; border: none; background: #28283b; color: #cdd6f4; }
+.settings-dialog .field-input:focus { border: none; background: #232334; }
+.settings-dialog Input, .settings-dialog Select { height: 3; margin: 0; background: #262637; color: #cdd6f4; border: round #45475a; }
+.settings-dialog Input { padding: 0 1; }
+.settings-dialog Input > .input--placeholder { color: #a6adc8; }
+.settings-dialog Input:focus, .settings-dialog Select:focus { border: round #cba6f7; background: #1e1e2e; }
+.settings-dialog Select.field-input { height: 1; border: none; background: #28283b; }
+.settings-dialog Select.field-input SelectCurrent { height: 1; padding: 0 1; border: none; background: #28283b; color: #cdd6f4; }
+.settings-dialog SelectCurrent .arrow { color: #a6adc8; }
+.settings-dialog Checkbox { height: auto; margin-top: 1; padding: 0; border: none; background: transparent; color: #cdd6f4; }
+.settings-dialog Collapsible { padding: 0; margin-top: 1; border: none; background: transparent; }
+.settings-dialog CollapsibleTitle { background: transparent; color: #a6adc8; padding: 0 1; }
+.settings-dialog CollapsibleTitle:hover { color: #cdd6f4; background: #26233a; }
+.dialog-actions { height: 2; min-height: 2; margin-top: 1; border-top: solid #45475a; align-horizontal: right; }
+.dialog-actions Button { min-width: 10; height: 1; min-height: 1; margin-left: 1; margin-right: 0; padding: 0 1; border: none; background: transparent; color: #a6adc8; }
+.dialog-actions Button:hover { color: #cdd6f4; background: #26233a; }
+.dialog-actions Button:focus { color: #cdd6f4; text-style: bold; background: #232334; }
+.dialog-actions Button.-primary { background: #232334; color: #cba6f7; text-style: bold; }
+.dialog-actions Button.-primary:hover { background: #413754; }
+.dialog-actions Button.-primary:focus { background: #413754; }
+#model-filter { margin-bottom: 1; }
+#model-options { height: auto; min-height: 1; max-height: 7; margin: 0; scrollbar-size-vertical: 1; background: #1e1e2e; border: none; }
+#model-options > .option-list--option { padding: 0 1; color: #cdd6f4; }
+#model-options > .option-list--option-highlighted { background: #232334; color: #cdd6f4; text-style: bold; }
+#model-count { height: 1; margin-top: 1; color: #a6adc8; }
+#config-error { height: auto; max-height: 3; color: #f38ba8; }

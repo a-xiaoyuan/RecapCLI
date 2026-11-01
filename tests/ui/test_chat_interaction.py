@@ -22,7 +22,7 @@ from recapcli.tui.driver import ShellOptions
 from recapcli.tui.state import ShellState
 from recapcli.tui.widgets import StatusScreen
 from tests.integration.test_multimodal_streaming import chunk, sse, text_events
-from tests.ui.test_tui import reply, tool_call, transcript, wait_for
+from tests.ui.test_tui import reply, tool_call, transcript, wait_for, rendered_text
 
 
 class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
@@ -54,6 +54,50 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app.driver.quitting)
             self.assertTrue(app.driver.cancel_event.is_set())
             self.assertIn("停止中", str(app.query_one("#status-line").render()))
+
+    async def test_tool_progress_distinguishes_success_failure_and_unknown_outcomes(self):
+        app = self.app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            app._lock()
+            for message in ("[工具] read_file · README.md", "[结果] 成功",
+                            "[工具] run_command", "[结果] 命令已结束，退出码 1",
+                            "[工具] read_file · missing.py", "[结果] 失败：文件不存在",
+                            "[工具] search_code_index"):
+                app.driver.presenter.event(message)
+            await pilot.pause()
+            progress = app._progress_widget
+            self.assertEqual([row["state"] for row in progress.rows], ["done", "warning", "failed", "running"])
+            app._unlock()
+            self.assertEqual(progress.rows[-1]["state"], "unknown")
+            self.assertIn("结果待核对", progress.rows[-1]["detail"])
+            self.assertIn("文件不存在", transcript(app))
+
+    async def test_plain_turn_keeps_request_progress_and_each_answers_own_usage(self):
+        def handler(request):
+            response = reply("你好，我可以阅读代码。")
+            total = len(self.requests) * 100
+            response["usage"] = {"prompt_tokens": total - 10, "completion_tokens": 10, "total_tokens": total}
+            return httpx2.Response(200, json=response)
+
+        self.config.streaming = False
+        app = self.app(handler)
+        with patch("recapcli.tui.driver.load_config", return_value=self.config):
+            async with app.run_test(size=(144, 36)) as pilot:
+                for question in ("你好", "继续"):
+                    app.query_one("#prompt").load_text(question)
+                    await pilot.press("enter")
+                    await wait_for(pilot, lambda: not app._busy)
+                await pilot.pause()
+                answers = list(app.query(".assistant-turn"))
+                self.assertEqual(len(answers), 2)
+                self.assertIn("100 tokens", rendered_text(answers[0]).splitlines()[0])
+                self.assertIn("200 tokens", rendered_text(answers[1]).splitlines()[0])
+                self.assertFalse(app.query_one("#status-row").display)
+                self.assertLess(app.query(".user-turn").first().region.width, 20)
+                for progress in app.query(".progress-turn"):
+                    self.assertEqual(len(progress.rows), 1)
+                    self.assertEqual(progress.rows[0]["kind"], "request")
+                    self.assertEqual(progress.rows[0]["state"], "done")
 
     async def test_waiting_time_and_timeout_remain_visible_after_bounded_retries(self):
         def handler(request):

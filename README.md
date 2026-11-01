@@ -1,129 +1,160 @@
 # RecapCLI
 
-> 终端里的 AI 编程 Agent：读代码、做计划、改文件、跑命令，写入与命令先审批，任务过程可回查。
+在项目目录里运行的终端 AI 编程助手。用自然语言读代码、定位问题、规划修改，并在确认后编辑文件、执行命令。
 
-![CI](https://github.com/a-xiaoyuan/RecapCLI/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/a-xiaoyuan/RecapCLI/actions/workflows/ci.yml/badge.svg)](https://github.com/a-xiaoyuan/RecapCLI/actions/workflows/ci.yml)
 
-## 特性
+[安装](#安装) · [模型配置](#模型配置) · [使用](#使用) · [源码运行与开发](#源码运行与开发) · [反馈问题](https://github.com/a-xiaoyuan/RecapCLI/issues)
 
-- **三种模式**：ReAct 直接执行、Plan 先规划再执行、Multi 仅本地只读的并发分析与审查。
-- **本地工具**：文件查找、正则/整词/上下文检索、AST 符号、FTS5 索引、目录浏览、批量编辑、按组撤销、命令执行。
-- **可控执行**：默认只读；写入和命令逐次审批，批准绑定参数与文件指纹；凭据路径隔离，命令环境白名单。
-- **任务追溯**：记录模型请求、工具结果、审批、用量和人工验收；失败或中断后可恢复事实，不自动重放操作。
-- **终端体验**：Textual TUI，多行输入、命令补全、F1 帮助、F2 选模型、F3 配置、Git 差异与撤销。
-- **上下文与规则**：历史压缩、长期记忆、`AGENTS.md` 项目规则、跨会话恢复。
-- **模型与输入**：Chat Completions / Responses 双协议、SSE 流式、图片附件；可选网页搜索与读取。
+## 能做什么
 
-## 快速开始
+- **阅读项目**：浏览目录、读取文件，按文件名、正则、整词和上下文搜索代码；支持 Python AST 符号查找和 SQLite FTS5 关键词索引。
+- **完成修改**：支持单文件与批量编辑、差异查看、按编辑组撤销，以及命令执行；默认只读，编辑与命令需显式开启。
+- **选择执行方式**：`react` 直接处理任务，`plan` 先规划再执行，`multi` 并发分析与审查（仅本地只读）。
+- **保留工作上下文**：保存和恢复会话、压缩历史、检索长期记忆，并读取工作区根目录的 `AGENTS.md` 项目规则。
+- **查看执行过程**：终端界面展示模型回答、工具进度和审批；任务记录保留工具结果、命令退出码与用量。
 
-需要 Python 3.12+、[uv](https://docs.astral.sh/uv/)，以及支持工具调用的模型端点。
+支持 Chat Completions 与 Responses 协议、流式回答；模型支持视觉输入时可使用图片附件。网页搜索与读取需单独开启。
 
-```powershell
-git clone https://github.com/a-xiaoyuan/RecapCLI.git
-cd RecapCLI
-uv sync --locked --extra tui
-Copy-Item .env.example .env
-uv run --extra tui python -m recapcli
+## 安装
+
+需要 **Python 3.12+**、**Git** 和 **[uv](https://docs.astral.sh/uv/getting-started/installation/)**。当前从 GitHub 源码安装，以下命令包含终端界面依赖：
+
+```sh
+uv tool install "git+https://github.com/a-xiaoyuan/RecapCLI.git" --with "textual>=8,<9"
 ```
 
-macOS / Linux 使用 `cp .env.example .env`。
+进入希望处理的项目，而不是 RecapCLI 的安装目录：
 
-没有密钥也可以打开界面，按 **F3** 填写模型 ID、接口地址和 API Key；按 **F2** 切换已有配置。
-
-单次提问：
-
-```powershell
-uv run python -m recapcli "读取 README.md，说明项目如何运行"
-```
-
-## 安装为命令
-
-```powershell
-uv build
-uv tool install dist/recapcli-0.6.0-py3-none-any.whl --with "textual>=8,<9"
+```sh
+cd "你的项目目录"
 recapcli
 ```
 
-安装后配置保存在用户目录（Windows `%APPDATA%\recapcli`，macOS/Linux `~/.config/recapcli`），可用 `RECAPCLI_CONFIG_DIR` 覆盖。源码运行时仍读取项目根目录的 `.env` 与 `models.toml`。
+首次使用按 **F3** 或输入 `/config` 配置模型，保存后按 **F2** 或输入 `/model` 选择配置。RecapCLI 不附带模型服务，需要提供自己的接口与 API Key。
 
-## 配置
+还没配置模型时，可以用 `recapcli --demo` 查看离线界面演示，不请求模型。
 
-`.env` 中至少设置：
+找不到 `recapcli` 命令时，执行 `uv tool update-shell`，再重新打开终端。
+
+更新与卸载：
+
+```sh
+uv tool upgrade recapcli
+uv tool uninstall recapcli
+```
+
+## 模型配置
+
+设置界面中填写接口实际接受的**模型 ID**、**API 地址**和 **API Key**，并选择接口支持的协议：`chat_completions` 或 `responses`。模型需要支持相应协议的工具调用；图片输入还需要模型支持视觉能力。
+
+安装后的配置保存在用户目录，与正在处理的项目分开：
+
+- Windows：`%APPDATA%\recapcli`
+- macOS / Linux：`~/.config/recapcli`；设置了 `XDG_CONFIG_HOME` 时使用该目录下的 `recapcli`
+- 自定义位置：通过环境变量 `RECAPCLI_CONFIG_DIR` 指定
+
+<details>
+<summary>手动配置与多个模型</summary>
+
+在配置目录创建 `.env`，可参考仓库的 [.env.example](.env.example)：
 
 ```dotenv
 OPENAI_API_KEY=your-api-key
 OPENAI_MODEL=your-model-id
+# 第三方兼容接口按服务商说明填写 API 根地址
 # OPENAI_BASE_URL=https://your-provider.example/v1
 # OPENAI_PROTOCOL=chat_completions
 ```
 
-多模型配置复制 `models.example.toml` 为 `models.toml`，密钥仍放在 `.env` 或环境变量：
+多个模型可参考 [models.example.toml](models.example.toml)，在配置目录创建 `models.toml`。密钥通过 `api_key_env` 引用 `.env` 或环境变量，不直接写进 TOML。
 
-```powershell
-uv run python -m recapcli --models
-uv run python -m recapcli --profile backup
+```sh
+recapcli --models
+recapcli --profile backup
 ```
 
-需要网页搜索时，在 `.env` 中配置 `BRAVE_API_KEY` 或 `TAVILY_API_KEY`，再用 `--allow-web` 开启。
+环境变量优先于 `.env`。`.env` 中的基础模型对应 `default` 配置；`models.toml` 的 `default` 字段决定默认使用哪个配置，`--profile` 可在启动时明确指定。
 
-## 常用用法
+从源码运行时，默认读取 RecapCLI 仓库根目录的 `.env` 与 `models.toml`；`RECAPCLI_CONFIG_DIR` 同样可覆盖该位置。不会读取目标项目的同名配置。
 
-```powershell
-# 计划模式，开放编辑与命令
-uv run python -m recapcli --mode plan --allow-write --allow-exec
+</details>
 
-# 恢复最近会话
-uv run python -m recapcli --continue
+## 使用
 
-# 并发分析与审查（仅本地只读）
-uv run python -m recapcli --mode multi "分析会话保存逻辑"
+直接提问，适合阅读代码和排查问题：
+
+```sh
+recapcli "读取 README.md，说明项目如何运行"
 ```
 
-| 命令 | 用途 |
-| --- | --- |
-| `/help` | 查看命令与快捷键 |
-| `/model`、`/config` | 选择模型 / 配置模型 |
-| `/new`、`/open ID` | 新会话 / 恢复会话 |
-| `/compact`、`/summary` | 压缩历史 / 查看摘要 |
-| `/tasks`、`/task ID` | 查看任务事实 |
-| `/diff [任务ID]` | 查看编辑差异与命令结果 |
-| `/undo [组ID]` | 审批后撤销编辑组（需要 `--allow-write`） |
-| `/exit` | 保存并退出 |
+进入交互界面，先规划，再在审批后修改文件和运行命令：
 
-## 项目规则
-
-在工作区根目录放置 `AGENTS.md`，记录项目结构、开发约定和验证命令。每轮任务会重新读取；规则不能扩大工具权限或替代审批。
-
-## 修改与验证
-
-任务开始时记录 Git 状态；编辑工具产生的差异可用 `/diff` 查看，`/undo` 按操作组恢复。命令记录包含实际参数与退出码；命令退出成功不等于任务验收通过。
-
-## 安全边界
-
-- 默认只读，写入和命令需要显式开关并逐次审批。
-- 命令以当前用户权限运行，**不是操作系统沙箱**；不要在不可信仓库中运行。
-- 工作区内的 `.env`、密钥文件和凭据目录不会被读取或编辑。
-- 尚未接入 MCP、Skills 与外部知识库。
-
-## 开发
-
-```powershell
-uv run python -X utf8 -m unittest discover -s tests
+```sh
+recapcli --mode plan --allow-write --allow-exec
 ```
 
-模型请求使用本地 mock，不访问真实模型服务。CI 在 Windows / Ubuntu 与 Python 3.12 / 3.13 上运行编译、测试和 CLI 冒烟。
+恢复最近会话，或进行只读的并发分析：
 
-## 目录结构
+```sh
+recapcli --continue
+recapcli --mode multi "分析会话保存逻辑"
+```
+
+终端里常用的命令：
+
+- `/model`、`/config`：选择与配置模型。
+- `/new`、`/open ID`：新建或恢复会话。
+- `/diff [任务ID]`：查看编辑差异与命令结果。
+- `/undo [组ID]`：确认后撤销编辑组，需要 `--allow-write`。
+- `/tasks`、`/task ID`：查看任务记录。
+- `/help`：查看分类帮助与快捷键；`/exit` 保存退出。
+
+**Enter** 发送，**Shift+Enter / Ctrl+J** 换行，**Esc** 停止本轮。**Ctrl+Q** 保存退出；忙时会等待在途请求或操作返回。全部启动参数见 `recapcli --help`。
+
+需要联网时使用 `--allow-web`。网页读取不需要搜索密钥；网页搜索需要在 RecapCLI 的 `.env` 或环境变量中配置 `BRAVE_API_KEY` 或 `TAVILY_API_KEY`。
+
+## 权限与数据
+
+- 默认只读。`--allow-write` 与 `--allow-exec` 分别开放编辑和命令，默认逐次确认；`--yes` 会跳过逐次确认。
+- 文件工具按路径规则拦截 `.env`、私钥文件和常见凭据目录。获准执行的命令以当前用户权限运行，**没有操作系统沙箱隔离**，不能把文件工具的限制视作命令的权限边界。
+- 工具读取的项目内容可能发送到你配置的模型服务。会话、记忆、任务和编辑备份保存在目标项目的 `.recapcli/`；已有的 `.revocli/` 或 `.archer/` 数据目录会沿用。
+- 工作区根目录的 `AGENTS.md` 可说明开发约定和验证命令，每轮重新读取；其中的文字不能扩大工具权限或代替审批。
+
+符号查找目前针对 Python，FTS5 是关键词检索。命令执行成功与任务验收是两回事，可通过任务记录核对实际结果。
+
+## 源码运行与开发
+
+```sh
+git clone https://github.com/a-xiaoyuan/RecapCLI.git
+cd RecapCLI
+uv sync --locked --extra tui
+uv run python -m recapcli --workspace "你的项目目录"
+```
+
+没有交互式终端或希望使用行式界面时，可运行 `uv run python -m recapcli.cli`。
+
+主要目录：
 
 ```text
 recapcli/
-  application/   任务流程、命令、帮助、修改报告
-  core/          Agent 循环、预算、规划、压缩、记忆、恢复
-  llm/           模型客户端、协议、流式、图片
-  tools/         文件、检索、编辑、命令、审批、网页
+  application/   任务流程、会话命令与修改报告
+  core/          Agent 循环、规划、预算、压缩与记忆
+  llm/           模型客户端、协议、流式与图片输入
+  tools/         文件、检索、编辑、命令、审批与网页工具
   storage/       会话、任务与运行数据
-  tui/           Textual 界面、设置与执行驱动
-  ui/            行式输出与终端字标
-tests/
-  core/ storage/ tools/ integration/ ui/
+  tui/           Textual 交互界面、模型设置与执行驱动
+  ui/            行式终端输出
+tests/           单元与集成测试
 ```
+
+本地测试与打包：
+
+```sh
+uv run python -X utf8 -m unittest discover -s tests
+uv build
+```
+
+[CI](.github/workflows/ci.yml) 在推送和 Pull Request 时运行检查：测试矩阵覆盖 Windows / Ubuntu、Python 3.12 / 3.13；打包检查在源码目录外安装 wheel，验证安装后的命令入口与配置保存。
+
+使用中遇到问题，可在 [Issues](https://github.com/a-xiaoyuan/RecapCLI/issues) 提供系统、Python 版本、复现步骤和错误信息。日志与截图请隐去 API Key 等敏感信息。

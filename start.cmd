@@ -3,6 +3,8 @@ setlocal
 cd /d "%~dp0"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
+rem Clear NO_COLOR injected by some IDE/test environments.
+set "NO_COLOR="
 if not exist "%~dp0.venv\Scripts\python.exe" (
     echo Run uv sync --extra tui in this folder first.
     pause

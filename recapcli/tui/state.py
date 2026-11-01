@@ -6,6 +6,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import subprocess
 
 from ..config import ConfigError, list_model_profiles
 from ..storage.files import data_root
@@ -19,6 +20,7 @@ class ShellState:
     mode: str = "react"
     capabilities: tuple = ("read",)
     notes: tuple = ()
+    branch: str = ""
 
     @property
     def active_profile(self):
@@ -52,4 +54,12 @@ def load_shell_state(workspace):
     except (OSError, ValueError) as error:
         sessions = []
         notes.append(f"会话列表读取失败：{error}")
-    return ShellState(workspace=workspace, profiles=profiles, sessions=sessions, notes=tuple(notes))
+    try:
+        result = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
+                                 "-C", str(workspace), "rev-parse", "--abbrev-ref", "HEAD"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                stdin=subprocess.DEVNULL, timeout=2, check=False)
+        branch = result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        branch = ""
+    return ShellState(workspace=workspace, profiles=profiles, sessions=sessions, notes=tuple(notes), branch=branch)

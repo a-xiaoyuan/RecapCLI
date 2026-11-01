@@ -57,17 +57,7 @@ class Presenter:
         self._call(self.app.append_line, str(message), "error")
 
     def event(self, message):
-        message = str(message)
-        event = message
-        for role in ("analysis", "review", "aggregate"):
-            event = event.removeprefix(f"[{role}] ")
-        if event.startswith(("[模型]", "[工具]")):
-            activity = ("请求模型 · " + event.removeprefix("[模型]").strip() if event.startswith("[模型]")
-                        else "工具 · " + event.removeprefix("[工具]").strip())
-            self._call(self.app.set_activity, activity)
-            if event.startswith("[模型]"):
-                return
-        self._call(self.app.append_line, message, "event")
+        self._call(self.app.event_update, str(message))
 
     def answer(self, message):
         self._call(self.app.finish_answer, str(message))

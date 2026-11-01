@@ -1,4 +1,6 @@
-"""聊天输入、历史跟随与按需显示的状态详情。"""
+"""聊天输入、工具进度、历史跟随与按需显示的状态详情。"""
+
+import time
 
 from textual import events
 from textual.binding import Binding
@@ -6,8 +8,12 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from rich.text import Text
+from rich.segment import Segment
+from rich.tree import Tree
 from textual.widgets import Button, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
+
+from .theme import PALETTE
 
 
 class PromptInput(TextArea):
@@ -49,6 +55,19 @@ class PromptInput(TextArea):
         if self.styles.height is None or self.styles.height.value != height:
             self.styles.height = height
 
+    def update_suggestion(self):
+        self.suggestion = ""
+        if not self.is_mounted or self.selection.start != self.selection.end:
+            return
+        value = self.text
+        if not value.startswith("/") or self.cursor_location != (0, len(value)):
+            return
+        menu = self.app.query_one("#command-menu", CommandMenu)
+        if menu.display and menu.highlighted is not None:
+            name = menu.commands[menu.highlighted][0]
+            if name.startswith(value):
+                self.suggestion = name[len(value):]
+
 
 class CommandMenu(OptionList):
     """与输入共用焦点的命令候选，不遮盖整个终端。"""
@@ -64,14 +83,114 @@ class CommandMenu(OptionList):
         self.commands = commands
         self.clear_options()
         for name, arguments, description, _ in commands:
-            label = Text(name + (" " + arguments if arguments else ""), style="#80b6ad", no_wrap=True, overflow="ellipsis")
-            label.truncate(30, overflow="ellipsis", pad=True)
-            label.append(description, style="#b3b1ad")
+            label = Text(no_wrap=True, overflow="ellipsis")
+            label.append(name, style="bold " + PALETTE["accent"])
+            if arguments:
+                label.append(" " + arguments, style=PALETTE["muted"])
+            label.append("  ·  " + description, style=PALETTE["text"])
             self.add_option(Option(label, id=name))
         self.styles.height = min(len(commands), max_rows)
         self.display = bool(commands)
         if commands:
             self.highlighted = 0
+
+
+class CompactTree(Tree):
+    """不显示空的根节点行，同时保留子节点的连接线。"""
+
+    def __rich_console__(self, console, options):
+        for index, line in enumerate(Segment.split_lines(super().__rich_console__(console, options))):
+            if index:
+                yield from line
+                yield Segment.line()
+
+
+class ToolProgress(Static):
+    """同一轮的工具事件组成一棵树；未知结果不标为成功。"""
+
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    INDEX_TOOLS = {"build_code_index", "search_code_index", "search_symbols"}
+
+    def __init__(self):
+        super().__init__("", classes="turn progress-turn", markup=False)
+        self.rows = []
+        self.content_text = ""
+        self._frame = 0
+        self._timer = None
+
+    def on_mount(self):
+        self._timer = self.set_interval(0.12, self._animate)
+        self._redraw()
+
+    def observe(self, message, role=""):
+        event = message.removeprefix(f"[{role}] ") if role else message
+        if event.startswith("[模型]"):
+            self.complete_request(role)
+            self.rows.append({"label": event.removeprefix("[模型]").strip(), "role": role,
+                              "kind": "request", "state": "running", "started": time.monotonic(),
+                              "duration": None, "detail": ""})
+        elif event.startswith("[工具]"):
+            self.complete_request(role)
+            self.rows.append({"label": event.removeprefix("[工具]").strip(), "role": role,
+                              "kind": "tool", "state": "running", "started": time.monotonic(), "duration": None,
+                              "detail": ""})
+        elif event.startswith("[结果]"):
+            row = next((item for item in reversed(self.rows)
+                        if item["role"] == role and item["kind"] == "tool" and item["state"] == "running"), None)
+            if row is None:
+                return False
+            result = event.removeprefix("[结果]").strip()
+            state = "failed" if result.startswith("失败") else "done"
+            if "退出码 " in result and result.rsplit("退出码 ", 1)[1] != "0":
+                state = "warning"
+            row.update(state=state, duration=time.monotonic() - row["started"],
+                       detail="" if result == "成功" else result)
+        else:
+            return False
+        self.content_text += (self.rows[-1]["label"] if event.startswith("[模型]") else message) + "\n"
+        self._redraw()
+        return True
+
+    def complete_request(self, role=""):
+        for row in self.rows:
+            if row["kind"] == "request" and row["role"] == role and row["state"] == "running":
+                row.update(state="done", duration=time.monotonic() - row["started"])
+        self._redraw()
+
+    def finish(self):
+        for row in self.rows:
+            if row["state"] == "running":
+                row.update(state="unknown", duration=time.monotonic() - row["started"], detail="结果待核对")
+        self._redraw()
+
+    def _animate(self):
+        self._frame = (self._frame + 1) % len(self.FRAMES)
+        self._redraw()
+
+    def _redraw(self):
+        running = any(row["state"] == "running" for row in self.rows)
+        if self._timer is not None:
+            self._timer.resume() if running else self._timer.pause()
+        tree = CompactTree("", guide_style=PALETTE["faint"])
+        for row in self.rows:
+            state = row["state"]
+            indexed = row["kind"] == "request" or row["label"].split(" ", 1)[0] in self.INDEX_TOOLS
+            if state == "running":
+                marker, color = self.FRAMES[self._frame], PALETTE["accent"]
+            elif state == "done":
+                marker, color = ("✦", PALETTE["index"]) if indexed else ("✓", PALETTE["online"])
+            else:
+                marker, color = "◈", PALETTE["error"] if state == "failed" else PALETTE["warning"]
+            label = Text(marker + " ", style=color)
+            if row["role"]:
+                label.append(row["role"] + " · ", style=PALETTE["muted"])
+            label.append(row["label"], style=PALETTE["text"])
+            if row["detail"]:
+                label.append(" · " + row["detail"], style=color)
+            if row["duration"] is not None:
+                label.append(f" ({row['duration']:.1f}s)", style=PALETTE["faint"])
+            tree.add(label)
+        self.update(tree)
 
 
 class ConversationView(VerticalScroll):

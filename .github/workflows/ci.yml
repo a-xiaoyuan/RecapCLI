@@ -76,3 +76,14 @@ jobs:
           python -m pip install "${wheels[0]}[tui]"
           cd "$RUNNER_TEMP"
           python -I "$GITHUB_WORKSPACE/tests/check_installed.py"
+
+      - name: Verify GitHub one-command installation
+        if: github.event_name == 'push'
+        env:
+          UV_TOOL_DIR: ${{ runner.temp }}/recapcli-tools
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/recapcli-bin
+        run: |
+          uv tool install --python 3.12 "git+https://github.com/${{ github.repository }}.git@${{ github.sha }}" --with "textual>=8,<9"
+          cd "$RUNNER_TEMP"
+          "$UV_TOOL_BIN_DIR/recapcli" --version
+          "$UV_TOOL_DIR/recapcli/bin/python" -I "$GITHUB_WORKSPACE/tests/check_installed.py"
