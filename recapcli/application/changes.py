@@ -12,7 +12,7 @@ def change_report(task):
     command_starts, completed, records = {}, set(), {}
     for event in task.get("events", []):
         data = event.get("data", {})
-        if data.get("agent"):
+        if data.get("agent") and not data["agent"].startswith("worker:"):
             continue
         kind = event.get("kind")
         if kind == "project_version":
@@ -59,7 +59,7 @@ def change_report(task):
     previous = {item["path"] for item in (git or {}).get("files", [])}
     known = git is not None and git.get("dirty") is not None and not git.get("files_truncated")
     for path, item in files.items():
-        item["preexisting"] = True if path in previous else (False if known else None)
+        item["preexisting"] = True if path in previous else (False if known and not os.path.isabs(path) else None)
     return {"git": git, "files": list(files.values()), "groups": groups, "commands": commands}
 
 

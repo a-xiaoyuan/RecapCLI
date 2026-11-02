@@ -13,6 +13,7 @@ import tempfile
 import uuid
 
 from ..storage.files import data_root, state_directory, write_json
+from ..core.access import local_path
 from .filesystem import ToolError, _relative, _resolve
 
 MAX_EDIT_BYTES = 1024 * 1024
@@ -23,12 +24,10 @@ PROTECTED_DIR_NAMES = {".git", ".recapcli", ".revocli", ".archer"}
 def _target(workspace, path):
     workspace = Path(workspace).resolve()
     if not isinstance(path, str) or not path.strip():
-        raise ToolError("path 必须是非空相对路径")
-    relative = Path(path)
-    if relative.drive or relative.root or ".." in relative.parts:
-        raise ToolError("编辑路径必须相对工作区，不能包含 ..")
-    candidate = workspace
-    for part in relative.parts:
+        raise ToolError("path 必须是非空路径")
+    lexical = Path(os.path.abspath(workspace / local_path(path)))
+    candidate = Path(lexical.anchor)
+    for part in lexical.parts[1:]:
         candidate = candidate / part
         if part.rstrip(" .").casefold() in PROTECTED_DIR_NAMES:
             raise ToolError("禁止直接编辑 Git 元数据或 RecapCLI 运行数据")
@@ -37,7 +36,7 @@ def _target(workspace, path):
         if candidate.is_symlink() or candidate.is_junction():
             raise ToolError("禁止通过符号链接或目录联接编辑文件")
     target = _resolve(workspace, path, must_exist=False)
-    if any(part.casefold() in PROTECTED_DIR_NAMES for part in target.relative_to(workspace).parts):
+    if any(part.casefold() in PROTECTED_DIR_NAMES for part in target.parts):
         raise ToolError("禁止编辑内部数据路径")
     if target.exists() and not target.is_file():
         raise ToolError("编辑目标不是普通文件")

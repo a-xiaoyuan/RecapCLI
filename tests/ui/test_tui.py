@@ -282,14 +282,14 @@ class DriverTests(unittest.TestCase):
 
 
 class LaunchTests(unittest.TestCase):
-    def test_multi_keeps_only_local_read(self):
+    def test_multi_keeps_explicit_execution_capabilities(self):
         from recapcli.cli import build_parser
         with tempfile.TemporaryDirectory() as directory:
             parsed = build_parser().parse_args([
                 "--mode", "multi", "--allow-write", "--allow-exec", "--allow-web", "--workspace", directory,
             ])
             options = shell_options(parsed)
-        self.assertEqual(options.capabilities, ("read",))
+        self.assertEqual(options.capabilities, ("exec", "read", "web", "write"))
         self.assertEqual(options.mode, "multi")
 
     def test_react_keeps_requested_capabilities(self):

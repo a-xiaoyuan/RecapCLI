@@ -9,6 +9,7 @@ import subprocess
 import time
 
 from ..config import ENV_FILE
+from ..core.access import authorize_path, local_path
 
 MAX_FILE_BYTES = 64 * 1024
 MAX_MODEL_READ_LINES = 160
@@ -71,13 +72,12 @@ class ScanBudget:
 
 def _checked_target(workspace, target):
     """入口路径和遍历得到的子路径使用同一份访问检查。"""
-    target = target.resolve()
-    if not target.is_relative_to(Path(workspace).resolve()):
-        raise ToolError("禁止访问工作区之外的路径")
+    target = local_path(target).resolve()
     if target == ENV_FILE.resolve():
         raise ToolError("禁止访问 RecapCLI 的本地凭据配置")
-    if sensitive_path(target.relative_to(Path(workspace).resolve())):
+    if sensitive_path(target):
         raise ToolError("禁止访问敏感凭据文件或目录")
+    authorize_path(workspace, target)
     return target
 
 
@@ -95,9 +95,7 @@ def sensitive_path(path):
 def _resolve(workspace, path, *, must_exist=True):
     if not isinstance(path, str) or not path.strip():
         raise ToolError("path 必须是非空字符串")
-    candidate = Path(path)
-    if candidate.is_absolute():
-        raise ToolError("path 必须是相对工作区的路径")
+    candidate = local_path(path)
     if sensitive_path(candidate):
         raise ToolError("禁止访问敏感凭据文件或目录")
     target = _checked_target(workspace, Path(workspace) / candidate)
@@ -107,7 +105,8 @@ def _resolve(workspace, path, *, must_exist=True):
 
 
 def _relative(workspace, target):
-    return str(target.relative_to(Path(workspace).resolve())).replace("\\", "/")
+    root = Path(workspace).resolve()
+    return (target.relative_to(root) if target.is_relative_to(root) else target).as_posix()
 
 
 def file_reference(path, start, end):
@@ -119,6 +118,7 @@ def file_reference(path, start, end):
 def _git_ignored(workspace, root, budget):
     """交给 Git 处理忽略、例外和嵌套规则；非 Git 目录沿用普通遍历。"""
     budget.check_time()
+    workspace = root
     try:
         result = subprocess.run(
             ["git", "-C", str(workspace), "ls-files", "--others", "--ignored", "--exclude-standard",
@@ -279,6 +279,9 @@ def find_files(workspace, pattern, path=".", max_results=50):
     pattern = pattern.replace("\\", "/").casefold()
     glob = any(character in pattern for character in "*?[")
     root = _resolve(workspace, path)
+    match_base = Path(workspace).resolve()
+    if not root.is_relative_to(match_base):
+        match_base = root if root.is_dir() else root.parent
     budget = ScanBudget()
     files = [root] if root.is_file() else _walk_files(workspace, root, budget)
     matches = []
@@ -287,7 +290,7 @@ def find_files(workspace, pattern, path=".", max_results=50):
         for file in files:
             budget.check_time()
             relative = _relative(workspace, _checked_target(workspace, file))
-            candidate = relative if "/" in pattern else file.name
+            candidate = _relative(match_base, file) if "/" in pattern else file.name
             candidate = candidate.casefold()
             if not (fnmatchcase(candidate, pattern) if glob else pattern in candidate):
                 continue

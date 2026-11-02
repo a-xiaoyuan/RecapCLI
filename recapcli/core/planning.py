@@ -1,6 +1,6 @@
 """Plan and Execute 的阶段与计划状态；模型请求和工具执行仍由 agent.py 负责。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 
 
@@ -8,10 +8,14 @@ MAX_PLAN_STEPS = 5
 MAX_REPLANS = 2
 
 PLAN_INSTRUCTION = """当前阶段：制定计划（Plan）。
-围绕用户当前请求，生成 1 到 5 个按顺序执行的具体步骤。简单问题可以只有一步。
+围绕用户当前请求，生成 1 到 5 个带依赖的具体步骤。简单问题可以只有一步。
 尚未读取代码时，先安排定位和读取，不要猜测文件位置；修改任务应包含必要的验证。
 计划必须遵守用户授权和当前开放能力。此阶段禁止调用工具，也不要声称已经执行。
-只返回 JSON 对象，格式：{"steps": ["步骤一", "步骤二"]}。
+只返回 JSON 对象，格式：{"steps": [{"id":"read","description":"定位并读取代码","kind":"read","depends_on":[]},
+{"id":"edit","description":"修改问题","kind":"write","depends_on":["read"]},
+{"id":"test","description":"运行相关验证","kind":"verify","depends_on":["edit"]}]}。
+kind 为 read（只读）、write（修改）或 verify（运行验证）。依赖使用步骤 ID，不能自依赖或形成环。
+只把真正独立的步骤设为无依赖；修改必须依赖定位，验证必须依赖修改。独立 read 步骤可以同批执行。
 每个步骤最多 500 字。"""
 
 REVIEW_INSTRUCTION = """当前阶段：核对当前步骤（Review）。
@@ -25,12 +29,20 @@ REVIEW_INSTRUCTION = """当前阶段：核对当前步骤（Review）。
 replan 的 steps 替换从当前步骤起的全部未完成步骤，不能重复已完成部分；仍需覆盖用户目标。
 新剩余步骤为 1 到 5 个，每个最多 500 字；reason 最多 1000 字。"""
 
+BATCH_REVIEW = """当前同批执行了多个独立只读步骤，必须逐项核对。
+只返回 {"results":[{"id":"步骤ID","status":"completed 或 blocked","reason":"实际依据"}]}，
+results 必须覆盖本批每个 ID，不能将某一步的证据用于宣称其他步骤完成。
+需要重规划时，仍可返回 status=replan、reason 和 steps，替换全部未完成步骤。"""
+
 
 @dataclass
 class PlanStep:
     description: str
     status: str = "pending"
     evidence: str = ""
+    id: str = ""
+    kind: str = "write"
+    depends_on: list[str] = field(default_factory=list)
 
 
 def _read_object(content):
@@ -48,16 +60,54 @@ def _read_object(content):
     return data
 
 
-def _read_steps(data):
+def _read_steps(data, completed=()):
     descriptions = data.get("steps")
     if not isinstance(descriptions, list) or not 1 <= len(descriptions) <= MAX_PLAN_STEPS:
         raise ValueError("计划必须包含 1 到 5 个步骤")
     steps = []
-    for description in descriptions:
+    completed_ids = {step.id for step in completed}
+    for index, item in enumerate(descriptions):
+        if isinstance(item, str):
+            description = item
+            step_id = f"step_{len(completed_ids) + index + 1}"
+            kind = "write"
+            dependencies = [steps[-1].id] if steps else []
+        elif isinstance(item, dict):
+            description = item.get("description")
+            step_id, kind = item.get("id"), item.get("kind", "write")
+            dependencies = item.get("depends_on", [])
+        else:
+            raise ValueError("计划步骤必须是文本或带 ID 的对象")
         if not isinstance(description, str) or not description.strip() or len(description) > 500:
             raise ValueError("计划步骤必须是 1 到 500 字的非空文本")
-        steps.append(PlanStep(description.strip()))
+        if not isinstance(step_id, str) or not step_id.strip() or len(step_id) > 64:
+            raise ValueError("步骤 ID 必须是 1 到 64 字的非空文本")
+        if kind not in {"read", "write", "verify"}:
+            raise ValueError("步骤 kind 必须是 read、write 或 verify")
+        if not isinstance(dependencies, list) or any(not isinstance(dep, str) for dep in dependencies):
+            raise ValueError("depends_on 必须是步骤 ID 列表")
+        steps.append(PlanStep(description.strip(), id=step_id, kind=kind, depends_on=dependencies))
+    ids = [step.id for step in steps]
+    if len(set(ids)) != len(ids) or completed_ids.intersection(ids):
+        raise ValueError("计划步骤 ID 不能重复或覆盖已完成步骤")
+    resolved = set(completed_ids)
+    pending = list(steps)
+    while pending:
+        ready = [step for step in pending if set(step.depends_on) <= resolved]
+        if not ready:
+            raise ValueError("计划依赖存在环或引用了未知步骤")
+        resolved.update(step.id for step in ready)
+        pending = [step for step in pending if step not in ready]
     return steps
+
+
+def ready_batch(steps):
+    """只读步骤可成批；修改、验证按依赖逐项执行。"""
+    completed = {step.id for step in steps if step.status == "completed"}
+    ready = [step for step in steps if step.status == "pending" and set(step.depends_on) <= completed]
+    if not ready:
+        return []
+    return [step for step in ready if step.kind == "read"][:2] if ready[0].kind == "read" else ready[:1]
 
 
 class PlanController:
@@ -68,6 +118,7 @@ class PlanController:
         self.current = 0
         self.replans = 0
         self.stop_reason = ""
+        self.batch = []
 
     @property
     def allows_tools(self):
@@ -79,6 +130,8 @@ class PlanController:
         lines = []
         for number, step in enumerate(self.steps, start=1):
             line = f"{number}. [{labels[step.status]}] {step.description}"
+            if step.depends_on:
+                line += "（依赖：" + ", ".join(step.depends_on) + "）"
             if step.evidence:
                 line += f"；核对依据：{step.evidence}"
             lines.append(line)
@@ -89,12 +142,13 @@ class PlanController:
             return PLAN_INSTRUCTION
         progress = "\n当前计划：\n" + self.describe()
         if self.phase == "execute":
-            description = self.steps[self.current].description
+            description = "；".join(step.description for step in self.batch)
             return ("当前阶段：执行步骤（Execute）。只执行当前步骤，结合已有实际结果，按需调用工具。"
                     "不要提前执行后续步骤。结束时说明完成内容、证据或阻碍，交由下一阶段核对。"
-                    f"\n当前步骤：{description}" + progress)
+                    + ("本批均为独立只读步骤，可一次请求多个读取工具；禁止修改和命令。" if self.readonly_batch else "")
+                    + f"\n当前步骤：{description}" + progress)
         if self.phase == "review":
-            return REVIEW_INSTRUCTION + progress
+            return REVIEW_INSTRUCTION + ("\n" + BATCH_REVIEW if len(self.batch) > 1 else "") + progress
         return ("当前阶段：汇总（Summary）。禁止调用工具。基于实际执行记录回答用户，"
                 "区分已完成、未完成和未验证的内容，并给出有依据的文件引用。"
                 "计划未全部完成时，明确说明剩余事项，不得宣称任务已全部完成。"
@@ -109,7 +163,8 @@ class PlanController:
             self.on_event("[计划]\n" + self.describe())
             self._start_step()
         elif self.phase == "execute":
-            self.steps[self.current].status = "reviewing"
+            for step in self.batch:
+                step.status = "reviewing"
             self.phase = "review"
             self.on_event(f"[核对] 第 {self.current + 1} 步")
         else:
@@ -117,43 +172,68 @@ class PlanController:
         return False
 
     def _start_step(self):
+        self.batch = ready_batch(self.steps)
+        if not self.batch:
+            self.phase = "summary"
+            return
         self.phase = "execute"
-        step = self.steps[self.current]
-        step.status = "running"
-        self.on_event(f"[步骤] {self.current + 1}/{len(self.steps)}：{step.description}")
+        self.current = self.steps.index(self.batch[0])
+        for step in self.batch:
+            step.status = "running"
+        self.on_event(f"[步骤] {self.current + 1}/{len(self.steps)}：" + "；".join(step.description for step in self.batch))
+
+    @property
+    def readonly_batch(self):
+        return bool(self.batch) and all(step.kind == "read" for step in self.batch)
 
     def _accept_review(self, data):
+        if data.get("status") == "replan":
+            reason = data.get("reason")
+            if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
+                raise ValueError("核对原因必须是 1 到 1000 字的非空文本")
+            done = [step for step in self.steps if step.status == "completed"]
+            remaining = _read_steps(data, done)
+            if self.replans >= MAX_REPLANS:
+                for step in self.batch:
+                    step.status = "blocked"
+                self.stop("已达到 2 次重规划上限；" + reason)
+                return
+            self.replans += 1
+            self.steps = done + remaining
+            self.on_event(f"[重规划] 第 {self.replans} 次：{reason}\n" + self.describe())
+            self._start_step()
+            return
+        reviews = data.get("results") if len(self.batch) > 1 else [data]
+        if not isinstance(reviews, list) or len(reviews) != len(self.batch):
+            raise ValueError("必须逐项核对当前批次的所有步骤")
+        if len(self.batch) > 1:
+            if any(not isinstance(item, dict) for item in reviews):
+                raise ValueError("核对结果必须是对象")
+            if {item.get("id") for item in reviews} != {step.id for step in self.batch}:
+                raise ValueError("核对结果 ID 必须与当前批次一致")
+            reviews = [next(item for item in reviews if item["id"] == step.id) for step in self.batch]
+        for review in reviews:
+            self._validate_review(review)
+        for step, review in zip(self.batch, reviews):
+            step.status = review["status"]
+            step.evidence = review["reason"].strip()
+            self.on_event(f"[{'完成' if step.status == 'completed' else '受阻'}] 第 {self.steps.index(step) + 1} 步：{step.evidence}")
+        blocked = next((step for step in self.batch if step.status == "blocked"), None)
+        if blocked:
+            self.stop(blocked.evidence)
+        else:
+            self._start_step()
+
+    @staticmethod
+    def _validate_review(data):
         status = data.get("status")
         reason = data.get("reason")
-        if status not in ("completed", "replan", "blocked"):
+        if status not in ("completed", "blocked"):
             raise ValueError("核对状态必须是 completed、replan 或 blocked")
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
             raise ValueError("核对原因必须是 1 到 1000 字的非空文本")
-        if status != "replan" and data.get("steps", []) != []:
+        if data.get("steps", []) != []:
             raise ValueError("只有 replan 可以提供新的剩余步骤")
-        step = self.steps[self.current]
-        step.evidence = reason.strip()
-        if status == "completed":
-            step.status = "completed"
-            self.on_event(f"[完成] 第 {self.current + 1} 步：{step.evidence}")
-            self.current += 1
-            if self.current == len(self.steps):
-                self.phase = "summary"
-            else:
-                self._start_step()
-        elif status == "blocked":
-            step.status = "blocked"
-            self.stop(step.evidence)
-        else:
-            remaining = _read_steps(data)
-            if self.replans >= MAX_REPLANS:
-                step.status = "blocked"
-                self.stop("已达到 2 次重规划上限；" + step.evidence)
-                return
-            self.replans += 1
-            self.steps = self.steps[:self.current] + remaining
-            self.on_event(f"[重规划] 第 {self.replans} 次：{reason}\n" + self.describe())
-            self._start_step()
 
     def stop(self, reason):
         if self.phase != "summary":

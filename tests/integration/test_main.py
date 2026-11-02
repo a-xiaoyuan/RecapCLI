@@ -3,6 +3,7 @@ import io
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -143,6 +144,24 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(any(kind == "approval" and data["outcome"] == "approved"
                                 for kind, data in traces))
 
+    def test_safe_read_tools_in_one_batch_run_in_parallel(self):
+        barrier = threading.Barrier(2)
+
+        def fake(*args, **kwargs):
+            barrier.wait(timeout=2)
+            return {"ok": True, "content": "并行结果"}
+
+        with patch("recapcli.core.agent.execute_tool", side_effect=fake):
+            answer, requests = self.run_with_replies([
+                reply(calls=[tool_call("first", path="a.txt"), tool_call("second", path="b.txt")]),
+                reply("完成"),
+            ])
+        self.assertEqual(answer, "完成")
+        results = [message for message in requests[1]["messages"] if message["role"] == "tool"]
+        self.assertEqual([message["tool_call_id"] for message in results], ["first", "second"])
+        self.assertEqual([json.loads(message["content"])["content"] for message in results],
+                         ["并行结果", "并行结果"])
+
     def test_multiple_calls_and_another_tool_round(self):
         _, requests = self.run_with_replies([
             reply(calls=[tool_call("first"), tool_call("second", path="missing.txt")]),
@@ -185,7 +204,7 @@ class AgentTests(unittest.TestCase):
                                   limits=AgentLimits(max_tool_calls=1))
         tool.assert_not_called()
 
-    def test_output_budget_returns_paired_error_and_stops_further_execution(self):
+    def test_output_budget_bounds_both_already_started_parallel_reads(self):
         limits = AgentLimits(max_tool_calls=2, max_tool_bytes=1000)
         with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "中" * 2000}) as tool:
             _, requests = self.run_with_replies(
@@ -194,7 +213,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual([message["tool_call_id"] for message in results], ["a", "b"])
         self.assertTrue(all(not json.loads(message["content"])["ok"] for message in results))
         self.assertLessEqual(sum(len(message["content"].encode("utf-8")) for message in results), 1000)
-        self.assertEqual(tool.call_count, 1)
+        self.assertEqual(tool.call_count, 2)
         self.assertEqual(requests[-1]["tool_choice"], "none")
 
     def test_history_is_immutable_and_result_contains_only_new_turn(self):

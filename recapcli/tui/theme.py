@@ -16,7 +16,6 @@ PALETTE = {
     "user": "#cba6f7", "assistant": "#cba6f7", "yellow": "#fab387",
     "index": "#b4befe", "warning": "#fab387", "user_background": "#262639",
 }
-DISPLAY_LIMIT = 8000
 
 class QuotePanel(BlockQuote):
     def __rich_console__(self, console, options):
@@ -88,8 +87,6 @@ def dot(ready=None):
 def render_line(content, kind):
     """纯文字行；用户输入和模型输出都先移除终端控制字符。"""
     text_value = clean_output(content)
-    if len(text_value) > DISPLAY_LIMIT:
-        text_value = text_value[:DISPLAY_LIMIT] + "\n…（显示已截断，完整结果见 /task ID）"
     if kind == "user":
         text = Text("❯ ", style="bold " + PALETTE["user"])
         text.append(text_value, style=PALETTE["text"])

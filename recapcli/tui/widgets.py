@@ -146,7 +146,7 @@ class ToolProgress(Static):
                               "kind": "tool", "state": "running", "started": time.monotonic(), "duration": None,
                               "detail": ""})
         elif event.startswith("[结果]"):
-            row = next((item for item in reversed(self.rows)
+            row = next((item for item in self.rows
                         if item["role"] == role and item["kind"] == "tool" and item["state"] == "running"), None)
             if row is None:
                 return False
@@ -182,17 +182,35 @@ class ToolProgress(Static):
         running = any(row["state"] == "running" for row in self.rows)
         if self._timer is not None:
             self._timer.resume() if running else self._timer.pause()
+        if not self.rows:
+            self.update("")
+            return
+        requests = sum(row["kind"] == "request" for row in self.rows)
+        tools = sum(row["kind"] == "tool" for row in self.rows)
+        reads = sum(row["label"].split(" ", 1)[0] in {"read_file", "find_files", "list_directory"}
+                    for row in self.rows if row["kind"] == "tool")
+        searches = sum(row["label"].split(" ", 1)[0] in self.INDEX_TOOLS
+                       for row in self.rows if row["kind"] == "tool")
+        active = next((row for row in reversed(self.rows) if row["state"] == "running"), None)
         tree = CompactTree("", guide_style=PALETTE["faint"])
+        if active is not None:
+            label = Text(self.FRAMES[self._frame] + " ", style=PALETTE["accent"])
+            if active["role"]:
+                label.append(active["role"] + " · ", style=PALETTE["muted"])
+            label.append(active["label"], style=PALETTE["text"])
+            tree.add(label)
+        summary = f"模型请求 {requests} 次 · 工具 {tools} 次"
+        if reads:
+            summary += f" · 读取 {reads}"
+        if searches:
+            summary += f" · 搜索 {searches}"
+        tree.add(Text(("✓ " if not running else "◇ ") + summary,
+                      style=PALETTE["online"] if not running else PALETTE["muted"]))
         for row in self.rows:
-            state = row["state"]
-            indexed = row["kind"] == "request" or row["label"].split(" ", 1)[0] in self.INDEX_TOOLS
-            if state == "running":
-                marker, color = self.FRAMES[self._frame], PALETTE["accent"]
-            elif state == "done":
-                marker, color = ("✦", PALETTE["index"]) if indexed else ("✓", PALETTE["online"])
-            else:
-                marker, color = "◈", PALETTE["error"] if state == "failed" else PALETTE["warning"]
-            label = Text(marker + " ", style=color)
+            if row["state"] not in {"failed", "warning", "unknown"}:
+                continue
+            color = PALETTE["error"] if row["state"] == "failed" else PALETTE["warning"]
+            label = Text("◈ ", style=color)
             if row["role"]:
                 label.append(row["role"] + " · ", style=PALETTE["muted"])
             label.append(row["label"], style=PALETTE["text"])

@@ -112,7 +112,9 @@ class SessionStore:
     """一个工作区对应一份会话目录和一份长期记忆。"""
 
     def __init__(self, workspace):
+        from ..core.access import PathAccess
         self.workspace = Path(workspace).resolve()
+        self.access = PathAccess(self.workspace)
         self.sessions_dir = state_directory(self.workspace, "sessions")
         self.root = self.sessions_dir.parent
         self.memory_path = self.root / "memory.json"

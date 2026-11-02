@@ -149,6 +149,44 @@ class PlanningTests(unittest.TestCase):
         ])
         self.assertIn("已完成", result.answer)
 
+    def test_dependency_plan_batches_independent_reads_before_dependent_step(self):
+        steps = [{"id": key, "description": key, "kind": "read", "depends_on": dependencies}
+                 for key, dependencies in (("left", []), ("right", []), ("finish", ["left", "right"]))]
+        result = self.run_plan([
+            document(steps=steps), reply("两项读取完成"),
+            document(results=[{"id": key, "status": "completed", "reason": "已核对"} for key in ("left", "right")]),
+            reply("依赖已完成"), completed(), reply("汇总"),
+        ])
+        self.assertIn("3/3", result.answer)
+        self.assertIn("left；right", self.requests[1]["messages"][0]["content"])
+        self.assertIn("当前步骤：finish", self.requests[3]["messages"][0]["content"])
+
+    def test_dependency_cycles_and_unknown_ids_stop_before_execution(self):
+        for dependency in ("missing", "a"):
+            with self.subTest(dependency=dependency):
+                self.requests = []
+                with self.assertRaisesRegex(ValueError, "依赖"), patch("recapcli.core.agent.execute_tool") as execute:
+                    self.run_plan([document(steps=[{"id": "a", "description": "读取", "kind": "read", "depends_on": [dependency]}])])
+                execute.assert_not_called()
+
+    def test_read_batch_retains_external_read_tools_without_write_permission(self):
+        steps = [{"id": key, "description": key, "kind": "read"} for key in ("left", "right")]
+        seen = []
+
+        def external(name, arguments, **options):
+            seen.append(options["capabilities"])
+            return {"ok": True, "content": "外部读取结果"}
+
+        result = self.run_plan([
+            document(steps=steps), call("mcp_read", {"path": "app.py"}), reply("已读取"),
+            document(results=[{"id": key, "status": "completed", "reason": "读取已核对"} for key in ("left", "right")]),
+            reply("汇总"),
+        ], capabilities=("read", "write"), extra_executor=external,
+            extra_tools=[{"type": "function", "function": {"name": "mcp_read", "description": "外部读取", "parameters": {"type": "object"}}}])
+        self.assertIn("已完成", result.answer)
+        self.assertEqual(seen, [frozenset({"read"})])
+        self.assertIn("mcp_read", {item["function"]["name"] for item in self.requests[1]["tools"]})
+
     def test_invalid_review_cannot_advance_to_another_step(self):
         invalid = [
             {"status": "unknown", "reason": "说明"},

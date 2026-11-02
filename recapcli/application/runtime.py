@@ -58,6 +58,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         max_steps = 1
     task_id = tasks.start(session["id"], prompt, model, "compact" if compact_only else mode, {
         "history_messages": len(session["messages"]), "capabilities": capabilities,
+        "additional_directories": [str(path) for path in store.access.directories],
         "limits": asdict(limits), "max_steps": max_steps if max_steps is not None else DEFAULT_STEPS[mode],
         "provider_host": str(getattr(getattr(client, "base_url", None), "host", "unknown")),
         "experience_versions": [], "skill_versions": [],
@@ -100,6 +101,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
                            summary=session.get("summary"), auto_compact=auto_compact, compact_only=compact_only,
                            cancel_event=cancel_event, approver=approver,
                            extra_tools=extra_tools, extra_executor=extra_executor,
+                           access_policy=store.access,
                            on_stream=getattr(ui, "stream_update", None) if isinstance(client, ModelClient) else None)
     except BaseException as error:
         if getattr(ui, "stream_update", None) is not None:
@@ -150,6 +152,7 @@ def run_undo(store, ui, session, model, *, group_id=None, capabilities=("read",)
         tasks.append(task_id, "tool_start", {**action, "arguments": json.dumps(params)})
         _publish_task(tasks, task_id, ui)
         result = execute_tool("undo_edit", params, store.workspace, capabilities=capabilities, approver=approver,
+                              access_policy=store.access,
                               on_approval=lambda payload: tasks.append(task_id, "approval", {**action, **payload}))
         tasks.append(task_id, "tool_result", {**action, "result": result})
         tasks.finish(task_id, "returned" if result["ok"] else "blocked",

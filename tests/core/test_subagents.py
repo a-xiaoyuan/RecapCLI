@@ -2,6 +2,8 @@ import contextlib
 from copy import deepcopy
 import io
 import json
+import re
+import sys
 from pathlib import Path
 import tempfile
 from threading import Barrier, Event, Lock
@@ -9,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import httpx2
-from openai import OpenAI
+from openai import APIError, OpenAI
 
 from recapcli.cli import main
 from recapcli.application.runtime import run_turn
@@ -50,8 +52,8 @@ class SubagentTests(unittest.TestCase):
         def handler(request):
             data = json.loads(request.content)
             system = data["messages"][0]["content"]
-            role = next((role for role in ("analysis", "review", "aggregate")
-                         if f"当前角色：{role}" in system), "compact")
+            match = re.search(r"当前角色：([a-z]+)", system)
+            role = match.group(1) if match else "compact"
             with self.lock:
                 self.requests.append((role, data))
                 self.counts[role] = self.counts.get(role, 0) + 1
@@ -107,7 +109,7 @@ class SubagentTests(unittest.TestCase):
         self.assertIn("analysis-only", report)
         self.assertIn("review-only", report)
 
-    def test_child_permissions_exclude_write_exec_network_even_when_parent_grants_them(self):
+    def test_readonly_team_excludes_write_exec_network(self):
         def respond(role, count, data):
             if role == "aggregate" or count > 1:
                 return reply("权限拒绝，未修改未执行")
@@ -121,7 +123,7 @@ class SubagentTests(unittest.TestCase):
                                 {**tool("run_command", argv=["python", "app.py"]), "id": "exec"},
                                 {**tool("read_url", url="https://example.com"), "id": "url"},
                                 {**tool("web_search", query="Python"), "id": "search"}])
-        self.run_multi(respond, capabilities=("read", "write", "exec", "web", "network"))
+        self.run_multi(respond, capabilities=("read", "web", "network"))
         self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(1)\n")
         results = [data["result"] for kind, data in self.traces if kind == "tool_result"]
         self.assertEqual(len(results), 8)
@@ -323,7 +325,7 @@ class SubagentTests(unittest.TestCase):
         def respond(role, count, data):
             return reply(calls=[tool("edit_file", path="new.py", old_text="", new_text="bad")]) if role == "aggregate" else reply(role)
         with patch("recapcli.core.agent.execute_tool") as execute:
-            result = self.run_multi(respond, capabilities=("read", "write", "exec"))
+            result = self.run_multi(respond)
         execute.assert_not_called()
         self.assertEqual(result.status, "incomplete")
 
@@ -366,7 +368,7 @@ class SubagentTests(unittest.TestCase):
                 patch("recapcli.cli.OpenAI", side_effect=lambda **options: self.client(self.reading)), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = main(["分析", "--workspace", str(self.workspace), "--mode", "multi",
-                         "--allow-web", "--allow-network", "--allow-write", "--allow-exec",
+                         "--allow-web", "--allow-network",
                          "--banner", "off", "--color", "never"])
         self.assertEqual(code, 0, errors.getvalue())
         store = SessionStore(self.workspace)
@@ -408,6 +410,98 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual(session, original)
         self.assertEqual(TaskStore(self.workspace, create=False).list_tasks()[0]["status"], "cancelled")
         self.assertEqual(self.requests, [])
+
+    def test_execution_team_edits_verifies_and_preserves_parent_task_evidence(self):
+        steps = [{"id": "read", "description": "读取 app.py", "kind": "read", "depends_on": []},
+                 {"id": "edit", "description": "把输出改为 2", "kind": "write", "depends_on": ["read"]},
+                 {"id": "test", "description": "运行 app.py 验证输出", "kind": "verify", "depends_on": ["edit"]}]
+        counts, approvals = {}, []
+
+        def respond(role, count, data):
+            if role == "planner":
+                return reply(json.dumps({"steps": steps}))
+            if role == "reviewer":
+                return reply(calls=[tool()]) if count == 1 else reply(json.dumps({"approved": True, "reason": "源码与真实命令结果一致"}))
+            if role == "aggregate":
+                return reply("app.py 已改为输出 2，实际进程退出码为 0")
+            text = next(item["content"] for item in data["messages"] if item["role"] == "user")
+            step = re.search(r"你负责步骤 (\w+)：", text).group(1)
+            counts[step] = counts.get(step, 0) + 1
+            index = counts[step]
+            if step == "read":
+                names = {item["function"]["name"] for item in data.get("tools", [])}
+                self.assertNotIn("edit_file", names)
+                return reply(calls=[tool()]) if index == 1 else reply("app.py:1 为 print(1)")
+            if step == "edit":
+                if index == 1:
+                    return reply(calls=[tool("edit_file", path="app.py", old_text="print(1)", new_text="print(2)")])
+                return reply("已按审批修改 app.py:1")
+            return (reply(calls=[tool("run_command", argv=[sys.executable, "app.py"])]) if index == 1
+                    else reply("真实命令输出 2，退出码 0"))
+
+        def approve(request):
+            approvals.append(request.tool)
+            return "approved"
+
+        store = SessionStore(self.workspace)
+        session = store.new_session("test-model")
+        answer = run_turn(self.client(respond), "test-model", self.workspace, store, TerminalUI(io.StringIO()),
+                          session, "把 app.py 输出改为 2 并运行验证", mode="multi", auto_compact=False,
+                          capabilities=("read", "write", "exec"), approver=approve)
+        self.assertIn("模型审查通过", answer)
+        self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(2)\n")
+        self.assertEqual(approvals, ["edit_file", "run_command"])
+        task_store = TaskStore(self.workspace, create=False)
+        task = task_store.get(task_store.list_tasks()[0]["id"])
+        command = next(event["data"]["result"] for event in task["events"]
+                       if event["kind"] == "tool_result" and event["data"]["name"] == "run_command")
+        self.assertEqual(command["output"].strip(), "2")
+        from recapcli.application.changes import change_report
+        report = change_report(task)
+        self.assertEqual(report["files"][0]["path"], "app.py")
+        self.assertEqual(report["commands"][0]["returncode"], 0)
+        self.assertEqual(task["verification_status"], "unverified")
+        self.assertEqual(len(session["messages"]), 2)
+
+    def test_worker_facts_survive_review_api_failure_without_replaying_edit(self):
+        def respond(role, count, data):
+            if role == "planner":
+                return reply(json.dumps({"steps": [{"id": "edit", "description": "修改 app.py", "kind": "write"}]}))
+            if role == "worker":
+                return (reply(calls=[tool("edit_file", path="app.py", old_text="print(1)", new_text="print(2)")])
+                        if count == 1 else reply("已修改"))
+            return httpx2.Response(500, json={"error": {"message": "offline failure"}})
+
+        store = SessionStore(self.workspace)
+        session = store.new_session("test-model")
+        with self.assertRaises(APIError):
+            run_turn(self.client(respond), "test-model", self.workspace, store, TerminalUI(io.StringIO()),
+                     session, "修改 app.py", mode="multi", auto_compact=False,
+                     capabilities=("read", "write"), approver=lambda request: "approved", limits=AgentLimits(max_retries=0))
+        self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(2)\n")
+        self.assertEqual([message["role"] for message in session["messages"]], ["user", "assistant"])
+        self.assertIn("backup_id", session["messages"][-1]["content"])
+        self.assertEqual(self.counts["worker"], 2)
+
+    def test_execution_team_runs_independent_read_workers_concurrently(self):
+        overlap = Barrier(2)
+
+        def respond(role, count, data):
+            if role == "planner":
+                return reply(json.dumps({"steps": [{"id": key, "description": key, "kind": "read"}
+                                                    for key in ("left", "right")]}))
+            if role == "worker":
+                overlap.wait(timeout=5)
+                return reply("已独立分析来源")
+            if role == "reviewer":
+                return reply(json.dumps({"approved": True, "reason": "已核对来源"}))
+            return reply("汇总")
+
+        result = self.run_multi(respond, capabilities=("read", "write"))
+        self.assertEqual(result.status, "returned")
+        self.assertEqual(self.counts["worker"], 2)
+        starts = [data for kind, data in self.traces if kind == "subagent_start"]
+        self.assertEqual({tuple(data["capabilities"]) for data in starts}, {("read",)})
 
     def test_invalid_request_budget_stops_before_model_and_cli_config(self):
         with self.assertRaisesRegex(ValueError, "至少需要 3"):

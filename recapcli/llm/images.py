@@ -86,21 +86,17 @@ def prepare_user_message(prompt, workspace):
     payloads = []
     for match in matches:
         reference = next(value for value in match.groups() if value is not None)
-        target = Path(reference)
+        from ..core.access import local_path
+        target = local_path(reference)
         if not target.is_absolute():
             target = workspace / target
-        if not target.absolute().is_relative_to(workspace):
-            raise ValueError("图片必须位于当前工作区内")
-        cursor = workspace
-        for part in target.absolute().relative_to(workspace).parts:
-            cursor /= part
+        for cursor in (target.absolute(), *target.absolute().parents):
             if cursor.is_symlink() or cursor.is_junction():
                 raise ValueError("图片路径不能经过链接")
         # 图片不跟随链接；凭据和运行数据不能借助图片输入读取。
         from ..tools.filesystem import _checked_target, SKIP_DIRS
         target = _checked_target(workspace, target)
-        relative = target.relative_to(workspace)
-        if any(part in SKIP_DIRS for part in relative.parts):
+        if any(part in SKIP_DIRS for part in target.parts):
             raise ValueError("不能把凭据或运行数据作为图片附件")
         data, mime = _image_bytes(target)
         payloads.append((data, {"sha256": hashlib.sha256(data).hexdigest(), "mime_type": mime,

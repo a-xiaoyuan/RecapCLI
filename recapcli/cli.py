@@ -102,7 +102,7 @@ class ArgumentParser(argparse.ArgumentParser):
 
 def build_parser():
     parser = ArgumentParser(
-        description="RecapCLI：支持 ReAct、Plan and Execute 与仅本地只读子代理的终端代码 Agent。交互终端默认打开 Textual 壳。",
+        description="RecapCLI：支持 ReAct、依赖计划与多代理协作的终端代码 Agent。交互终端默认打开 Textual 壳。",
         epilog="终端壳需要可选依赖 textual（uv sync --extra tui）。--demo 只演示界面，不请求模型。无 textual 时使用 python -m recapcli.cli。",
     )
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
@@ -110,9 +110,10 @@ def build_parser():
     parser.add_argument("--demo", action="store_true", help="离线界面演示，不请求模型")
     parser.add_argument("--profile", metavar="名称", help="选择 models.toml 中的模型配置；恢复会话时默认沿用上次配置")
     parser.add_argument("--models", nargs="?", const="*", metavar="筛选词", help="紧凑列出模型配置，可按名称或模型筛选；不请求接口")
-    parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="允许读取的工作区")
+    parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="默认工作区与运行记录目录")
+    parser.add_argument("--add-dir", type=Path, action="append", default=[], help="额外授权的目录，可重复指定；也可在首次访问时确认")
     parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
-                        help="执行模式：react 直接执行；plan 先计划再执行；multi 仅本地只读的并发分析与审查")
+                        help="执行模式：react 直接执行；plan 按依赖计划执行；multi 默认只读分析，开放写入/命令后启用执行团队")
     parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 32，plan/multi 默认 20")
     parser.add_argument("--max-tool-calls", type=int, default=AgentLimits.max_tool_calls, help="每轮工具调用数量上限，默认 64")
     parser.add_argument("--max-tool-bytes", type=int, default=256 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
@@ -194,8 +195,7 @@ def main(argv=None) -> int:
         requested.add("write")
     if args.allow_exec:
         requested.add("exec")
-    # Multi 实际只有本地读取；网页、编辑和命令开关不授予子代理。
-    capabilities = {"read"} if args.mode == "multi" else requested
+    capabilities = ({"read"} if args.mode == "multi" and not requested & {"write", "exec"} else requested)
     ui = TerminalUI(color=args.color)
     banner_mode = args.banner
     if banner_mode == "auto" and args.color != "auto":
@@ -240,7 +240,7 @@ def main(argv=None) -> int:
     if args.mode == "plan" and args.max_steps < 4 and not args.compact:
         parser.error("计划模式至少需要 4 次模型请求预算")
     if args.mode == "multi" and args.max_steps < 3 and not args.compact:
-        parser.error("Multi 仅本地只读，至少需要 3 次模型请求预算")
+        parser.error("Multi 至少需要 3 次模型请求预算")
     try:
         limits = AgentLimits(max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
                              max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds,
@@ -257,6 +257,8 @@ def main(argv=None) -> int:
             parser.error(str(error))
     try:
         store = SessionStore(args.workspace)
+        for directory in args.add_dir:
+            store.access.add(directory)
         task_store = TaskStore(args.workspace)
         recovered = task_store.recover_interrupted()
         if recovered:
@@ -286,10 +288,10 @@ def main(argv=None) -> int:
 
     try:
         print_banner(workspace=args.workspace, mode=banner_mode)
-        labels = {"react": "ReAct", "plan": "Plan and Execute", "multi": "Multi（仅本地只读）"}
+        labels = {"react": "ReAct", "plan": "Plan and Execute", "multi": "Multi"}
         ui.info("执行模式：" + labels[args.mode])
         granted = "、".join(name for key, name in [("read", "读取"), ("write", "编辑"), ("exec", "命令执行"), ("web", "网页")] if key in capabilities)
-        if args.mode == "multi":
+        if args.mode == "multi" and not capabilities & {"write", "exec"}:
             ui.info("工具能力：" + granted + "。不联网、不修改文件、不执行命令。")
         else:
             ui.info("工具能力：" + granted)

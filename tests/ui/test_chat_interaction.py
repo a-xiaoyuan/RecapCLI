@@ -92,6 +92,33 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.clipboard, "用户\n解释代码\n\nRecapCLI\n" + answer)
                 self.assertEqual(self.requests, [])
 
+    async def test_long_answer_is_rendered_without_display_truncation(self):
+        app = self.app()
+        answer = "开头\n" + "中间内容\n" * 1200 + "尾部唯一标记"
+        async with app.run_test(size=(100, 30)) as pilot:
+            app.append_line(answer, "assistant")
+            await pilot.pause()
+            turns = app.query(".assistant-turn")
+            shown = rendered_text(turns.last())
+            self.assertIn("尾部唯一标记", shown)
+            self.assertNotIn("显示已截断", shown)
+
+    async def test_tool_progress_collapses_completed_reads_into_summary(self):
+        app = self.app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            app._lock()
+            for message in ("[模型] 第 1 次请求", "[工具] read_file · README.md", "[结果] 成功",
+                            "[工具] read_file · pyproject.toml", "[结果] 成功",
+                            "[工具] search_symbols", "[结果] 成功"):
+                app.driver.presenter.event(message)
+            await pilot.pause()
+            shown = rendered_text(app._progress_widget)
+            self.assertIn("模型请求 1 次", shown)
+            self.assertIn("工具 3 次", shown)
+            self.assertNotIn("README.md", shown)
+            self.assertNotIn("pyproject.toml", shown)
+            app._unlock()
+
     async def test_tool_progress_distinguishes_success_failure_and_unknown_outcomes(self):
         app = self.app()
         async with app.run_test(size=(100, 30)) as pilot:

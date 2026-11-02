@@ -10,6 +10,7 @@ dependencies = [
     "tomlkit>=0.13,<1",
     "rich>=14,<15",
     "pillow>=11,<14",
+    "tree-sitter-language-pack>=0.13,<0.14",
 ]
 
 [project.scripts]

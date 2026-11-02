@@ -106,6 +106,16 @@ def handle_command(command, ui, store, session, model, *, capabilities=("read",)
     parts = command.split(maxsplit=1)
     name = parts[0].lower()
     argument = parts[1].strip() if len(parts) > 1 else ""
+    if name == "/add-dir":
+        if argument:
+            try:
+                path = store.access.add(argument.strip("\"'"))
+                ui.info(f"本次运行已授权目录：{path}；写入仍需开放能力并审批。")
+            except (OSError, ValueError) as error:
+                ui.error(str(error))
+        else:
+            ui.info("当前文件访问目录：\n" + "\n".join(str(path) for path in (store.workspace, *store.access.directories)))
+        return session
     if name in {"/exit", "/quit"}:
         if not save_session(store, session, ui):
             ui.info("当前消息仍保留在内存，输入 /save 重试。")

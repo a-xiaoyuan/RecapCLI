@@ -3,6 +3,7 @@
 from copy import deepcopy
 import json
 from pathlib import Path
+from ..core.access import AccessDenied, PathAccess, using_access
 
 from .approval import authorize_action, fail_closed
 from .commands import run_command
@@ -37,22 +38,26 @@ TOOL_REGISTRY = {
     },
     "search_symbols": {
         "handler": search_symbols,
-        "description": "按名称查找 Python 类、同步或异步函数，或指定 path 浏览文件/目录内的符号，返回定义路径和行范围。默认复用索引，候选始终校验文件变化。",
+        "description": "按名称定位 Python、Java、JS/TS、Go、Rust、C/C++、C#、Kotlin、Ruby、PHP 的类、函数、方法、接口等语法定义。可用 path 限定相对或绝对目录/文件；外部目录首次访问需授权。返回实际语言、路径和行范围，不提供编译器级类型/引用分析。",
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string", "description": "精确符号名"},
-            "path": {"type": "string", "description": "限定工作区相对文件或子目录，默认 .；具体路径可单独提供以列出该范围的符号"},
-            "kind": {"type": "string", "description": "可省略；省略时同时查询 class、function、async_function，确认类型后再限定"},
+            "path": {"type": "string", "description": "限定文件或目录，默认 .；支持相对或绝对路径，外部目录首次访问需确认"},
+            "kind": {"type": "string", "description": "可省略，查询所有类型；支持 class、function、async_function、method、constructor、interface、struct、enum、trait、type、namespace"},
             "max_results": {"type": "integer", "description": "默认 50，最大 200"},
             "refresh": {"type": "boolean", "description": "强制刷新索引；默认复用 10 秒缓存，候选始终核验文件内容"},
         }, "required": [], "additionalProperties": False},
     },
     "search_code_index": {
         "handler": search_code_index,
-        "description": "使用本地 FTS5 按关键词短语检索文本行，返回路径、行范围和片段；查询前刷新索引。",
+        "timeout_parameter": "timeout_seconds",
+        "description": "混合检索代码：融合 FTS5 关键词、文件/符号名称，显式配置 Embedding 后加入向量召回。返回来源、行范围与片段；semantic_status=disabled/unavailable 时不代表已做语义检索。精确短语可用 mode=keyword；无结果不能证明不存在相似实现。",
         "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "限定文件或目录，默认工作区；支持已授权的外部绝对路径"},
             "query": {"type": "string", "description": "关键词或短语"},
             "max_results": {"type": "integer", "description": "默认 50，最大 200"},
             "refresh": {"type": "boolean", "description": "强制刷新索引；默认复用 10 秒缓存，候选始终核验文件内容"},
+            "mode": {"type": "string", "description": "hybrid（默认，混合召回）或 keyword（精确短语，不调用 Embedding）"},
+            "timeout_seconds": {"type": "integer", "description": "Embedding 总等待预算，默认 20 秒，最多 30 秒"},
         }, "required": ["query"], "additionalProperties": False},
     },
     "read_file": {
@@ -61,7 +66,7 @@ TOOL_REGISTRY = {
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "相对工作区的文件路径"},
+                "path": {"type": "string", "description": "文件路径；支持相对路径或绝对路径，外部目录首次访问需授权"},
                 "start_line": {"type": "integer", "description": "起始行号，从 1 开始；优先采用搜索返回的位置，省略时从第 1 行开始"},
                 "end_line": {"type": "integer", "description": "结束行号，包含该行；每次最多返回 160 行"},
                 "next_start_line": {"type": "integer", "description": "上一页返回的继续位置，可作为 start_line 的别名"},
@@ -72,7 +77,7 @@ TOOL_REGISTRY = {
     },
     "search_text": {
         "handler": search_text,
-        "description": "在工作区文本文件中搜索字符串，返回相对路径、行号和该行内容。",
+        "description": "在指定文件或目录中搜索文本，返回实际路径、行号和内容。外部目录首次访问需确认。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -94,7 +99,7 @@ TOOL_REGISTRY = {
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "相对工作区的目录，默认根目录"},
+                "path": {"type": "string", "description": "目录路径，默认工作区；支持外部绝对目录，首次访问需确认"},
                 "max_depth": {"type": "integer", "description": "递归深度，默认 2，最大 5"},
             },
             "required": [],
@@ -116,7 +121,7 @@ TOOL_REGISTRY = {
         "capability": "write",
         "description": "先读取目标，再精确替换 old_text 为 new_text。默认要求唯一匹配；创建文件时 old_text 为空。返回 diff 和恢复用 backup_id。执行前需要人工批准。",
         "parameters": {"type": "object", "properties": {
-            "path": {"type": "string", "description": "相对工作区的文件路径"},
+            "path": {"type": "string", "description": "文件路径，可用相对或绝对路径；外部目录首次访问需确认"},
             "old_text": {"type": "string", "description": "文件中的精确原文；新文件用空字符串"},
             "new_text": {"type": "string", "description": "替换后的内容"},
             "replace_all": {"type": "boolean", "description": "是否替换所有匹配，默认否"},
@@ -151,10 +156,10 @@ TOOL_REGISTRY = {
         "records_artifacts": True,
         "capability": "exec",
         "timeout_parameter": "timeout_seconds",
-        "description": "运行前台命令，argv 是可执行文件和参数数组。默认不经 shell，cwd 在工作区内；返回退出码、合并输出和执行记录 ID。执行前需要人工批准。",
+        "description": "运行前台命令，argv 是可执行文件和参数数组。默认不经 shell，cwd 支持工作区或已授权的外部目录；返回退出码、合并输出和执行记录 ID。执行前需要人工批准。",
         "parameters": {"type": "object", "properties": {
             "argv": {"type": "array", "items": {"type": "string"}, "description": "如 [python路径, -m, unittest]"},
-            "cwd": {"type": "string", "description": "工作区内的相对运行目录，默认 ."},
+            "cwd": {"type": "string", "description": "运行目录，默认 .；支持相对路径或外部绝对目录，首次访问需授权"},
             "timeout_seconds": {"type": "integer", "description": "超时秒数，默认 30，最多 60"},
             "max_output_bytes": {"type": "integer", "description": "输出 UTF-8/原始编码字节上限，默认 16384，最多 65536"},
             "encoding": {"type": "string", "description": "输出解码，默认 utf-8，旧 Windows 程序可用 gb18030"},
@@ -216,12 +221,22 @@ def _parse_arguments(arguments, schema):
 
 
 _PARAM_DEFAULTS = {
+    "search_code_index": {"timeout_seconds": 20},
     "edit_file": {"replace_all": False},
     "run_command": {"cwd": ".", "timeout_seconds": 30, "max_output_bytes": 16384, "encoding": "utf-8"},
 }
 
 
-def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_remaining=None, on_record=None,
+def execute_tool(name, arguments, workspace, *, access_policy=None, **options):
+    policy = access_policy if access_policy is not None else PathAccess(workspace)
+    with using_access(policy, options.get("approver"), options.get("on_approval"), options.get("time_remaining")):
+        try:
+            return _execute_tool(name, arguments, workspace, **options)
+        except AccessDenied as error:
+            return error.result
+
+
+def _execute_tool(name, arguments, workspace, *, capabilities=("read",), time_remaining=None, on_record=None,
                  approver=None, on_approval=None, for_model=False):
     """查找 → 校验参数 → 能力检查 → 审批 → 执行。
 
@@ -241,7 +256,12 @@ def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_rem
             default = 20 if capability == "web" else 30
             params[timeout] = min(params.get(timeout, default), time_remaining)
         workspace_path = Path(workspace).resolve()
+        if name == "run_command":
+            from .filesystem import _resolve
+            _resolve(workspace_path, params.get("cwd", "."))
     except (OSError, ValueError, TypeError) as error:
+        if isinstance(error, AccessDenied):
+            return error.result
         return {"ok": False, "error": str(error)}
 
     if capability in {"write", "exec"}:
@@ -261,4 +281,6 @@ def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_rem
             result["warning"] = "检索结果不完整，不能据此断言整个项目没有匹配内容；请缩小目录或查询范围。"
         return {"ok": True, **result}
     except (OSError, ValueError, TypeError) as error:
+        if isinstance(error, AccessDenied):
+            return error.result
         return {"ok": False, "error": str(error)}

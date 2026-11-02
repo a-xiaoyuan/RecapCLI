@@ -36,6 +36,7 @@ class ShellOptions:
     approval_timeout: float = 120.0
     mcp_repo: bool = False
     mcp_config: Path | None = None
+    additional_dirs: tuple = ()
 
 
 class Presenter:
@@ -276,6 +277,9 @@ class ShellDriver:
 
     def _slash(self, prompt):
         head = prompt.split(maxsplit=1)[0].lower()
+        if head == "/add-dir":
+            handle_command(prompt, self.presenter, self._ensure_store(), self.session, self.model or "")
+            return None
         if head == "/sessions":
             self.show_sessions()
             return None
@@ -450,6 +454,8 @@ class ShellDriver:
         if self.store is None:
             from ..storage.session import SessionStore
             self.store = SessionStore(self.options.workspace)
+            for directory in self.options.additional_dirs:
+                self.store.access.add(directory)
         return self.store
 
     def _save_quiet(self):

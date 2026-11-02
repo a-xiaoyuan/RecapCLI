@@ -17,6 +17,7 @@ import threading
 import time
 
 from ..storage.files import data_root
+from ..core.access import AccessDenied
 from .editing import _hash, _plan_edit, _plan_edits, _read_bytes, _target, _undo_records
 from .filesystem import ToolError, _relative
 
@@ -125,6 +126,8 @@ def _file_fingerprint(workspace, relative):
     try:
         target = _target(workspace, relative)
         label = _relative(workspace, target)
+    except AccessDenied:
+        raise
     except (ToolError, OSError, ValueError):
         return {"path": label, "fingerprint": "unavailable"}
     if not target.exists():
@@ -154,11 +157,7 @@ def _command_relative(cwd, arg):
     if not (path.suffix or "/" in arg or "\\" in arg):
         return None
     base = Path(cwd) if isinstance(cwd, str) and cwd not in {"", "."} else Path()
-    if base.is_absolute() or base.drive or ".." in base.parts:
-        return None
     relative = base / path
-    if relative.is_absolute() or ".." in relative.parts:
-        return None
     return relative.as_posix()
 
 
@@ -220,6 +219,8 @@ def collect_fingerprints(tool, workspace, params):
             return _restore_fingerprints(workspace, params)
         if tool == "run_command":
             return _command_fingerprints(workspace, params)
+    except AccessDenied:
+        raise
     except (OSError, ValueError, TypeError):
         return [{"path": tool, "fingerprint": "unavailable"}]
     return []
@@ -242,6 +243,8 @@ def _edit_hint(workspace, params):
     try:
         planned = _plan_edit(workspace, params.get("path"), params.get("old_text", ""),
                              params.get("new_text", ""), params.get("replace_all", False))
+    except AccessDenied:
+        raise
     except (ToolError, OSError, ValueError, TypeError) as error:
         return f"执行前检查未通过：{error}"
     if not planned["changed"]:
@@ -259,6 +262,8 @@ def _action_hint(tool, workspace, params):
         try:
             return "\n".join(item["diff"] + (f"\n{item['path']} 差异已截断" if item["diff_truncated"] else "")
                              for item in _plan_edits(workspace, params.get("edits")))
+        except AccessDenied:
+            raise
         except (OSError, ValueError, TypeError) as error:
             return f"执行前检查未通过：{error}"
     if tool == "undo_edit":
@@ -280,7 +285,7 @@ def build_summary(tool, workspace, params, fingerprints):
         hint = hint[:hint_limit] + "\n…（差异显示已截断，批准仍绑定完整参数和指纹）"
     lines = [
         "[审批] 需要明确批准后才会执行",
-        f"工具：{tool}",
+        f"工具：{'访问外部目录' if tool == 'access_directory' else tool}",
         f"工作区：{workspace}",
         "参数：" + json.dumps(_display(params), ensure_ascii=False, sort_keys=True),
         "文件指纹：",

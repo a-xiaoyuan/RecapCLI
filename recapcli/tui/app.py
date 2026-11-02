@@ -19,7 +19,7 @@ from textual.widgets import OptionList, Static, TextArea
 from .driver import Presenter, ShellDriver, ShellOptions
 from .state import ShellState
 from .status import TaskStatus, task_text, usage_text
-from .theme import DISPLAY_LIMIT, PALETTE, render_answer, render_line
+from .theme import PALETTE, render_answer, render_line
 from .widgets import CommandMenu, ConversationView, PromptInput, StatusScreen, ToolProgress
 from .settings import ModelConfigScreen, ModelPickerScreen
 from ..ui.terminal_art import project_version
@@ -148,9 +148,7 @@ class ConversationLine(Static):
             self.kind = kind
             self.add_class(f"{kind}-turn")
         self.content_text = clean_output(content)
-        shown = self.content_text[:DISPLAY_LIMIT]
-        if len(self.content_text) > DISPLAY_LIMIT:
-            shown += "\n…（显示已截断，完整结果见 /task ID）"
+        shown = self.content_text
         if self.kind == "assistant":
             rendered = render_answer(shown, self.task_status)
         elif self.kind == "user":
@@ -387,8 +385,10 @@ class RecapShell(App):
 
     def event_update(self, message):
         message = clean_output(message)
-        role = next((name for name in ("analysis", "review", "aggregate")
-                     if message.startswith(f"[{name}] ")), "")
+        prefix, separator, _ = message.partition("] ")
+        name = prefix.removeprefix("[")
+        role = name if separator and (name in {"analysis", "review", "aggregate", "planner", "reviewer", "team_summary"}
+                                     or name.startswith("worker:")) else ""
         event = message.removeprefix(f"[{role}] ") if role else message
         if event.startswith("[模型]"):
             self.set_activity("请求模型 · " + event.removeprefix("[模型]").strip())

@@ -11,8 +11,12 @@ from .budget import AgentCancelled
 
 
 ROLE_INSTRUCTIONS = {
+    "planner": "当前角色：planner（任务规划者）。只制定带依赖的计划，禁止执行工具。",
+    "worker": "当前角色：worker（执行者）。只执行当前分配的步骤，遵守工具权限与人工审批。",
+    "reviewer": "当前角色：reviewer（独立审查者）。读取实际代码核对执行报告，禁止编辑或执行命令。",
+    "team_summary": "当前角色：aggregate（执行团队汇总）。只依据 Worker 的真实工具事实和审查结果回答，明确修改、命令结果与未完成项；模型审查不等于人工验收。禁止调用工具。",
     "analysis": "当前角色：analysis（分析子代理）。独立定位、读取代码，分析用户问题并给出有来源的建议。"
-                "仅本地只读：可读取工作区文件，不联网、不修改文件、不运行命令；不声称已完成修改或测试。",
+                "仅本地只读：可读取已授权的本地文件，不联网、不修改文件、不运行命令；不声称已完成修改或测试。",
     "review": "当前角色：review（审查子代理）。独立读取代码，检查风险、遗漏和建议的验证方法。"
               "你看不到其他子代理的过程；这是独立审查。仅本地只读：不联网、不修改文件、不运行命令。"
               "审查意见不等于测试或人工验收证据，未执行的验证明确写未验证。",
@@ -26,7 +30,7 @@ HEADER = "只读协作结果：analysis/review 为模型分析与审查意见；
 
 def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps, capabilities,
                   history, memory_text, summary, new_summary, on_event, on_trace, approver=None,
-                  user_message=None, on_stream=None):
+                  user_message=None, on_stream=None, access_policy=None):
     from .agent import TraceError, TurnResult, run_agent
 
     # 父任务即使带有网页、写入或命令，子代理也只保留本地读取。
@@ -60,6 +64,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
                 memory_text=memory_text, on_event=lambda text: event(role, text),
                 on_trace=lambda kind, data: trace(role, kind, data),
                 approver=approver, _budget=budget, _role=role, _request_reserve=1,
+                access_policy=access_policy,
                 _user_message=deepcopy(user_message),
             )
             report = {"role": role, "status": result.status, "answer": result.answer,
@@ -131,6 +136,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
             approver=approver, _budget=budget, _role="aggregate", _tools_enabled=False,
             _user_message={**deepcopy(user_message), "content": aggregate_prompt},
             on_stream=aggregate_stream if on_stream is not None else None,
+            access_policy=access_policy,
         )
         body = aggregate.answer
     except TraceError:

@@ -5,6 +5,7 @@ from ..config import ENV_FILE, MODELS_FILE
 
 # 名称、参数提示、说明、分类；方括号包围整个参数时可省略。
 COMMANDS = (
+    ("/add-dir", "[目录]", "授权额外目录，省略参数查看当前范围", "common"),
     ("/model", "[名称]", "选择或切换模型", "models"),
     ("/config", "", "配置模型、接口与密钥", "models"),
     ("/new", "", "保存并开始新会话", "sessions"),

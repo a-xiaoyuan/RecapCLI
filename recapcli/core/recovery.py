@@ -12,10 +12,24 @@ class TurnRecovery:
         self.pending = {}
         self.has_operations = False
         self.remaining_bytes = max_tool_bytes
+        self.team_facts = {}
 
     def observe(self, kind, data):
+        if kind == "team_start":
+            self.messages = [deepcopy(data["message"])]
+            return
         # 子代理有独立上下文；不能混入父任务或其他角色的工具调用。
         if data.get("agent"):
+            if data["agent"].startswith("worker:") and kind in {"tool_start", "tool_result"}:
+                self.has_operations = True
+                key = data["agent"] + ":" + data["call_id"]
+                result = data.get("result", {"execution_status": "unknown", "error": "工具已开始，完成情况需核对，禁止自动重放"})
+                if json_size(result) > self.remaining_bytes:
+                    result = {key: value for key, value in result.items() if key in {
+                        "ok", "error", "summary", "path", "backup_id", "group_id", "record_id", "returncode"}}
+                    result["truncated"] = True
+                self.team_facts[key] = {"agent": data["agent"], "tool": data["name"], "result": deepcopy(result)}
+                self.remaining_bytes = max(0, self.remaining_bytes - json_size(result))
             return
         if kind == "model_request" and data.get("phase") != "compact" and not self.messages:
             user = next((message for message in reversed(data["messages"]) if message["role"] == "user"), None)
@@ -54,4 +68,6 @@ class TurnRecovery:
         note = (f"本轮已中断，任务 ID：{task_id}，任务未完成。已保留工具结果；"
                 "未收到完成记录的调用标为 unknown，未调度的调用标为 not_executed。"
                 "这些记录不代表任务成功。继续前先核对已有文件和操作收据，不得因请求失败自动重复编辑或命令。")
+        if self.team_facts:
+            note += "\n团队工具事实（完整记录见任务）：\n" + json.dumps(list(self.team_facts.values()), ensure_ascii=False)
         return [*deepcopy(self.messages), {"role": "assistant", "content": note}]

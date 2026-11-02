@@ -22,7 +22,49 @@ class OperationTests(unittest.TestCase):
 
     def call(self, name, **arguments):
         return execute_tool(name, arguments, self.workspace, capabilities={"read", "write", "exec"},
-                             approver=approve_all)
+                             approver=lambda request: "rejected" if request.tool == "access_directory" else approve_all(request))
+
+    def test_external_directory_is_confirmed_once_and_edits_can_be_undone(self):
+        from recapcli.core.access import PathAccess
+        with tempfile.TemporaryDirectory() as other:
+            target = Path(other) / "Main.java"
+            target.write_text("class Main { int value = 1; }", encoding="utf-8")
+            self.assertFalse(execute_tool("read_file", {"path": str(target)}, self.workspace)["ok"])
+            denied = []
+            def reject(request):
+                denied.append(request.tool)
+                return "rejected"
+            rejected = execute_tool("edit_file", {"path": str(target), "old_text": "1", "new_text": "2"},
+                                    self.workspace, capabilities={"read", "write"}, approver=reject)
+            self.assertFalse(rejected["ok"])
+            self.assertEqual(denied, ["access_directory"])
+            access = PathAccess(self.workspace)
+            approvals = []
+
+            def approve(request):
+                approvals.append(request.tool)
+                return "approved"
+
+            def external(name, **arguments):
+                return execute_tool(name, arguments, self.workspace, access_policy=access,
+                                    capabilities={"read", "write", "exec"}, approver=approve)
+
+            self.assertTrue(external("read_file", path=str(target))["ok"])
+            self.assertTrue(external("search_text", path=other, query="class Main")["matches"])
+            edited = external("edit_file", path=str(target), old_text="value = 1", new_text="value = 2")
+            self.assertTrue(edited["ok"], edited)
+            self.assertIn("value = 2", target.read_text(encoding="utf-8"))
+            denied.clear()
+            rejected = execute_tool("undo_edit", {"group_id": edited["backup_id"]}, self.workspace,
+                                    capabilities={"write"}, approver=reject)
+            self.assertFalse(rejected["ok"])
+            self.assertEqual(denied, ["access_directory"])
+            self.assertTrue(external("undo_edit", group_id=edited["backup_id"])["ok"])
+            self.assertIn("value = 1", target.read_text(encoding="utf-8"))
+            self.assertEqual(approvals, ["access_directory", "edit_file", "undo_edit"])
+            (Path(other) / ".env").write_text("TOKEN=fake", encoding="utf-8")
+            self.assertFalse(external("read_file", path=str(Path(other) / ".env"))["ok"])
+            self.assertFalse((Path(other) / ".recapcli").exists())
 
     def test_batch_edit_has_one_approval_and_grouped_undo(self):
         (self.workspace / "a.txt").write_text("alpha omega", encoding="utf-8")

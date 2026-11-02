@@ -1,9 +1,13 @@
 import os
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
+
+import httpx2
+from openai import OpenAI
 
 from recapcli.tools import execute_tool, tool_definitions
 from recapcli.tools import retrieval
@@ -44,7 +48,50 @@ class RetrievalTests(unittest.TestCase):
                          {"Box", "open", "fetch"})
         self.assertFalse(self.call("search_symbols", name="fetch", path="..")["ok"])
         self.assertFalse(self.call("search_symbols")["ok"])
-        self.assertFalse(self.call("search_symbols", kind="method")["ok"])
+        self.assertFalse(self.call("search_symbols", kind="unknown_kind")["ok"])
+
+    def test_language_parsers_locate_definitions_with_real_line_ranges(self):
+        samples = {
+            "App.java": ("class Box { public int run() { return 1; } }", "run", "method"),
+            "app.js": ("export const login = () => true;", "login", "function"),
+            "app.ts": ("interface User { id: string; }", "User", "interface"),
+            "app.tsx": ("export function View() { return <div/>; }", "View", "function"),
+            "app.go": ("package main\nfunc Run() {}\n", "Run", "function"),
+            "app.rs": ("struct Box {}", "Box", "struct"),
+            "app.c": ("int run() { return 1; }", "run", "function"),
+            "app.cpp": ("class Box { public: int run() { return 1; } };", "run", "function"),
+            "App.cs": ("class Box { public int Run() { return 1; } }", "Run", "method"),
+            "App.kt": ("class Box { fun run() {} }\n", "run", "function"),
+            "app.rb": ("class Box\n def run\n  1\n end\nend\n", "run", "method"),
+            "app.php": ("<?php class Box { public function run() { return 1; } }", "run", "method"),
+        }
+        for path, (source, _, _) in samples.items():
+            (self.workspace / path).write_text(source, encoding="utf-8")
+        for path, (_, name, kind) in samples.items():
+            with self.subTest(path=path):
+                result = self.call("search_symbols", name=name, kind=kind, path=path)
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(len(result["matches"]), 1, result)
+                self.assertIn(name, self.read_match(result["matches"][0]))
+
+    def test_external_index_keeps_scope_and_cached_results_separate(self):
+        from recapcli.core.access import PathAccess
+        (self.workspace / "local.py").write_text("# shared marker\ndef local(): pass\n", encoding="utf-8")
+        with tempfile.TemporaryDirectory() as other:
+            target = Path(other) / "App.java"
+            target.write_text("class App { int run() { return 1; } } // shared marker", encoding="utf-8")
+            access = PathAccess(self.workspace, [other])
+
+            def query(tool_name, **arguments):
+                return execute_tool(tool_name, arguments, self.workspace, access_policy=access)
+
+            symbols = query("search_symbols", name="run", path=other)
+            self.assertEqual(symbols["matches"][0]["language"], "java")
+            outside = query("search_code_index", query="shared marker", path=other)
+            self.assertEqual(outside["matches"][0]["path"], target.as_posix())
+            local = query("search_code_index", query="shared marker")
+            self.assertEqual([match["path"] for match in local["matches"]], ["local.py"])
+            self.assertTrue(query("search_symbols", name="run", path=other)["matches"])
 
     def test_fts_results_are_readable_and_persist(self):
         (self.workspace / "code.py").write_text("first\n# unique fox jumps\nlast\n", encoding="utf-8")
@@ -202,6 +249,50 @@ class RetrievalTests(unittest.TestCase):
             result = self.call("search_code_index", query="word")
         self.assertFalse(result["ok"])
         self.assertIn("FTS unavailable", result["error"])
+
+    def test_hybrid_semantic_recall_caches_vectors_and_refreshes_changed_files(self):
+        (self.workspace / "auth.py").write_text("def authenticate():\n    return True\n", encoding="utf-8")
+        (self.workspace / "math.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+        requests = []
+
+        def handler(request):
+            data = json.loads(request.content)
+            requests.append(data)
+            return httpx2.Response(200, json={"object": "list", "model": "embedding-test", "data": [
+                {"object": "embedding", "index": index,
+                 "embedding": [1.0, 0.0] if "auth" in text or "身份" in text else [0.0, 1.0]}
+                for index, text in enumerate(data["input"])]})
+
+        def factory(**options):
+            return OpenAI(**options, http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+        values = {"RECAPCLI_EMBEDDING_MODEL": "embedding-test", "RECAPCLI_EMBEDDING_BASE_URL": "https://offline.invalid/v1"}
+        with patch("recapcli.llm.embeddings.load_values", return_value=values), \
+                patch("recapcli.llm.embeddings.OpenAI", side_effect=factory):
+            first = self.call("search_code_index", query="身份验证")
+            self.assertTrue(first["ok"], first)
+            self.assertEqual(first["semantic_status"], "enabled")
+            match = first["matches"][0]
+            self.assertEqual(match["path"], "auth.py")
+            self.assertEqual(match["sources"], ["semantic"])
+            self.assertEqual(self.read_match(match), match["snippet"])
+            self.call("search_code_index", query="身份验证")
+            self.assertEqual(len(requests), 3)  # 文档批次一次，两次查询向量。
+            (self.workspace / "auth.py").write_text("def authenticate():\n    return False\n", encoding="utf-8")
+            refreshed = self.call("search_code_index", query="身份验证", refresh=True)
+            self.assertIn("False", refreshed["matches"][0]["snippet"])
+            self.assertEqual(len(requests), 5)
+            self.assertTrue(all(request["encoding_format"] == "float" for request in requests))
+
+    def test_hybrid_without_embedding_uses_names_and_never_calls_provider(self):
+        (self.workspace / "token_store.py").write_text("def save_token():\n    return 1\n", encoding="utf-8")
+        with patch("recapcli.llm.embeddings.load_values", return_value={}), \
+                patch("recapcli.llm.embeddings.OpenAI") as provider:
+            result = self.call("search_code_index", query="token save")
+            self.assertTrue(result["matches"], result)
+            self.assertEqual(result["semantic_status"], "disabled")
+            self.assertTrue(any("name" in match["sources"] for match in result["matches"]))
+            provider.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ def shell_options(args):
     if args.mode == "plan" and max_steps < 4:
         raise ValueError("计划模式至少需要 4 次模型请求预算")
     if args.mode == "multi" and max_steps < 3:
-        raise ValueError("Multi 仅本地只读，至少需要 3 次模型请求预算")
+        raise ValueError("Multi 至少需要 3 次模型请求预算")
     try:
         limits = AgentLimits(
             max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
@@ -47,9 +47,10 @@ def shell_options(args):
         requested.add("write")
     if args.allow_exec:
         requested.add("exec")
-    capabilities = {"read"} if args.mode == "multi" else requested
+    capabilities = ({"read"} if args.mode == "multi" and not requested & {"write", "exec"} else requested)
     return ShellOptions(
         workspace=workspace.resolve(), mode=args.mode, capabilities=tuple(sorted(capabilities)),
+        additional_dirs=tuple(args.add_dir),
         max_steps=max_steps, limits=limits, profile=args.profile, session_id=args.session,
         continue_session=bool(args.continue_), memory=args.memory, auto_compact=args.auto_compact,
         yes=bool(args.yes), approval_timeout=float(args.approval_timeout),
