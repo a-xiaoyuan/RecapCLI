@@ -80,3 +80,64 @@ def extract_symbols(path, text, check):
         start = node.start_point[0] + 1
         end = max(start, node.end_point[0] + int(node.end_point[1] > 0))
         yield name.text.decode("utf-8"), kind, start, end
+
+
+def extract_references(path, text, check):
+    """语法引用：名称与调用位置，不进行跨模块类型绑定。"""
+    language = LANGUAGES.get(Path(path).suffix.lower())
+    if language is None:
+        return
+    if language == "python":
+        try:
+            root = ast.parse(text)
+        except (SyntaxError, ValueError, RecursionError):
+            return
+
+        def visit(node, caller=""):
+            check()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                caller = node.name
+            if isinstance(node, ast.Call):
+                name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else None
+                if name:
+                    yield name, "call", node.lineno, caller
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    module = ((node.module or "") + "." + alias.name if isinstance(node, ast.ImportFrom) else alias.name)
+                    yield module.strip("."), "import", node.lineno, caller
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                yield node.id, "usage", node.lineno, caller
+            for child in ast.iter_child_nodes(node):
+                yield from visit(child, caller)
+        yield from visit(root)
+        return
+    from tree_sitter_language_pack import get_parser
+    root = get_parser(language).parse(text.encode("utf-8")).root_node
+    stack = [(root, "")]
+    while stack:
+        check()
+        node, caller = stack.pop()
+        if node.type in NODE_KINDS:
+            name = _name(node)
+            if name:
+                caller = name.text.decode("utf-8")
+        stack.extend((child, caller) for child in reversed(node.named_children))
+        kind, name = None, None
+        if node.type in {"call_expression", "method_invocation", "function_call_expression", "call", "object_creation_expression"}:
+            name = (node.child_by_field_name("function") or node.child_by_field_name("name")
+                    or node.child_by_field_name("type") or node.child_by_field_name("method"))
+            if name:
+                name = name.child_by_field_name("field") or name.child_by_field_name("property") or name
+            kind = "call"
+        elif node.type in {"import_declaration", "import_statement", "import_from_statement", "use_declaration", "use_directive"}:
+            yield node.text.decode("utf-8"), "import", node.start_point[0] + 1, caller
+        elif node.type in {"identifier", "type_identifier", "simple_identifier"}:
+            parent = node.parent
+            declaration = parent and parent.child_by_field_name("name") == node and parent.type in NODE_KINDS
+            if not declaration:
+                name, kind = node, "usage"
+        if name is not None and kind is not None:
+            value = name.text.decode("utf-8")
+            if kind == "call":
+                value = value.split(".")[-1].split("::")[-1]
+            yield value, kind, node.start_point[0] + 1, caller

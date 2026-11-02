@@ -11,6 +11,8 @@ dependencies = [
     "rich>=14,<15",
     "pillow>=11,<14",
     "tree-sitter-language-pack>=0.13,<0.14",
+    "pywinpty>=3,<4 ; sys_platform == 'win32'",
+    "ptyprocess>=0.7,<1 ; sys_platform != 'win32'",
 ]
 
 [project.scripts]

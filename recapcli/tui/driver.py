@@ -119,6 +119,8 @@ class ShellDriver:
         self.mcp_manager = None
 
     def close(self):
+        from ..tools.commands import close_commands
+        close_commands(self.options.workspace)
         client = self.client
         self.client = None
         if client is not None:
@@ -282,6 +284,11 @@ class ShellDriver:
             return None
         if head == "/sessions":
             self.show_sessions()
+            return None
+        if head in {"/jobs", "/job", "/send", "/stop"}:
+            handle_command(prompt, self.presenter, self._ensure_store(), self.session or {"messages": []}, self.model or "",
+                           capabilities=self.options.capabilities,
+                           approver=self._approver() if head in {"/send", "/stop"} else None)
             return None
         if head in {"/tasks", "/task", "/diff", "/undo"}:
             store = self.store if self.store is not None else SimpleNamespace(workspace=self.options.workspace)

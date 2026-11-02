@@ -6,14 +6,31 @@ from pathlib import Path
 from ..core.access import AccessDenied, PathAccess, using_access
 
 from .approval import authorize_action, fail_closed
-from .commands import run_command
+from .commands import run_command, command_status, command_input, stop_command
 from .editing import edit_file, edit_files, restore_file, undo_edit
 from .filesystem import ToolError, find_files, list_directory, read_file, read_file_for_model, search_text
 from .retrieval import search_code_index, search_symbols
+from .code_context import repository_map, find_references
 from .web import read_url, web_search
 
 
 TOOL_REGISTRY = {
+    "repository_map": {
+        "handler": repository_map,
+        "description": "按问题相关性查看部分仓库地图、类/函数签名位置和名称关联候选，并提供来自构建配置的验证命令候选；不能将名称关联当作类型解析或完整调用图。",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string"}, "path": {"type": "string"},
+            "max_files": {"type": "integer"}, "max_bytes": {"type": "integer"}, "refresh": {"type": "boolean"},
+        }, "required": [], "additionalProperties": False},
+    },
+    "find_references": {
+        "handler": find_references,
+        "description": "查找函数调用、名称使用或导入的语法引用，返回真实行号、所在函数和片段。name 精确匹配，kind=call（默认）/usage/import/any；不解析重载、别名和动态调用的真实目标。修改接口前应核对调用候选。",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string"}, "path": {"type": "string"}, "kind": {"type": "string"},
+            "max_results": {"type": "integer"}, "refresh": {"type": "boolean"},
+        }, "required": ["name"], "additionalProperties": False},
+    },
     "read_url": {
         "handler": read_url,
         "capability": "web",
@@ -156,15 +173,38 @@ TOOL_REGISTRY = {
         "records_artifacts": True,
         "capability": "exec",
         "timeout_parameter": "timeout_seconds",
-        "description": "运行前台命令，argv 是可执行文件和参数数组。默认不经 shell，cwd 支持工作区或已授权的外部目录；返回退出码、合并输出和执行记录 ID。执行前需要人工批准。",
+        "description": "执行命令并返回实际退出码。background=true 后台运行；interactive=true 使用原生 PTY 并返回可继续输入的会话。用 command_status 查询输出和终态，command_input 继续输入，stop_command 停止。运行中不代表成功。退出 RecapCLI 会回收后台进程。执行前需批准。",
         "parameters": {"type": "object", "properties": {
             "argv": {"type": "array", "items": {"type": "string"}, "description": "如 [python路径, -m, unittest]"},
             "cwd": {"type": "string", "description": "运行目录，默认 .；支持相对路径或外部绝对目录，首次访问需授权"},
-            "timeout_seconds": {"type": "integer", "description": "超时秒数，默认 30，最多 60"},
+            "timeout_seconds": {"type": "integer", "description": "命令寿命，默认 300 秒，最多 86400；前台仍受本轮剩余时间限制"},
             "max_output_bytes": {"type": "integer", "description": "输出 UTF-8/原始编码字节上限，默认 16384，最多 65536"},
             "encoding": {"type": "string", "description": "输出解码，默认 utf-8，旧 Windows 程序可用 gb18030"},
-            "stdin_text": {"type": "string", "description": "预先提供给命令的 UTF-8 标准输入，可包含换行；不提供时输入关闭，不支持交互式 TTY"},
+            "stdin_text": {"type": "string", "description": "初始标准输入，可包含换行；interactive 会话保持输入开放"},
+            "background": {"type": "boolean", "description": "后台运行，返回命令 ID；适合构建、下载或服务"},
+            "interactive": {"type": "boolean", "description": "使用 Windows ConPTY / POSIX PTY；保持输入开放，自动后台运行"},
         }, "required": ["argv"], "additionalProperties": False},
+    },
+    "command_status": {
+        "handler": command_status,
+        "description": "查询命令实际状态和增量输出，不执行新命令。传回上次 next_offset 避免重复读取；running 不表示成功。wait_seconds 最多 30 秒。",
+        "parameters": {"type": "object", "properties": {
+            "record_id": {"type": "string"}, "offset": {"type": "integer"},
+            "max_output_bytes": {"type": "integer"}, "wait_seconds": {"type": "integer"},
+        }, "required": ["record_id"], "additionalProperties": False},
+    },
+    "command_input": {
+        "handler": command_input, "capability": "exec",
+        "description": "向本次运行的交互式终端发送文本；需要回车时 text 含换行。继续输入同样需批准。发送后查询 command_status 核实结果。",
+        "parameters": {"type": "object", "properties": {
+            "record_id": {"type": "string"}, "text": {"type": "string"}, "eof": {"type": "boolean"},
+        }, "required": ["record_id", "text"], "additionalProperties": False},
+    },
+    "stop_command": {
+        "handler": stop_command, "capability": "exec",
+        "description": "停止本次运行的后台命令或交互会话，并回收子进程。",
+        "parameters": {"type": "object", "properties": {"record_id": {"type": "string"}},
+                       "required": ["record_id"], "additionalProperties": False},
     },
 }
 
@@ -223,7 +263,7 @@ def _parse_arguments(arguments, schema):
 _PARAM_DEFAULTS = {
     "search_code_index": {"timeout_seconds": 20},
     "edit_file": {"replace_all": False},
-    "run_command": {"cwd": ".", "timeout_seconds": 30, "max_output_bytes": 16384, "encoding": "utf-8"},
+    "run_command": {"cwd": ".", "timeout_seconds": 300, "max_output_bytes": 16384, "encoding": "utf-8"},
 }
 
 
@@ -236,7 +276,7 @@ def execute_tool(name, arguments, workspace, *, access_policy=None, **options):
             return error.result
 
 
-def _execute_tool(name, arguments, workspace, *, capabilities=("read",), time_remaining=None, on_record=None,
+def _execute_tool(name, arguments, workspace, *, capabilities=("read",), time_remaining=None, on_record=None, check=None,
                  approver=None, on_approval=None, for_model=False):
     """查找 → 校验参数 → 能力检查 → 审批 → 执行。
 
@@ -252,8 +292,8 @@ def _execute_tool(name, arguments, workspace, *, capabilities=("read",), time_re
             option = {"write": "--allow-write", "exec": "--allow-exec", "web": "--allow-web"}.get(capability, capability)
             raise ToolError(f"当前未开启 {name}，启动时使用 {option}")
         timeout = spec.get("timeout_parameter")
-        if timeout and time_remaining is not None:
-            default = 20 if capability == "web" else 30
+        if timeout and time_remaining is not None and not (name == "run_command" and (params.get("background") or params.get("interactive"))):
+            default = 20 if capability == "web" else 300
             params[timeout] = min(params.get(timeout, default), time_remaining)
         workspace_path = Path(workspace).resolve()
         if name == "run_command":
@@ -275,9 +315,11 @@ def _execute_tool(name, arguments, workspace, *, capabilities=("read",), time_re
     try:
         if spec.get("records_artifacts") and on_record is not None:
             params["on_record"] = on_record
+        if name in {"run_command", "command_status"} and check is not None:
+            params["check"] = check
         handler = read_file_for_model if for_model and name == "read_file" else spec["handler"]
         result = handler(workspace=workspace_path, **params)
-        if result.get("truncated") and name in {"search_text", "find_files", "search_symbols", "search_code_index"}:
+        if result.get("truncated") and name in {"search_text", "find_files", "search_symbols", "search_code_index", "repository_map", "find_references"}:
             result["warning"] = "检索结果不完整，不能据此断言整个项目没有匹配内容；请缩小目录或查询范围。"
         return {"ok": True, **result}
     except (OSError, ValueError, TypeError) as error:

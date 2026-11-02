@@ -93,6 +93,22 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual([match["path"] for match in local["matches"]], ["local.py"])
             self.assertTrue(query("search_symbols", name="run", path=other)["matches"])
 
+    def test_repository_map_and_syntax_references_include_real_callers_and_revalidate_changes(self):
+        (self.workspace / "service.py").write_text("def calculate(value):\n    return value + 1\n", encoding="utf-8")
+        (self.workspace / "entry.py").write_text("from service import calculate\ndef main():\n    return calculate(2)\n", encoding="utf-8")
+        (self.workspace / "Main.java").write_text("class Main { int call() { return calculate(2); } }", encoding="utf-8")
+        (self.workspace / "ui.ts").write_text("function open() { return calculate(2); }", encoding="utf-8")
+        result = self.call("find_references", name="calculate")
+        self.assertEqual({item["path"] for item in result["matches"]}, {"entry.py", "Main.java", "ui.ts"})
+        python = next(item for item in result["matches"] if item["path"] == "entry.py")
+        self.assertEqual((python["caller"], python["line"]), ("main", 3))
+        mapped = self.call("repository_map", query="calculate", max_bytes=2048)
+        self.assertIn("def calculate(value)", mapped["map"])
+        self.assertIn("service.py", next(item for item in mapped["files"] if item["path"] == "entry.py")["related_candidates"])
+        self.assertLessEqual(mapped["bytes"], 2048)
+        (self.workspace / "entry.py").write_text("# replaced\n", encoding="utf-8")
+        self.assertNotIn("entry.py", {item["path"] for item in self.call("find_references", name="calculate")["matches"]})
+
     def test_fts_results_are_readable_and_persist(self):
         (self.workspace / "code.py").write_text("first\n# unique fox jumps\nlast\n", encoding="utf-8")
         first = self.call("search_code_index", query="fox jumps")

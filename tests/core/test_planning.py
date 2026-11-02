@@ -135,7 +135,7 @@ class PlanningTests(unittest.TestCase):
 
     def test_invalid_plans_stop_before_tools_run(self):
         invalid = ["not-json", "[]", '{"steps":[]}', '{"steps":[1]}', '{"steps":[" "]}',
-                   json.dumps({"steps": ["step"] * 6}), json.dumps({"steps": ["x" * 501]})]
+                   json.dumps({"steps": ["step"] * 13}), json.dumps({"steps": ["x" * 501]})]
         for content in invalid:
             with self.subTest(content=content):
                 self.requests = []
@@ -143,11 +143,31 @@ class PlanningTests(unittest.TestCase):
                     self.run_plan([reply(content)])
                 self.assertEqual(execute.call_count, 0)
 
+    def test_configurable_plan_size_and_verification_cannot_accept_running_command(self):
+        from recapcli.core.planning import PlanController
+        controller = PlanController(lambda text: None, max_steps=20, max_replans=0)
+        controller.accept(json.dumps({"steps": [{"id": "verify", "description": "运行测试", "kind": "verify", "depends_on": []}]}))
+        controller.observe_tool("run_command", {"ok": True, "success": False, "status": "running"})
+        controller.accept("测试已经启动")
+        controller.accept(json.dumps({"status": "completed", "reason": "模型认为通过"}))
+        self.assertEqual(controller.steps[0].status, "blocked")
+        self.assertIn("成功完成的验证命令", controller.stop_reason)
+        controller = PlanController(lambda text: None, max_steps=20)
+        controller.accept(json.dumps({"steps": ["阅读"] * 13}))
+        self.assertEqual(len(controller.steps), 13)
+
     def test_fenced_json_is_accepted(self):
         result = self.run_plan([
-            reply('```json\n{"steps":["回答问题"]}\n```'), reply("答案"), completed(), reply("答案"),
+            reply('说明：下面是计划。\n```json\n{"steps":["回答问题"]}\n```\n以上为完整计划。'), reply("答案"), completed(), reply("答案"),
         ])
         self.assertIn("已完成", result.answer)
+
+    def test_review_format_is_repaired_once_without_replaying_tools(self):
+        result = self.run_plan([document(steps=["阅读源码"]), reply("已阅读"), reply("本步骤已完成。"),
+                                completed(), reply("完成")])
+        self.assertIn("已完成", result.answer)
+        self.assertEqual(len(self.requests), 5)
+        self.assertTrue(any("格式修正" in event for event in self.events))
 
     def test_dependency_plan_batches_independent_reads_before_dependent_step(self):
         steps = [{"id": key, "description": key, "kind": "read", "depends_on": dependencies}

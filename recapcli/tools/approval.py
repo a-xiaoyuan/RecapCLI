@@ -271,7 +271,11 @@ def _action_hint(tool, workspace, params):
     if tool == "restore_file":
         return "将按备份恢复目标文件；目标或备份已变化时不会覆盖。"
     if tool == "run_command":
-        return "将在工作区内以前台进程运行 argv，不经过 shell。"
+        return "在已授权目录运行 argv；后台/交互会话会持续运行，退出 RecapCLI 时回收。"
+    if tool == "command_input":
+        return "向正在运行的终端发送输入，可能触发命令或确认操作。"
+    if tool == "stop_command":
+        return "停止指定命令及其子进程。"
     return ""
 
 

@@ -9,7 +9,7 @@ from threading import RLock
 from openai import APIError
 
 from .budget import AgentCancelled
-from .planning import PLAN_INSTRUCTION, _read_object, _read_steps, ready_batch
+from .planning import plan_instruction, _read_object, _read_steps, ready_batch
 
 
 def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, capabilities,
@@ -27,7 +27,7 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
                 result = data["result"]
                 facts.append({"agent": role, "name": data["name"], "call_id": data["call_id"],
                               **{key: result[key] for key in ("ok", "error", "path", "reference", "backup_id",
-                                 "group_id", "record_id", "returncode", "success", "output") if key in result}})
+                                 "group_id", "record_id", "returncode", "success", "status", "output") if key in result}})
             if on_trace is not None:
                 try:
                     on_trace(kind, {**data, **({"agent": role} if role else {})})
@@ -64,8 +64,8 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
             for fact in facts], "note": "长正文可能截断；完整工具事实保存在父任务记录中"}, ensure_ascii=False)
 
     trace(None, "team_start", {"message": user_message})
-    plan = invoke("planner", PLAN_INSTRUCTION, 1, reserve=2)
-    steps = _read_steps(_read_object(plan.answer))
+    plan = invoke("planner", plan_instruction(limits.max_plan_steps), 1, reserve=2)
+    steps = _read_steps(_read_object(plan.answer), max_steps=limits.max_plan_steps)
     approved, reason = False, "执行尚未核对"
 
     def snapshot():
@@ -93,6 +93,9 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
                       "answer": result.answer, "stop_reason": result.stop_reason}
             if any(not fact.get("ok") for fact in operations.values()):
                 report.update(status="blocked", stop_reason="存在未解决的操作失败或审批拒绝，不能以模型自述视为完成")
+            commands = [fact for fact in facts if fact["agent"] == role and fact["name"] in {"run_command", "command_status"}]
+            if step.kind == "verify" and (not commands or not commands[-1].get("success")):
+                report.update(status="blocked", stop_reason="验证步骤没有成功完成的命令结果；仍在运行或仅有模型意见不构成通过")
         except (AgentCancelled, TraceError):
             budget.cancel_event.set()
             raise
@@ -149,7 +152,7 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
         if approved or revision or not review_data.get("steps"):
             break
         done = [step for step in steps if step.status == "completed"]
-        steps = done + _read_steps(review_data, done)
+        steps = done + _read_steps(review_data, done, max_steps=limits.max_plan_steps)
         event("planner", "[重规划] 根据独立审查执行剩余修正")
 
     snapshot()

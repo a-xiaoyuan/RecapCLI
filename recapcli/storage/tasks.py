@@ -279,7 +279,7 @@ class TaskStore:
         if task["status"] == "running":
             raise ValueError("任务仍在执行，暂不能登记验收")
         results = [event["data"]["result"] for event in task["events"]
-                   if event["kind"] == "tool_result" and event["data"]["name"] == "run_command"
+                   if event["kind"] == "tool_result" and event["data"]["name"] in {"run_command", "command_status"}
                    and event["data"]["result"].get("record_id") == command_id]
         if not results:
             raise ValueError("验收必须引用该任务已保存的命令结果 ID")

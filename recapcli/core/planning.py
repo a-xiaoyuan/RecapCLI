@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass, field
 import json
+import re
 
 
-MAX_PLAN_STEPS = 5
+MAX_PLAN_STEPS = 12
 MAX_REPLANS = 2
 
 PLAN_INSTRUCTION = """当前阶段：制定计划（Plan）。
@@ -45,25 +46,43 @@ class PlanStep:
     depends_on: list[str] = field(default_factory=list)
 
 
+class PlanFormatError(ValueError):
+    """响应格式有误，可请求只修正格式，不重放工具。"""
+
+
 def _read_object(content):
     if len(content.encode("utf-8")) > 32 * 1024:
         raise ValueError("计划响应超过 32 KiB")
     text = content.strip()
-    if text.startswith("```") and text.endswith("```"):
-        text = "\n".join(text.splitlines()[1:-1])
     try:
         data = json.loads(text)
     except json.JSONDecodeError as error:
-        raise ValueError("计划或核对响应必须是合法 JSON") from error
+        # 兼容模型在唯一 JSON 代码块前后附带解释；仍完整校验对象及步骤结构。
+        blocks = re.findall(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL | re.IGNORECASE)
+        objects = []
+        for block in blocks:
+            try:
+                candidate = json.loads(block.strip())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                objects.append(candidate)
+        if len(objects) != 1:
+            raise PlanFormatError("计划或核对响应必须包含唯一的合法 JSON 对象") from error
+        data = objects[0]
     if not isinstance(data, dict):
         raise ValueError("计划或核对响应必须是 JSON 对象")
     return data
 
 
-def _read_steps(data, completed=()):
+def plan_instruction(max_steps=MAX_PLAN_STEPS):
+    return PLAN_INSTRUCTION.replace("1 到 5", f"1 到 {max_steps}")
+
+
+def _read_steps(data, completed=(), max_steps=MAX_PLAN_STEPS):
     descriptions = data.get("steps")
-    if not isinstance(descriptions, list) or not 1 <= len(descriptions) <= MAX_PLAN_STEPS:
-        raise ValueError("计划必须包含 1 到 5 个步骤")
+    if not isinstance(descriptions, list) or not 1 <= len(descriptions) <= max_steps:
+        raise ValueError(f"计划必须包含 1 到 {max_steps} 个步骤")
     steps = []
     completed_ids = {step.id for step in completed}
     for index, item in enumerate(descriptions):
@@ -111,7 +130,8 @@ def ready_batch(steps):
 
 
 class PlanController:
-    def __init__(self, on_event):
+    def __init__(self, on_event, max_steps=MAX_PLAN_STEPS, max_replans=MAX_REPLANS):
+        self.max_steps, self.max_replans = max_steps, max_replans
         self.on_event = on_event
         self.phase = "plan"
         self.steps = []
@@ -119,6 +139,7 @@ class PlanController:
         self.replans = 0
         self.stop_reason = ""
         self.batch = []
+        self.verification_result = None
 
     @property
     def allows_tools(self):
@@ -139,7 +160,7 @@ class PlanController:
 
     def instruction(self):
         if self.phase == "plan":
-            return PLAN_INSTRUCTION
+            return plan_instruction(self.max_steps)
         progress = "\n当前计划：\n" + self.describe()
         if self.phase == "execute":
             description = "；".join(step.description for step in self.batch)
@@ -148,7 +169,7 @@ class PlanController:
                     + ("本批均为独立只读步骤，可一次请求多个读取工具；禁止修改和命令。" if self.readonly_batch else "")
                     + f"\n当前步骤：{description}" + progress)
         if self.phase == "review":
-            return REVIEW_INSTRUCTION + ("\n" + BATCH_REVIEW if len(self.batch) > 1 else "") + progress
+            return REVIEW_INSTRUCTION.replace("1 到 5", f"1 到 {self.max_steps}") + ("\n" + BATCH_REVIEW if len(self.batch) > 1 else "") + progress
         return ("当前阶段：汇总（Summary）。禁止调用工具。基于实际执行记录回答用户，"
                 "区分已完成、未完成和未验证的内容，并给出有依据的文件引用。"
                 "计划未全部完成时，明确说明剩余事项，不得宣称任务已全部完成。"
@@ -159,7 +180,7 @@ class PlanController:
         if self.phase == "summary":
             return True
         if self.phase == "plan":
-            self.steps = _read_steps(_read_object(content))
+            self.steps = _read_steps(_read_object(content), max_steps=self.max_steps)
             self.on_event("[计划]\n" + self.describe())
             self._start_step()
         elif self.phase == "execute":
@@ -172,6 +193,7 @@ class PlanController:
         return False
 
     def _start_step(self):
+        self.verification_result = None
         self.batch = ready_batch(self.steps)
         if not self.batch:
             self.phase = "summary"
@@ -186,17 +208,21 @@ class PlanController:
     def readonly_batch(self):
         return bool(self.batch) and all(step.kind == "read" for step in self.batch)
 
+    def observe_tool(self, name, result):
+        if self.phase == "execute" and name in {"run_command", "command_status"}:
+            self.verification_result = result
+
     def _accept_review(self, data):
         if data.get("status") == "replan":
             reason = data.get("reason")
             if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
                 raise ValueError("核对原因必须是 1 到 1000 字的非空文本")
             done = [step for step in self.steps if step.status == "completed"]
-            remaining = _read_steps(data, done)
-            if self.replans >= MAX_REPLANS:
+            remaining = _read_steps(data, done, max_steps=self.max_steps)
+            if self.replans >= self.max_replans:
                 for step in self.batch:
                     step.status = "blocked"
-                self.stop("已达到 2 次重规划上限；" + reason)
+                self.stop(f"已达到 {self.max_replans} 次重规划上限；" + reason)
                 return
             self.replans += 1
             self.steps = done + remaining
@@ -215,6 +241,8 @@ class PlanController:
         for review in reviews:
             self._validate_review(review)
         for step, review in zip(self.batch, reviews):
+            if step.kind == "verify" and review["status"] == "completed" and not (self.verification_result or {}).get("success"):
+                review = {"status": "blocked", "reason": "没有成功完成的验证命令；运行中或模型自述不能作为通过依据"}
             step.status = review["status"]
             step.evidence = review["reason"].strip()
             self.on_event(f"[{'完成' if step.status == 'completed' else '受阻'}] 第 {self.steps.index(step) + 1} 步：{step.evidence}")

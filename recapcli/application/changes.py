@@ -36,7 +36,12 @@ def change_report(task):
                 argv = argv if isinstance(argv, list) and all(isinstance(arg, str) for arg in argv) else []
                 commands.append({"argv": argv, "cwd": args.get("cwd", "."),
                                  "returncode": result.get("returncode"), "ok": result.get("ok", False),
+                                 "status": result.get("status"), "success": result.get("success"),
                                  "error": result.get("error", ""), "record_id": result.get("record_id")})
+            elif name in {"command_status", "stop_command"}:
+                for command in commands:
+                    if command.get("record_id") == result.get("record_id"):
+                        command.update({key: result[key] for key in ("returncode", "ok", "status", "success", "error") if key in result})
             if name not in {"edit_file", "edit_files", "restore_file", "undo_edit"}:
                 continue
             changed = [item for item in result.get("files", [result]) if item.get("ok", True) and
@@ -83,6 +88,8 @@ def commands_summary(report):
     lines = []
     for command in report["commands"]:
         outcome = f"退出码 {command['returncode']}" if command["returncode"] is not None else "未获得退出码"
+        if command.get("status") == "running":
+            outcome = "后台运行中 · /job " + str(command.get("record_id", ""))
         if not command["ok"]:
             outcome += " · " + (command["error"] or "未正常完成")
         shown = list2cmdline(command["argv"]) if os.name == "nt" else shlex.join(command["argv"])

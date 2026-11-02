@@ -37,6 +37,7 @@ def shell_options(args):
             max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
             max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds,
             request_timeout=args.request_timeout, max_retries=args.max_retries,
+            max_plan_steps=args.plan_steps, max_replans=args.plan_replans,
         )
     except ValueError as error:
         raise ValueError(str(error)) from error

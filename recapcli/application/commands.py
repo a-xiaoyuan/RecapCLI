@@ -124,6 +124,29 @@ def handle_command(command, ui, store, session, model, *, capabilities=("read",)
         return None
     if name == "/help":
         ui.info(help_text(argument or "common"))
+    elif name in {"/jobs", "/job", "/send", "/stop"}:
+        from ..tools.commands import list_commands
+        from ..tools import execute_tool
+        try:
+            if name == "/jobs":
+                items = list_commands(store.workspace)
+                ui.info("\n".join(f"{item['id']} · {item['status']} · {' '.join(item['argv'])}" for item in items)
+                        or "本次运行暂无命令。")
+            else:
+                arguments = argument.split(maxsplit=1)
+                if not arguments or (name == "/send" and len(arguments) != 2):
+                    raise ValueError("用法：/job ID、/send ID 文本、/stop ID")
+                tool = {"/job": "command_status", "/send": "command_input", "/stop": "stop_command"}[name]
+                params = {"record_id": arguments[0]}
+                if name == "/send":
+                    params["text"] = arguments[1] + "\n"
+                result = execute_tool(tool, params, store.workspace, capabilities=capabilities,
+                                      access_policy=store.access, approver=approver)
+                (ui.info if result["ok"] else ui.error)(result.get("error") or result.get("summary", result.get("status", "")))
+                if result.get("output"):
+                    ui.info(result["output"])
+        except (OSError, ValueError) as error:
+            ui.error(str(error))
     elif name == "/config":
         ui.info(config_help())
     elif name in {"/diff", "/undo"}:

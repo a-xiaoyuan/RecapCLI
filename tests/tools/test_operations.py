@@ -96,7 +96,7 @@ class OperationTests(unittest.TestCase):
 
     def test_capabilities_filter_definitions_and_enforce_dispatch(self):
         names = lambda capabilities: {item["function"]["name"] for item in tool_definitions(capabilities)}
-        self.assertEqual(names({"read"}), {"read_file", "search_text", "list_directory", "find_files", "search_symbols", "search_code_index"})
+        self.assertEqual(names({"read"}), {"read_file", "search_text", "list_directory", "find_files", "search_symbols", "search_code_index", "repository_map", "find_references", "command_status"})
         self.assertIn("edit_file", names({"read", "write"}))
         self.assertNotIn("run_command", names({"read", "write"}))
         for tool, arguments in [("edit_file", {"path": "new.txt", "old_text": "", "new_text": "hello"}),
@@ -321,11 +321,47 @@ class OperationTests(unittest.TestCase):
         self.assertIn("started", result["output"])
         self.assertLess(result["duration_seconds"], 8)
 
-    def test_command_output_limit_stops_without_unbounded_capture(self):
+    def test_command_output_is_truncated_without_stopping_successful_build(self):
         result = self.call("run_command", argv=[sys.executable, "-c", "print('x' * 100000)"], max_output_bytes=1000)
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["success"])
         self.assertTrue(result["output_truncated"])
         self.assertEqual(len(result["output"].encode("utf-8")), 1000)
+
+    def test_background_lifecycle_incremental_output_and_stop(self):
+        from recapcli.tools.commands import close_commands
+        self.addCleanup(close_commands, self.workspace)
+        result = self.call("run_command", argv=[sys.executable, "-u", "-c",
+            "import time;print('ready',flush=True);time.sleep(1);print('finished',flush=True)"], background=True, timeout_seconds=120)
+        self.assertEqual(result["status"], "running")
+        self.assertFalse(result["success"])
+        status = self.call("command_status", record_id=result["record_id"], wait_seconds=3)
+        self.assertTrue(status["success"], status)
+        self.assertIn("finished", status["output"])
+        self.assertEqual(self.call("command_status", record_id=result["record_id"], offset=status["next_offset"])["output"], "")
+        result = self.call("run_command", argv=[sys.executable, "-c", "import time;time.sleep(30)"], background=True)
+        self.assertEqual(self.call("stop_command", record_id=result["record_id"])["status"], "stopped")
+        self.assertFalse(execute_tool("command_input", {"record_id": result["record_id"], "text": "x"}, self.workspace)["ok"])
+
+    def test_native_terminal_accepts_later_input_and_reports_actual_exit(self):
+        from recapcli.tools.commands import close_commands
+        self.addCleanup(close_commands, self.workspace)
+        result = self.call("run_command", argv=[sys.executable, "-u", "-c",
+            "import sys;print('TTY='+str(sys.stdin.isatty()),flush=True);print('VALUE='+input('name>'),flush=True)"], interactive=True)
+        time.sleep(0.5)
+        self.assertTrue(self.call("command_input", record_id=result["record_id"], text="mint\n")["ok"])
+        status = self.call("command_status", record_id=result["record_id"], wait_seconds=5)
+        self.assertTrue(status["success"], status)
+        self.assertIn("TTY=True", status["output"])
+        self.assertIn("VALUE=mint", status["output"])
+
+    def test_foreground_cancellation_reaps_process_before_returning(self):
+        from recapcli.core.budget import AgentCancelled
+        from recapcli.tools.commands import run_command, list_commands
+        def cancel():
+            raise AgentCancelled("cancelled")
+        with self.assertRaises(AgentCancelled):
+            run_command(self.workspace, [sys.executable, "-c", "import time;time.sleep(30)"], check=cancel)
+        self.assertTrue(all(item["status"] == "stopped" for item in list_commands(self.workspace)))
 
     def test_command_cleans_up_child_even_when_parent_exits(self):
         child = "import time; from pathlib import Path; time.sleep(1.5); Path('orphan.txt').write_text('bad')"
@@ -344,7 +380,7 @@ class OperationTests(unittest.TestCase):
                    {"argv": [sys.executable], "encoding": "invalid-codec"}]
         for arguments in invalid:
             with self.subTest(arguments=arguments), patch.dict(os.environ, {}, clear=True), \
-                    patch("recapcli.tools.commands.subprocess.Popen") as start:
+                    patch("recapcli.tools.processes.subprocess.Popen") as start:
                 self.assertFalse(self.call("run_command", **arguments)["ok"])
             self.assertEqual(start.call_count, 0)
 

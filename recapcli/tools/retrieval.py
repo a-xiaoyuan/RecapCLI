@@ -8,11 +8,11 @@ import time
 
 from ..storage.files import state_directory
 from ..core.access import access_root
-from .symbols import extract_symbols, LANGUAGES, KINDS
+from .symbols import extract_symbols, extract_references, LANGUAGES, KINDS
 from .filesystem import (MAX_FILE_BYTES, MAX_SEARCH_FILE_BYTES, ScanBudget, ScanLimit,
                                ToolError, _checked_target, _relative, _resolve, _walk_files, file_reference)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_RESULTS = 200
 REFRESH_SECONDS = 10
 
@@ -49,16 +49,18 @@ def _connect(workspace):
     connection = sqlite3.connect(path, timeout=5)
     try:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, SCHEMA_VERSION):
+        if version not in (0, 1, 2, SCHEMA_VERSION):
             raise ToolError("不支持的代码索引版本")
         connection.execute("CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, digest TEXT NOT NULL)")
         connection.execute("CREATE TABLE IF NOT EXISTS symbols (path TEXT, name TEXT, kind TEXT, start_line INTEGER, end_line INTEGER)")
+        connection.execute('CREATE TABLE IF NOT EXISTS refs (path TEXT, name TEXT, kind TEXT, line INTEGER, caller TEXT)')
+        connection.execute('CREATE INDEX IF NOT EXISTS refs_name ON refs(name,kind)')
         connection.execute("CREATE VIRTUAL TABLE IF NOT EXISTS lines USING fts5(path UNINDEXED, line UNINDEXED, text)")
         connection.execute("CREATE TABLE IF NOT EXISTS scan_state (id INTEGER PRIMARY KEY, refreshed_at REAL, details TEXT)")
         connection.execute("CREATE TABLE IF NOT EXISTS chunks (path TEXT, start_line INTEGER, end_line INTEGER, text TEXT, digest TEXT, PRIMARY KEY(path,start_line))")
         connection.execute("CREATE TABLE IF NOT EXISTS vectors (path TEXT, start_line INTEGER, model TEXT, digest TEXT, vector TEXT, PRIMARY KEY(path,start_line,model))")
-        if version == 1:
-            for table in ("files", "symbols", "lines", "scan_state", "chunks", "vectors"):
+        if version in (1, 2):
+            for table in ("files", "symbols", "refs", "lines", "scan_state", "chunks", "vectors"):
                 connection.execute(f"DELETE FROM {table}")
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         return connection
@@ -68,6 +70,7 @@ def _connect(workspace):
 
 
 def _delete(connection, path):
+    connection.execute("DELETE FROM refs WHERE path = ?", (path,))
     connection.execute("DELETE FROM files WHERE path = ?", (path,))
     connection.execute("DELETE FROM symbols WHERE path = ?", (path,))
     connection.execute("DELETE FROM lines WHERE path = ?", (path,))
@@ -94,6 +97,8 @@ def _index(connection, path, digest, text, budget):
             connection.execute("INSERT INTO lines(path, line, text) VALUES (?, ?, ?)", (path, number, line))
     for name, kind, start, end in extract_symbols(path, text, budget.check_time):
         connection.execute("INSERT INTO symbols VALUES (?, ?, ?, ?, ?)", (path, name, kind, start, end))
+    connection.executemany("INSERT INTO refs VALUES (?, ?, ?, ?, ?)",
+                           ((path, name, kind, line, caller) for name, kind, line, caller in extract_references(path, text, budget.check_time)))
 
 
 def _refresh(connection, workspace, root=None):

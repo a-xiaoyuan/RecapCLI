@@ -114,11 +114,13 @@ def build_parser():
     parser.add_argument("--add-dir", type=Path, action="append", default=[], help="额外授权的目录，可重复指定；也可在首次访问时确认")
     parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
                         help="执行模式：react 直接执行；plan 按依赖计划执行；multi 默认只读分析，开放写入/命令后启用执行团队")
-    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 32，plan/multi 默认 20")
+    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 32，plan/multi 默认 48")
+    parser.add_argument("--plan-steps", type=int, default=AgentLimits.max_plan_steps, help="计划步骤上限，默认 12")
+    parser.add_argument("--plan-replans", type=int, default=AgentLimits.max_replans, help="重规划上限，默认 2")
     parser.add_argument("--max-tool-calls", type=int, default=AgentLimits.max_tool_calls, help="每轮工具调用数量上限，默认 64")
     parser.add_argument("--max-tool-bytes", type=int, default=256 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
     parser.add_argument("--context-bytes", type=int, default=256 * 1024, help="模型消息的 UTF-8 JSON 大小上限")
-    parser.add_argument("--max-seconds", type=float, default=AgentLimits.max_seconds, help="每轮执行时间预算，默认 300 秒")
+    parser.add_argument("--max-seconds", type=float, default=AgentLimits.max_seconds, help="每轮执行时间预算，默认 900 秒；可显式调整")
     parser.add_argument("--request-timeout", type=float, default=30.0, help="单次模型请求超时，秒；同时受剩余任务时间限制")
     parser.add_argument("--max-retries", type=int, default=2, help="暂时性模型请求错误的重试上限，默认 2；计入 --max-steps")
     sessions = parser.add_mutually_exclusive_group()
@@ -244,7 +246,8 @@ def main(argv=None) -> int:
     try:
         limits = AgentLimits(max_context_bytes=args.context_bytes, max_tool_calls=args.max_tool_calls,
                              max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds,
-                             request_timeout=args.request_timeout, max_retries=args.max_retries)
+                             request_timeout=args.request_timeout, max_retries=args.max_retries,
+                             max_plan_steps=args.plan_steps, max_replans=args.plan_replans)
     except ValueError as error:
         parser.error(str(error))
     if not args.workspace.is_dir():
@@ -337,6 +340,8 @@ def main(argv=None) -> int:
                                         args.auto_compact, approver,
                                         extra_tools=extra_tools, extra_executor=extra_executor)
             finally:
+                from .tools.commands import close_commands
+                close_commands(args.workspace)
                 if provider is not None:
                     provider.close()
     except (KeyboardInterrupt, EOFError):
