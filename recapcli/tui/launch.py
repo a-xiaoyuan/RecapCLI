@@ -17,7 +17,7 @@ def _tty():
 def _interactive_shell(args):
     if args.prompt is not None:
         return False
-    if args.models or args.tasks or args.task or args.compact or args.json or args.preview:
+    if args.models or args.tasks or args.task or args.compact or args.json or args.preview or args.mcp_tools:
         return False
     return True
 
@@ -97,7 +97,7 @@ def dispatch(argv=None, *, force_shell=False) -> int:
         code = error.code
         return int(code) if isinstance(code, int) else (0 if code is None else 1)
     demo = args.demo
-    blocked = args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview
+    blocked = args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview or args.mcp_tools
     if demo and blocked:
         print("--demo 只启动界面演示，不能和提问、任务查看或 --preview 同时使用。", file=sys.stderr)
         return 2

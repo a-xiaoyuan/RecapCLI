@@ -139,6 +139,8 @@ def build_parser():
                         help="启动内置只读仓库 MCP 服务，并把读取工具提供给模型")
     parser.add_argument("--mcp-config", type=Path,
                         help="显式启动此 JSON 配置中的 MCP 服务；配置内的启动命令需可信")
+    parser.add_argument("--mcp-tools", action="store_true",
+                        help="列出已连接 MCP 服务的工具和权限后退出，无需模型配置")
     parser.add_argument("--yes", action="store_true",
                         help="跳过逐次提问并批准本进程内的写入和命令；执行前仍复核参数与文件指纹，变化则作废")
     parser.add_argument("--approval-timeout", type=float, default=120,
@@ -151,11 +153,34 @@ def build_parser():
     return parser
 
 
+def print_mcp_tools(args, ui) -> int:
+    """连接显式指定的 MCP 服务并列出工具。"""
+    if not args.mcp_repo and args.mcp_config is None:
+        ui.info("没有指定的 MCP 服务。用法：recapcli --mcp-tools --mcp-repo，或 recapcli --mcp-tools --mcp-config 路径")
+        return 0
+    if not args.workspace.is_dir():
+        ui.error("--workspace 必须是存在的目录")
+        return 2
+    from .mcp.client import MCPClientError
+    from .mcp.manager import MCPManager
+    try:
+        with MCPManager.from_options(args.workspace, repo=args.mcp_repo,
+                                     config_path=args.mcp_config) as manager:
+            ui.info(f"MCP：已连接 {len(manager.providers)} 个服务，工具 {len(manager.definitions)} 个")
+            for definition in manager.definitions:
+                function = definition["function"]
+                ui.info(f"- {function['name']}：{function.get('description', '')}")
+        return 0
+    except (OSError, MCPClientError, ValueError) as error:
+        ui.error(f"MCP 服务启动失败：{error}")
+        return 1
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.demo:
-        if args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview:
+        if args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview or args.mcp_tools:
             parser.error("--demo 只启动界面演示，不能同时提问或查看任务")
         from .tui.launch import launch_shell
         return launch_shell(args, demo=True)
@@ -175,6 +200,11 @@ def main(argv=None) -> int:
     banner_mode = args.banner
     if banner_mode == "auto" and args.color != "auto":
         banner_mode = "color" if args.color == "always" else "plain"
+    if args.mcp_tools:
+        if (args.prompt is not None or args.models or args.session or args.continue_ or args.compact
+                or args.task or args.tasks or args.json or args.preview):
+            parser.error("--mcp-tools 不能与提问、会话或其他查看命令同时使用")
+        return print_mcp_tools(args, ui)
     if args.preview:
         print_banner(workspace=args.workspace, preview=True, mode=banner_mode)
         ui.preview()

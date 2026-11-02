@@ -307,6 +307,28 @@ class AgentTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(execute_tool(name, json.dumps(arguments), self.workspace)["ok"])
 
+    def test_mcp_tools_lists_builtin_tools_without_model_or_session(self):
+        from recapcli.tui.launch import dispatch
+
+        with patch.dict("os.environ", {}, clear=True), patch("recapcli.config.dotenv_values", return_value={}), \
+                patch("recapcli.config.MODELS_FILE", self.workspace / "no-models.toml"), \
+                patch("recapcli.cli.load_config") as load_config, \
+                patch("recapcli.cli.ModelClient") as model_client, \
+                patch("recapcli.tui.launch._tty", return_value=True), \
+                patch("recapcli.tui.launch.launch_shell") as launch_shell:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                code = dispatch(["--mcp-tools", "--mcp-repo", "--workspace", str(self.workspace)])
+        self.assertEqual(code, 0)
+        text = output.getvalue()
+        self.assertIn("已连接", text)
+        self.assertIn("mcp_repo_read_file", text)
+        self.assertIn("本地权限：read", text)
+        load_config.assert_not_called()
+        model_client.assert_not_called()
+        launch_shell.assert_not_called()
+        self.assertFalse((self.workspace / ".recapcli").exists())
+
     def test_missing_configuration_stops_before_model_request(self):
         with patch.dict("os.environ", {}, clear=True), patch("recapcli.config.dotenv_values", return_value={}), patch("recapcli.cli.OpenAI") as client:
             output = io.StringIO()

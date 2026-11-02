@@ -135,6 +135,15 @@ recapcli --mcp-repo "只使用 mcp_repo_read_file 阅读 README.md 的前 10 行
 
 模型会看到带 `mcp_repo_` 前缀的只读工具；写入和命令能力不会通过 MCP 暴露。
 
+只想查看可用工具清单、不请求模型时：
+
+```powershell
+recapcli --mcp-tools --mcp-repo
+recapcli --mcp-tools --mcp-config .\mcp-fetch.json
+```
+
+会连接服务并打印每个工具的完整名称和说明（说明中带本地权限），随后直接退出；不需要模型配置、不创建会话，交互终端也不会打开界面。
+
 外部服务需要用 `--mcp-config 路径` 显式启动；仅使用 `--mcp-repo` 不会执行工作区 `mcp.json` 中的命令。例如接入官方 [Fetch MCP 服务](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)，让模型读取公开技术文档，无需额外 API Key。
 
 已安装 uv 时，可将以下配置保存为 `mcp-fetch.json`。首次启动会下载服务；`--no-readability-js` 使用 Python 提取网页正文，不另外启动 Node.js：

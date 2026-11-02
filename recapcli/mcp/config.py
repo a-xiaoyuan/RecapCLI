@@ -24,7 +24,7 @@ def load_mcp_config(path=None, *, workspace="."):
         if not path.is_file():
             raise ValueError(f"MCP 配置文件不存在：{path}")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
         raise ValueError(f"MCP 配置读取失败：{error}") from error
     if not isinstance(data, dict) or not isinstance(data.get("servers"), dict):

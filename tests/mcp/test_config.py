@@ -35,6 +35,10 @@ class MCPConfigTests(unittest.TestCase):
             self.assertEqual(servers[0][1]["timeout"], 5.0)
             self.assertEqual(servers[0][1]["max_result_bytes"], 4096)
 
+            path = root / "mcp.json"
+            path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8-sig")
+            self.assertEqual(load_mcp_config(path, workspace=root), servers)
+
     def test_rejects_invalid_config(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "mcp.json"
