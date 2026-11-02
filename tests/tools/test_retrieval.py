@@ -88,7 +88,7 @@ class RetrievalTests(unittest.TestCase):
             symbols = query("search_symbols", name="run", path=other)
             self.assertEqual(symbols["matches"][0]["language"], "java")
             outside = query("search_code_index", query="shared marker", path=other)
-            self.assertEqual(outside["matches"][0]["path"], target.as_posix())
+            self.assertEqual(outside["matches"][0]["path"], target.resolve().as_posix())
             local = query("search_code_index", query="shared marker")
             self.assertEqual([match["path"] for match in local["matches"]], ["local.py"])
             self.assertTrue(query("search_symbols", name="run", path=other)["matches"])
