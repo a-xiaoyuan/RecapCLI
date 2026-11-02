@@ -55,6 +55,43 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app.driver.cancel_event.is_set())
             self.assertIn("停止中", str(app.query_one("#status-line").render()))
 
+    async def test_ctrl_a_selects_multiline_input_and_then_the_full_conversation(self):
+        app = self.app()
+        draft = "第一行\n第二行，包含中文"
+        answer = "完整回答\n" * 1400
+        with patch("recapcli.tui.app._copy_windows_clipboard"):
+            async with app.run_test(size=(80, 24)) as pilot:
+                app.append_line("请解释调用链", "user")
+                app.append_line(answer, "assistant")
+                prompt = app.query_one("#prompt")
+                prompt.load_text(draft)
+                await pilot.press("ctrl+a", "ctrl+c")
+                self.assertEqual(prompt.selected_text, draft)
+                self.assertEqual(app.clipboard, draft)
+                self.assertTrue(app.is_running)
+
+                prompt.load_text("")
+                await pilot.pause()
+                await pilot.press("ctrl+a", "ctrl+c")
+                self.assertIn("请解释调用链", app.clipboard)
+                self.assertIn(answer.rstrip(), app.clipboard)
+                self.assertNotIn("显示已截断", app.clipboard)
+                self.assertTrue(app.is_running)
+
+    async def test_copy_commands_keep_full_answers_and_do_not_request_the_model(self):
+        app = self.app()
+        answer = "## 完整回答\n\n" + "中文与代码 `value`\n" * 900
+        with patch("recapcli.tui.app._copy_windows_clipboard"):
+            async with app.run_test(size=(80, 24)) as pilot:
+                app.append_line("解释代码", "user")
+                app.append_line(answer, "assistant")
+                await pilot.pause()
+                app._submit_value("/copy")
+                self.assertEqual(app.clipboard, answer)
+                app._submit_value("/copy all")
+                self.assertEqual(app.clipboard, "用户\n解释代码\n\nRecapCLI\n" + answer)
+                self.assertEqual(self.requests, [])
+
     async def test_tool_progress_distinguishes_success_failure_and_unknown_outcomes(self):
         app = self.app()
         async with app.run_test(size=(100, 30)) as pilot:

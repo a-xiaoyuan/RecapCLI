@@ -7,7 +7,7 @@ from pathlib import Path
 from .approval import authorize_action, fail_closed
 from .commands import run_command
 from .editing import edit_file, edit_files, restore_file, undo_edit
-from .filesystem import ToolError, find_files, list_directory, read_file, search_text
+from .filesystem import ToolError, find_files, list_directory, read_file, read_file_for_model, search_text
 from .retrieval import search_code_index, search_symbols
 from .web import read_url, web_search
 
@@ -56,13 +56,14 @@ TOOL_REGISTRY = {
     },
     "read_file": {
         "handler": read_file,
-        "description": "读取 UTF-8 文本，最多 64 KiB；返回正文、实际起止行和 reference，引用代码时使用该位置。",
+        "description": "按行读取 UTF-8 文本，每次最多 160 行、原文最多 64 KiB。content 的每行格式为 行号 | 原文；引用使用真实行号，编辑时去掉行号前缀。先搜索定位，再指定起止行；has_more 表示文件还有后续，next_start_line 可继续读取。truncated 表示请求范围未读完。",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "相对工作区的文件路径"},
-                "start_line": {"type": "integer", "description": "起始行号，从 1 开始"},
-                "end_line": {"type": "integer", "description": "结束行号，包含该行"},
+                "start_line": {"type": "integer", "description": "起始行号，从 1 开始；优先采用搜索返回的位置，省略时从第 1 行开始"},
+                "end_line": {"type": "integer", "description": "结束行号，包含该行；每次最多返回 160 行"},
+                "next_start_line": {"type": "integer", "description": "上一页返回的继续位置，可作为 start_line 的别名"},
             },
             "required": ["path"],
             "additionalProperties": False,
@@ -220,10 +221,11 @@ _PARAM_DEFAULTS = {
 
 
 def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_remaining=None, on_record=None,
-                 approver=None, on_approval=None):
+                 approver=None, on_approval=None, for_model=False):
     """查找 → 校验参数 → 能力检查 → 审批 → 执行。
 
     写入和命令在能力允许后仍要审批。拒绝、过期、取消、未获交互批准或批准失效时不调用工具函数。
+    for_model 为模型提供带行号的分页读取；默认仍返回原文。
     """
     try:
         spec = _spec_for(name)
@@ -252,7 +254,8 @@ def execute_tool(name, arguments, workspace, *, capabilities=("read",), time_rem
     try:
         if spec.get("records_artifacts") and on_record is not None:
             params["on_record"] = on_record
-        result = spec["handler"](workspace=workspace_path, **params)
+        handler = read_file_for_model if for_model and name == "read_file" else spec["handler"]
+        result = handler(workspace=workspace_path, **params)
         if result.get("truncated") and name in {"search_text", "find_files", "search_symbols", "search_code_index"}:
             result["warning"] = "检索结果不完整，不能据此断言整个项目没有匹配内容；请缩小目录或查询范围。"
         return {"ok": True, **result}

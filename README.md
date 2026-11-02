@@ -108,11 +108,67 @@ recapcli --mode multi "分析会话保存逻辑"
 - `/diff [任务ID]`：查看编辑差异与命令结果。
 - `/undo [组ID]`：确认后撤销编辑组，需要 `--allow-write`。
 - `/tasks`、`/task ID`：查看任务记录。
+- `/copy`、`/copy all`：复制最近的完整回答或整段对话（TUI）。
 - `/help`：查看分类帮助与快捷键；`/exit` 保存退出。
 
 **Enter** 发送，**Shift+Enter / Ctrl+J** 换行，**Esc** 停止本轮。**Ctrl+Q** 保存退出；忙时会等待在途请求或操作返回。全部启动参数见 `recapcli --help`。
 
+**Ctrl+A** 全选输入；输入框为空时全选对话，随后按 **Ctrl+C** 复制。IDE 截获快捷键时，可直接输入 `/copy` 或 `/copy all`。
+
 需要联网时使用 `--allow-web`。网页读取不需要搜索密钥；网页搜索需要在 RecapCLI 的 `.env` 或环境变量中配置 `BRAVE_API_KEY` 或 `TAVILY_API_KEY`。
+
+## MCP 服务
+
+项目自带一个 stdio MCP 服务，只暴露仓库读取工具，不提供写入、编辑或命令执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m recapcli.mcp.repo_server --workspace "你的项目目录"
+```
+
+其他 MCP 客户端可以把上面的命令作为 stdio server 启动；可用工具包括 `read_file`、`search_text`、`find_files`、`list_directory` 等读取类工具。服务会拒绝工作区外路径和未知/写入工具。
+
+RecapCLI 自己也可以连接这个服务，行式 CLI 和 TUI 都支持：
+
+```powershell
+recapcli --mcp-repo "只使用 mcp_repo_read_file 阅读 README.md 的前 10 行"
+```
+
+模型会看到带 `mcp_repo_` 前缀的只读工具；写入和命令能力不会通过 MCP 暴露。
+
+外部服务需要用 `--mcp-config 路径` 显式启动；仅使用 `--mcp-repo` 不会执行工作区 `mcp.json` 中的命令。例如接入官方 [Fetch MCP 服务](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)，让模型读取公开技术文档，无需额外 API Key。
+
+已安装 uv 时，可将以下配置保存为 `mcp-fetch.json`。首次启动会下载服务；`--no-readability-js` 使用 Python 提取网页正文，不另外启动 Node.js：
+
+```json
+{
+  "servers": {
+    "fetch": {
+      "command": ["uv", "tool", "run", "--from", "mcp-server-fetch==2026.10.28", "mcp-server-fetch", "--no-readability-js"],
+      "timeout": 30,
+      "max_result_bytes": 49152,
+      "tool_permissions": {
+        "fetch": "read"
+      }
+    }
+  }
+}
+```
+
+```powershell
+recapcli --mcp-config .\mcp-fetch.json "用 mcp_fetch_fetch 读取 https://docs.astral.sh/uv/guides/tools/，解释 uv tool install 和 uvx 的区别"
+```
+
+如果服务已装在独立虚拟环境中，也可将 `command` 改为该环境的 Python 绝对路径，加上 `-m mcp_server_fetch --no-readability-js`，避免启动时下载依赖。
+
+每个服务都可以设置 `timeout`（秒）和 `max_result_bytes`（UTF-8 字节）；工具名会带上 `mcp_<服务名>_` 前缀，避免冲突。返回超过限制时会被截断或明确拒绝。
+
+`tool_permissions` 是你对可信工具的本地授权，可设为 `read`、`write` 或 `exec`；未声明的外部工具默认需要 `--allow-exec` 和审批。`write` 工具需要 `--allow-write` 和审批，不根据服务端自报的只读标签放行。
+
+外部服务以当前用户权限运行，没有操作系统沙箱；请先核对配置中的启动命令和工具用途。子进程不自动继承宿主凭据，需要的服务密钥在该服务的 `env` 中显式配置；含密钥的配置请保存在用户目录，不提交仓库。
+
+```powershell
+recapcli --mcp-repo --mcp-config .\mcp-fetch.json
+```
 
 ## 权限与数据
 

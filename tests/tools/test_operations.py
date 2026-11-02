@@ -107,6 +107,42 @@ class OperationTests(unittest.TestCase):
         result = self.call("read_file", path="empty.py")
         self.assertEqual((result["start_line"], result["end_line"]), (0, 0))
         self.assertEqual(result["reference"], "empty.py")
+        model = execute_tool("read_file", {"path": "empty.py"}, self.workspace, for_model=True)
+        self.assertTrue(model["ok"], model)
+        self.assertEqual((model["start_line"], model["end_line"], model["content"]), (0, 0, ""))
+
+    def test_model_read_pages_have_real_line_numbers_and_leave_raw_reads_unchanged(self):
+        lines = [f"第 {number} 行" for number in range(1, 202)]
+        lines[1] = ""
+        lines[2] = "字面量\u2028不是换行"
+        path = self.workspace / "paged.py"
+        path.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8-sig"))
+        raw = self.call("read_file", path=path.name)
+        self.assertEqual(raw["content"], "\n".join(lines) + "\n")
+
+        first = execute_tool("read_file", {"path": path.name}, self.workspace, for_model=True)
+        self.assertTrue(first["ok"], first)
+        self.assertEqual(first["reference"], "paged.py:1-160")
+        self.assertIn("2 | \n3 | 字面量\u2028不是换行", first["content"])
+        self.assertTrue(first["truncated"])
+        self.assertEqual(first["next_start_line"], 161)
+        alias = execute_tool("read_file", {"path": path.name, "next_start_line": first["next_start_line"]},
+                             self.workspace, for_model=True)
+        self.assertTrue(alias["ok"], alias)
+        self.assertEqual(alias["start_line"], 161)
+
+        segment = execute_tool("read_file", {"path": path.name, "start_line": 161, "end_line": 162},
+                               self.workspace, for_model=True)
+        self.assertEqual(segment["content"], "161 | 第 161 行\n162 | 第 162 行")
+        self.assertTrue(segment["has_more"])
+        self.assertFalse(segment["truncated"])
+
+        last = execute_tool("read_file", {"path": path.name, "start_line": segment["next_start_line"]},
+                            self.workspace, for_model=True)
+        self.assertEqual(last["reference"], "paged.py:163-201")
+        self.assertTrue(last["content"].endswith("201 | 第 201 行"))
+        self.assertFalse(last["has_more"])
+        self.assertFalse(last["truncated"])
 
     def test_text_search_reference_matches_file_line(self):
         (self.workspace / "file.py").write_text("one\nmarker\n", encoding="utf-8")

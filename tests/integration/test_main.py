@@ -108,8 +108,40 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(history[-2]["tool_calls"][0]["id"], "call-1")
         self.assertEqual(history[-1]["tool_call_id"], "call-1")
         result = json.loads(history[-1]["content"])
-        self.assertEqual(result["content"], "启动：python app.py")
+        self.assertEqual(result["content"], "1 | 启动：python app.py")
         self.assertEqual(result["reference"], "README.md:1")
+
+    def test_extra_mcp_tools_are_advertised_and_executed(self):
+        from recapcli.mcp.provider import MCPToolProvider
+        from recapcli.tools.approval import approve_all
+        from tests.mcp.test_provider import STRICT_SERVER
+
+        with MCPToolProvider(self.workspace, command=[sys.executable, "-c", STRICT_SERVER],
+                             cwd=self.workspace, prefix="probe",
+                             tool_permissions={"lookup": "read", "write_note": "write"}) as provider:
+            answer, requests = self.run_with_replies([
+                reply(calls=[tool_call("lookup", name="mcp_probe_lookup", arguments="{}"),
+                             tool_call("write", name="mcp_probe_write_note", arguments="{}")]),
+                reply("MCP 结果"),
+            ], extra_tools=provider.definitions, extra_executor=provider.call)
+            self.assertEqual(answer, "MCP 结果")
+            self.assertIn("mcp_probe_lookup", [tool["function"]["name"] for tool in requests[0]["tools"]])
+            read, denied = [json.loads(message["content"]) for message in requests[1]["messages"]
+                            if message["role"] == "tool"]
+            self.assertTrue(read["ok"])
+            self.assertEqual(read["answer"], "中文结果")
+            self.assertFalse(denied["ok"])
+            self.assertFalse((self.workspace / "write-marker.txt").exists())
+
+            traces = []
+            self.run_with_replies([
+                reply(calls=[tool_call(name="mcp_probe_write_note", arguments="{}")]), reply("已批准执行"),
+            ], capabilities=("read", "write"), approver=approve_all,
+               extra_tools=provider.definitions, extra_executor=provider.call,
+               on_trace=lambda kind, data: traces.append((kind, data)))
+            self.assertTrue((self.workspace / "write-marker.txt").exists())
+            self.assertTrue(any(kind == "approval" and data["outcome"] == "approved"
+                                for kind, data in traces))
 
     def test_multiple_calls_and_another_tool_round(self):
         _, requests = self.run_with_replies([
@@ -176,7 +208,9 @@ class AgentTests(unittest.TestCase):
 
     def test_context_budget_drops_old_turns_as_tool_results_grow(self):
         history = [{"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "x" * 4200}]
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 3500}):
+        # 固定此用例的系统提示长度，只验证工具结果增长时的历史裁剪。
+        with patch("recapcli.core.agent.BASE_SYSTEM_PROMPT", "代码助手"), \
+                patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 3500}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("完成")],
                                               history=history, limits=AgentLimits(max_context_bytes=6500))
         self.assertTrue(any(message.get("content") == "旧问题" for message in requests[0]["messages"]))

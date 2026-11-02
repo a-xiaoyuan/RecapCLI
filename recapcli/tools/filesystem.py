@@ -11,6 +11,7 @@ import time
 from ..config import ENV_FILE
 
 MAX_FILE_BYTES = 64 * 1024
+MAX_MODEL_READ_LINES = 160
 MAX_SEARCH_FILE_BYTES = 1024 * 1024
 MAX_SEARCH_RESULTS = 50
 MAX_TREE_ENTRIES = 300
@@ -178,7 +179,7 @@ def _validate_line_number(value, name):
     return value
 
 
-def _read_line_range(target, start, end):
+def _read_line_range(target, start, end, *, inspect_more=False):
     budget = ScanBudget()
     parts = []
     size = 0
@@ -207,17 +208,22 @@ def _read_line_range(target, start, end):
             at_line_start = line_ended
             if line_ended:
                 number += 1
+        has_more = bool(file.read(1)) if inspect_more else False
     if not selected:
+        if inspect_more and start == 1:
+            return "", 0, False
         raise ToolError("行号范围超出文件内容")
-    return "".join(parts), last_line
+    return "".join(parts), last_line, has_more
 
 
-def read_file(path, workspace, start_line=None, end_line=None):
-    """读取 UTF-8 文本；全文或所选行的返回内容最多 64 KiB。"""
+def read_file(path, workspace, start_line=None, end_line=None, *, max_lines=None, next_start_line=None):
+    """读取 UTF-8 原文，最多 64 KiB；max_lines 供模型分页，省略时保持原有读取范围。"""
     target = _resolve(workspace, path)
     if not target.is_file():
         raise ToolError("不是普通文件")
-    if start_line is None and end_line is None:
+    if start_line is None and next_start_line is not None:
+        start_line = next_start_line
+    if start_line is None and end_line is None and max_lines is None:
         with target.open("rb") as file:
             content = file.read(MAX_FILE_BYTES + 1)
         if len(content) > MAX_FILE_BYTES:
@@ -235,10 +241,32 @@ def read_file(path, workspace, start_line=None, end_line=None):
     start = start_line or 1
     if end_line is not None and end_line < start:
         raise ToolError("end_line 不能小于 start_line")
-    text, actual_end = _read_line_range(target, start, end_line)
+    end = end_line
+    if max_lines is not None:
+        end = min(end_line or start + max_lines - 1, start + max_lines - 1)
+    text, actual_end, has_more = _read_line_range(target, start, end, inspect_more=max_lines is not None)
+    if actual_end == 0:
+        start = 0
     relative = _relative(workspace, target)
-    return {"content": text, "path": relative, "start_line": start, "end_line": actual_end,
-            "reference": file_reference(relative, start, actual_end)}
+    result = {"content": text, "path": relative, "start_line": start, "end_line": actual_end,
+              "reference": file_reference(relative, start, actual_end)}
+    if max_lines is not None:
+        result.update(has_more=has_more, truncated=has_more and (end_line is None or actual_end < end_line))
+        if has_more:
+            result["next_start_line"] = actual_end + 1
+    return result
+
+
+def read_file_for_model(path, workspace, start_line=None, end_line=None, *, next_start_line=None):
+    """模型读取按行分页；原文 API 保留原有行为，不重复返回两份正文。"""
+    result = read_file(path, workspace, start_line, end_line, max_lines=MAX_MODEL_READ_LINES,
+                       next_start_line=next_start_line)
+    start, end = result["start_line"], result["end_line"]
+    if start:
+        result["content"] = "\n".join(f"{number} | {line}" for number, line in
+                                      zip(range(start, end + 1), result["content"].split("\n")))
+    result["content_format"] = "line_numbered"
+    return result
 
 
 def find_files(workspace, pattern, path=".", max_results=50):

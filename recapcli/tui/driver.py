@@ -34,6 +34,8 @@ class ShellOptions:
     auto_compact: bool = True
     yes: bool = False
     approval_timeout: float = 120.0
+    mcp_repo: bool = False
+    mcp_config: Path | None = None
 
 
 class Presenter:
@@ -113,12 +115,16 @@ class ShellDriver:
         self.model = None
         self.quitting = False
         self.cancel_event = threading.Event()
+        self.mcp_manager = None
 
     def close(self):
         client = self.client
         self.client = None
         if client is not None:
             client.__exit__(None, None, None)
+        if self.mcp_manager is not None:
+            self.mcp_manager.close()
+            self.mcp_manager = None
 
     def request_stop(self):
         self.quitting = True
@@ -153,6 +159,16 @@ class ShellDriver:
                 notes.append(f"发现 {len(recovered)} 个所属进程已退出的任务，已标为 unknown；/tasks 查看，不自动重试。")
         except (OSError, ValueError) as error:
             notes.append(f"任务恢复检查失败：{error}")
+        if self.options.mcp_repo or self.options.mcp_config is not None:
+            from ..mcp.manager import MCPManager
+            try:
+                self.mcp_manager = MCPManager.from_options(
+                    self.options.workspace, repo=self.options.mcp_repo,
+                    config_path=self.options.mcp_config)
+                notes.append(f"MCP：已连接 {len(self.mcp_manager.providers)} 个服务，"
+                             f"工具 {len(self.mcp_manager.definitions)} 个。")
+            except (OSError, ValueError, RuntimeError) as error:
+                notes.append(f"MCP 服务启动失败：{error}")
         return notes
 
     def transcript_rows(self):
@@ -361,6 +377,8 @@ class ShellDriver:
                 limits=self.options.limits, capabilities=self.options.capabilities, mode=self.options.mode,
                 auto_compact=self.options.auto_compact, compact_only=compact_only,
                 cancel_event=self.cancel_event, approver=approver,
+                extra_tools=self.mcp_manager.definitions if self.mcp_manager is not None else None,
+                extra_executor=self.mcp_manager.call if self.mcp_manager is not None else None,
             )
         except KeyboardInterrupt:
             self.presenter.info("已停止本轮，可以继续提问。")

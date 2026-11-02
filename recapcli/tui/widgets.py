@@ -19,6 +19,8 @@ from .theme import PALETTE
 class PromptInput(TextArea):
     """完整保留粘贴内容；输入高度随实际换行增长。"""
 
+    BINDINGS = [Binding("ctrl+a", "select_all", "全选", show=False)]
+
     class Submitted(Message):
         pass
 
@@ -44,7 +46,16 @@ class PromptInput(TextArea):
 
     def on_text_area_changed(self, event: TextArea.Changed):
         if event.text_area is self:
+            if self.text:
+                self.screen.clear_selection()
             self.fit_height()
+
+    def action_select_all(self):
+        if self.text:
+            self.screen.clear_selection()
+            super().action_select_all()
+        else:
+            self.app.query_one("#transcript").text_select_all()
 
     def on_resize(self):
         self.call_after_refresh(self.fit_height)

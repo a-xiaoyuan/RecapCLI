@@ -11,6 +11,7 @@ COMMANDS = (
     ("/open", "ID", "恢复已保存的会话（TUI）", "sessions"),
     ("/tasks", "", "查看最近任务", "tasks"),
     ("/diff", "[任务ID]", "查看本轮差异、原有改动与命令结果", "tasks"),
+    ("/copy", "[all]", "复制最近回答或完整对话（TUI）", "common"),
     ("/help", "[分类]", "查看命令与快捷键", "common"),
     ("/exit", "", "保存并退出", "common"),
     ("/models", "[筛选词]", "筛选本地模型配置", "models"),
@@ -35,12 +36,13 @@ COMMANDS = (
     ("/memory-accept", "ID", "接纳经验候选", "memory"),
     ("/memory-reject", "ID", "拒绝经验候选", "memory"),
 )
-COMMON = {"/model", "/config", "/new", "/open", "/tasks", "/diff", "/help", "/exit"}
+COMMON = {"/model", "/config", "/new", "/open", "/tasks", "/diff", "/copy", "/help", "/exit"}
 GROUPS = {"common": "常用", "models": "模型", "sessions": "会话", "tasks": "任务与审批", "memory": "记忆", "keys": "快捷键"}
 KEYS = """Enter 发送 · Shift+Enter / Ctrl+J 换行
 ↑↓ 选择命令 · Tab 补全 · Esc 收起列表
 Esc 停止本轮 · Ctrl+Q 保存退出（忙时等待在途操作返回）
 Ctrl+G 任务详情与用量 · Ctrl+L 清屏
+Ctrl+A 全选输入；输入为空时全选对话 · Ctrl+C 复制
 Ctrl+End 回到底部 · Alt+PageUp / PageDown 翻阅历史
 F2 选择模型 · F3 模型设置"""
 

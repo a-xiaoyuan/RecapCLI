@@ -65,6 +65,22 @@ def _windows_job(process):
     return lambda: kernel.CloseHandle(handle)
 
 
+def subprocess_environment(overrides=None):
+    """只继承运行工具所需的变量；额外凭据必须由调用方显式提供。"""
+    allowed = {
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC",
+        "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+        "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+        "COMMONPROGRAMFILES", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+        "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "NO_COLOR", "VIRTUAL_ENV",
+        "JAVA_HOME", "JDK_HOME", "MAVEN_HOME", "M2_HOME", "GRADLE_HOME",
+    }
+    environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    environment.update({str(key): str(value) for key, value in (overrides or {}).items()})
+    environment.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    return environment
+
+
 def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=16384, encoding="utf-8",
                 stdin_text="", *, on_record=None):
     if (not isinstance(argv, list) or not 1 <= len(argv) <= 64
@@ -95,17 +111,7 @@ def run_command(workspace, argv, cwd=".", timeout_seconds=30, max_output_bytes=1
     write_json(record_path, record)  # 记录不可写时，不启动命令。
     if on_record is not None:
         on_record("command", command_id)
-    # 只继承启动常用构建工具所需的变量，不把宿主的令牌、云凭据或代理密码交给命令。
-    allowed_environment = {
-        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC",
-        "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
-        "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
-        "COMMONPROGRAMFILES", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
-        "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "NO_COLOR", "VIRTUAL_ENV",
-        "JAVA_HOME", "JDK_HOME", "MAVEN_HOME", "M2_HOME", "GRADLE_HOME",
-    }
-    environment = {key: value for key, value in os.environ.items() if key.upper() in allowed_environment}
-    environment.update(PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    environment = subprocess_environment()
     output = bytearray()
     exceeded = threading.Event()
     process, reader, writer, close_job = None, None, None, None

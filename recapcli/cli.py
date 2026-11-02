@@ -29,7 +29,8 @@ def make_approver(ui, *, yes, interactive, timeout):
 
 
 def interactive_loop(client, model, workspace, store, ui, session, max_steps, memory_enabled, limits=None,
-                     capabilities=("read",), mode="react", auto_compact=True, approver=None):
+                     capabilities=("read",), mode="react", auto_compact=True, approver=None,
+                     extra_tools=None, extra_executor=None):
     ui.info("多轮对话模式：直接输入问题；/help 查看命令，/exit 退出。")
     while True:
         try:
@@ -78,7 +79,8 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
             answer = run_turn(client, model, workspace, store, ui, session,
                               prompt, max_steps=max_steps, memory_enabled=memory_enabled, limits=limits,
                               capabilities=capabilities, mode=mode,
-                              auto_compact=auto_compact, compact_only=compact_only, approver=approver)
+                              auto_compact=auto_compact, compact_only=compact_only, approver=approver,
+                              extra_tools=extra_tools, extra_executor=extra_executor)
         except KeyboardInterrupt:
             ui.error("已取消本轮。")
             continue
@@ -111,9 +113,9 @@ def build_parser():
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="允许读取的工作区")
     parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
                         help="执行模式：react 直接执行；plan 先计划再执行；multi 仅本地只读的并发分析与审查")
-    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 16，plan/multi 默认 20")
-    parser.add_argument("--max-tool-calls", type=int, default=AgentLimits.max_tool_calls, help="每轮工具调用数量上限，默认 32")
-    parser.add_argument("--max-tool-bytes", type=int, default=128 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
+    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 32，plan/multi 默认 20")
+    parser.add_argument("--max-tool-calls", type=int, default=AgentLimits.max_tool_calls, help="每轮工具调用数量上限，默认 64")
+    parser.add_argument("--max-tool-bytes", type=int, default=256 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
     parser.add_argument("--context-bytes", type=int, default=256 * 1024, help="模型消息的 UTF-8 JSON 大小上限")
     parser.add_argument("--max-seconds", type=float, default=AgentLimits.max_seconds, help="每轮执行时间预算，默认 300 秒")
     parser.add_argument("--request-timeout", type=float, default=30.0, help="单次模型请求超时，秒；同时受剩余任务时间限制")
@@ -133,6 +135,10 @@ def build_parser():
     parser.add_argument("--allow-network", action="store_true", dest="allow_web", help=argparse.SUPPRESS)
     parser.add_argument("--allow-write", action="store_true", help="开放文件编辑与按备份恢复")
     parser.add_argument("--allow-exec", action="store_true", help="开放前台命令执行（以当前用户权限运行）")
+    parser.add_argument("--mcp-repo", action="store_true",
+                        help="启动内置只读仓库 MCP 服务，并把读取工具提供给模型")
+    parser.add_argument("--mcp-config", type=Path,
+                        help="显式启动此 JSON 配置中的 MCP 服务；配置内的启动命令需可信")
     parser.add_argument("--yes", action="store_true",
                         help="跳过逐次提问并批准本进程内的写入和命令；执行前仍复核参数与文件指纹，变化则作废")
     parser.add_argument("--approval-timeout", type=float, default=120,
@@ -268,20 +274,39 @@ def main(argv=None) -> int:
             else:
                 ui.info("审批：当前不会等待输入。未加 --yes 时，写入和命令不会执行。")
         with ModelClient(config, client_factory=OpenAI) as client:
-            if args.prompt is not None or args.compact:
-                prompt = "/compact" if args.compact else args.prompt.strip()
-                if not prompt:
-                    parser.error("问题不能为空")
-                ui.user(prompt)
-                answer = run_turn(client, config.model, args.workspace, store, ui, session,
-                                  prompt, max_steps=args.max_steps, memory_enabled=args.memory, limits=limits,
-                                  capabilities=capabilities, mode=args.mode,
-                                  auto_compact=args.auto_compact, compact_only=args.compact, approver=approver)
-                ui.answer(answer)
-                return 0 if save_session(store, session, ui) else 1
-            return interactive_loop(client, config.model, args.workspace, store, ui, session,
-                                    args.max_steps, args.memory, limits, capabilities, args.mode,
-                                    args.auto_compact, approver)
+            provider = None
+            if args.mcp_repo or args.mcp_config is not None:
+                from .mcp.client import MCPClientError
+                from .mcp.manager import MCPManager
+                try:
+                    provider = MCPManager.from_options(args.workspace, repo=args.mcp_repo,
+                                                       config_path=args.mcp_config)
+                except (OSError, MCPClientError, ValueError) as error:
+                    ui.error(f"MCP 服务启动失败：{error}")
+                    return 1
+                ui.info(f"MCP：已连接 {len(provider.providers)} 个服务，工具 {len(provider.definitions)} 个")
+            extra_tools = provider.definitions if provider is not None else None
+            extra_executor = provider.call if provider is not None else None
+            try:
+                if args.prompt is not None or args.compact:
+                    prompt = "/compact" if args.compact else args.prompt.strip()
+                    if not prompt:
+                        parser.error("问题不能为空")
+                    ui.user(prompt)
+                    answer = run_turn(client, config.model, args.workspace, store, ui, session,
+                                      prompt, max_steps=args.max_steps, memory_enabled=args.memory, limits=limits,
+                                      capabilities=capabilities, mode=args.mode,
+                                      auto_compact=args.auto_compact, compact_only=args.compact, approver=approver,
+                                      extra_tools=extra_tools, extra_executor=extra_executor)
+                    ui.answer(answer)
+                    return 0 if save_session(store, session, ui) else 1
+                return interactive_loop(client, config.model, args.workspace, store, ui, session,
+                                        args.max_steps, args.memory, limits, capabilities, args.mode,
+                                        args.auto_compact, approver,
+                                        extra_tools=extra_tools, extra_executor=extra_executor)
+            finally:
+                if provider is not None:
+                    provider.close()
     except (KeyboardInterrupt, EOFError):
         ui.error("\n已取消。")
         return 130
