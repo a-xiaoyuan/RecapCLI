@@ -12,6 +12,7 @@ COMMANDS = (
     ("/tasks", "", "查看最近任务", "tasks"),
     ("/diff", "[任务ID]", "查看本轮差异、原有改动与命令结果", "tasks"),
     ("/copy", "[all]", "复制最近回答或完整对话（TUI）", "common"),
+    ("/mcp", "", "查看已连接的 MCP 服务与工具", "common"),
     ("/help", "[分类]", "查看命令与快捷键", "common"),
     ("/exit", "", "保存并退出", "common"),
     ("/models", "[筛选词]", "筛选本地模型配置", "models"),
@@ -36,7 +37,7 @@ COMMANDS = (
     ("/memory-accept", "ID", "接纳经验候选", "memory"),
     ("/memory-reject", "ID", "拒绝经验候选", "memory"),
 )
-COMMON = {"/model", "/config", "/new", "/open", "/tasks", "/diff", "/copy", "/help", "/exit"}
+COMMON = {"/model", "/config", "/new", "/open", "/tasks", "/diff", "/copy", "/mcp", "/help", "/exit"}
 GROUPS = {"common": "常用", "models": "模型", "sessions": "会话", "tasks": "任务与审批", "memory": "记忆", "keys": "快捷键"}
 KEYS = """Enter 发送 · Shift+Enter / Ctrl+J 换行
 ↑↓ 选择命令 · Tab 补全 · Esc 收起列表

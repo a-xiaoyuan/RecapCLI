@@ -135,6 +135,8 @@ recapcli --mcp-repo "只使用 mcp_repo_read_file 阅读 README.md 的前 10 行
 
 模型会看到带 `mcp_repo_` 前缀的只读工具；写入和命令能力不会通过 MCP 暴露。
 
+TUI 启动后输入 `/mcp` 可以查看当前连接的服务和工具名。
+
 只想查看可用工具清单、不请求模型时：
 
 ```powershell

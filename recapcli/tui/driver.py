@@ -188,6 +188,17 @@ class ShellDriver:
     def show_help(self, topic="common"):
         self.presenter.info(help_text(topic))
 
+    def show_mcp(self):
+        if self.mcp_manager is None:
+            self.presenter.info("未启用 MCP 服务。启动时使用 --mcp-repo 或 --mcp-config 路径。")
+            return
+        lines = [f"已连接 MCP 服务：{len(self.mcp_manager.providers)} 个"]
+        for provider in self.mcp_manager.providers:
+            lines.append(f"- {provider.tool_prefix.rstrip('_')}：{len(provider.definitions)} 个工具")
+            for item in provider.definitions:
+                lines.append(f"  {item['function']['name']}")
+        self.presenter.info("\n".join(lines))
+
     def show_sessions(self):
         try:
             sessions = self.store.list_sessions() if self.store is not None else _sessions(self.options.workspace)
@@ -240,6 +251,9 @@ class ShellDriver:
             return None
         if head in {"/models", "/model"}:
             self._models(prompt)
+            return None
+        if head == "/mcp":
+            self.show_mcp()
             return None
         if head == "/compact":
             if prompt.lower() != "/compact":

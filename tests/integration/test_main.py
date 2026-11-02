@@ -163,29 +163,27 @@ class AgentTests(unittest.TestCase):
         ])
         self.assertFalse(json.loads(requests[1]["messages"][-1]["content"])["ok"])
 
-    def test_model_request_limit_stops_endless_tool_calls(self):
-        with self.assertRaisesRegex(RuntimeError, "2 次模型请求上限"):
-            self.run_with_replies([reply(calls=[tool_call()])] * 2, max_steps=2)
-
     def test_last_request_reserves_answer_and_does_not_execute_more_tools(self):
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
-            _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("根据文件总结")], max_steps=2)
-        self.assertEqual(requests[-1]["tool_choice"], "none")
-        self.assertEqual(tool.call_count, 1)
+        for options in ({"max_steps": 2}, {"limits": AgentLimits(max_tool_calls=1)}):
+            with self.subTest(options=options), \
+                    patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
+                _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("根据文件总结")], **options)
+            self.assertEqual(requests[-1]["tool_choice"], "none")
+            self.assertNotIn("tools", requests[-1])
+            self.assertEqual(tool.call_count, 1)
         with patch("recapcli.core.agent.execute_tool") as tool, self.assertRaises(RuntimeError):
             self.run_with_replies([reply(calls=[tool_call()])], max_steps=1)
         tool.assert_not_called()
+        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool, \
+                self.assertRaisesRegex(RuntimeError, "2 次模型请求上限"):
+            self.run_with_replies([reply(calls=[tool_call()])] * 2, max_steps=2)
+        self.assertEqual(tool.call_count, 1)
 
     def test_tool_count_rejects_oversized_batch_before_any_execution(self):
         with patch("recapcli.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "工具数量"):
             self.run_with_replies([reply(calls=[tool_call("a"), tool_call("b")])],
                                   limits=AgentLimits(max_tool_calls=1))
         tool.assert_not_called()
-
-    def test_tool_count_budget_allows_final_summary(self):
-        _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("总结")],
-                                          limits=AgentLimits(max_tool_calls=1))
-        self.assertEqual(requests[-1]["tool_choice"], "none")
 
     def test_output_budget_returns_paired_error_and_stops_further_execution(self):
         limits = AgentLimits(max_tool_calls=2, max_tool_bytes=1000)
@@ -224,11 +222,13 @@ class AgentTests(unittest.TestCase):
         create.assert_not_called()
 
     def test_tool_output_also_fits_current_turn_context_budget(self):
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 10000}):
+        with patch("recapcli.core.agent.BASE_SYSTEM_PROMPT", "代码助手"), \
+                patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 10000}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("请缩小读取范围")],
                                               limits=AgentLimits(max_context_bytes=3500))
         self.assertLessEqual(json_size(requests[1]["messages"]), 3500)
-        self.assertFalse(json.loads(requests[1]["messages"][-1]["content"])["ok"])
+        result = next(message for message in requests[1]["messages"] if message["role"] == "tool")
+        self.assertFalse(json.loads(result["content"])["ok"])
         self.assertEqual(requests[1]["tool_choice"], "none")
 
     def test_oversized_tool_request_is_rejected_before_execution(self):

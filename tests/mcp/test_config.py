@@ -72,6 +72,25 @@ class MCPConfigTests(unittest.TestCase):
                 self.assertTrue(builtin["ok"], builtin)
                 self.assertTrue(configured["ok"], configured)
 
+    def test_external_tools_default_to_exec_and_require_permission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "README.md").write_text("# demo\n", encoding="utf-8")
+            (root / "mcp.json").write_text(json.dumps({
+                "servers": {
+                    "docs": {
+                        "command": [sys.executable, "-m", "recapcli.mcp.repo_server",
+                                    "--workspace", str(root)],
+                        "cwd": str(ROOT),
+                    }
+                }
+            }), encoding="utf-8")
+            with MCPManager.from_options(root, config_path=root / "mcp.json") as manager:
+                result = manager.call("mcp_docs_read_file", '{"path": "README.md"}',
+                                      capabilities=("read",))
+                self.assertFalse(result["ok"])
+                self.assertIn("--allow-exec", result["error"])
+
     def test_result_size_limit_is_enforced(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -94,17 +113,27 @@ class MCPConfigTests(unittest.TestCase):
 
 
     def test_shell_options_start_mcp_for_tui(self):
+        class Presenter:
+            def __init__(self):
+                self.messages = []
+
+            def info(self, message):
+                self.messages.append(message)
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "README.md").write_text("# demo\n", encoding="utf-8")
             (root / "mcp.json").write_text("untrusted project config must not be loaded", encoding="utf-8")
-            driver = ShellDriver(None, ShellOptions(workspace=root, mcp_repo=True),
+            presenter = Presenter()
+            driver = ShellDriver(presenter, ShellOptions(workspace=root, mcp_repo=True),
                                  client_factory=lambda *args, **kwargs: None)
             try:
                 notes = driver.prepare()
                 self.assertIsNotNone(driver.mcp_manager)
                 self.assertEqual(len(driver.mcp_manager.providers), 1)
                 self.assertTrue(any("MCP" in note for note in notes))
+                driver.show_mcp()
+                self.assertIn("mcp_repo_read_file", presenter.messages[-1])
             finally:
                 driver.close()
 

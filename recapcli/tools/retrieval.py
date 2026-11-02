@@ -9,7 +9,7 @@ import time
 
 from ..storage.files import state_directory
 from .filesystem import (MAX_FILE_BYTES, MAX_SEARCH_FILE_BYTES, ScanBudget, ScanLimit,
-                               ToolError, _checked_target, _relative, _walk_files, file_reference)
+                               ToolError, _checked_target, _relative, _resolve, _walk_files, file_reference)
 
 SCHEMA_VERSION = 1
 MAX_RESULTS = 200
@@ -132,8 +132,9 @@ def _refresh(connection, workspace):
     return budget, skipped
 
 
-def _search(workspace, *, name=None, kind=None, query=None, max_results=50, refresh=False):
+def _search(workspace, *, name=None, kind=None, query=None, path=".", max_results=50, refresh=False):
     workspace = Path(workspace).resolve(strict=True)
+    scope = _relative(workspace, _resolve(workspace, path))
     if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
         raise ToolError("max_results 必须是大于 0 的整数")
     max_results = min(max_results, MAX_RESULTS)
@@ -143,7 +144,7 @@ def _search(workspace, *, name=None, kind=None, query=None, max_results=50, refr
         raise ToolError("name 必须是非空字符串")
     if kind is not None and kind not in ("class", "function", "async_function"):
         raise ToolError("kind 必须是 class、function 或 async_function")
-    if query is None and name is None and kind is None:
+    if query is None and name is None and kind is None and scope == ".":
         raise ToolError("至少提供 name 或 kind")
     if not isinstance(refresh, bool):
         raise ToolError("refresh 必须是布尔值")
@@ -168,8 +169,9 @@ def _search(workspace, *, name=None, kind=None, query=None, max_results=50, refr
                     return connection.execute("""SELECT symbols.path, start_line, end_line, name, kind, files.digest
                             FROM symbols JOIN files ON files.path = symbols.path
                             WHERE (? IS NULL OR name = ?) AND (? IS NULL OR kind = ?)
+                            AND (? = '.' OR symbols.path = ? OR instr(symbols.path, ?) = 1)
                             ORDER BY symbols.path, start_line LIMIT ?""",
-                            (name, name, kind, kind, max_results + 1)).fetchall()
+                            (name, name, kind, kind, scope, scope, scope + "/", max_results + 1)).fetchall()
 
                 state = connection.execute("SELECT refreshed_at, details FROM scan_state WHERE id=1").fetchone()
                 age = max(0, time.time() - state[0]) if state else REFRESH_SECONDS
@@ -224,8 +226,8 @@ def _search(workspace, *, name=None, kind=None, query=None, max_results=50, refr
         raise ToolError(f"代码索引不可用：{error}") from error
 
 
-def search_symbols(workspace, name=None, kind=None, max_results=50, refresh=False):
-    return _search(workspace, name=name, kind=kind, max_results=max_results, refresh=refresh)
+def search_symbols(workspace, name=None, kind=None, max_results=50, refresh=False, path="."):
+    return _search(workspace, name=name, kind=kind, path=path, max_results=max_results, refresh=refresh)
 
 
 def search_code_index(workspace, query, max_results=50, refresh=False):

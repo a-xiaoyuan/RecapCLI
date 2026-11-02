@@ -27,6 +27,8 @@ class RetrievalTests(unittest.TestCase):
 
     def test_symbols_are_registered_and_locate_python_definitions(self):
         (self.workspace / "app.py").write_text("class Box:\n    def open(self):\n        return 1\n\nasync def fetch():\n    pass\n", encoding="utf-8")
+        (self.workspace / "other").mkdir()
+        (self.workspace / "other" / "app.py").write_text("async def fetch():\n    pass\n", encoding="utf-8")
         names = {item["function"]["name"] for item in tool_definitions()}
         self.assertTrue({"search_symbols", "search_code_index"} <= names)
         result = self.call("search_symbols", name="open", kind="function")
@@ -36,6 +38,11 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("def open", self.read_match(match))
         self.assertEqual(self.call("search_symbols", kind="class")["matches"][0]["name"], "Box")
         self.assertEqual(self.call("search_symbols", kind="async_function")["matches"][0]["name"], "fetch")
+        scoped = self.call("search_symbols", name="fetch", path="other")["matches"]
+        self.assertEqual([match["path"] for match in scoped], ["other/app.py"])
+        self.assertEqual({match["name"] for match in self.call("search_symbols", path="app.py")["matches"]},
+                         {"Box", "open", "fetch"})
+        self.assertFalse(self.call("search_symbols", name="fetch", path="..")["ok"])
         self.assertFalse(self.call("search_symbols")["ok"])
         self.assertFalse(self.call("search_symbols", kind="method")["ok"])
 

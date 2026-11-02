@@ -6,23 +6,14 @@ import json
 from pathlib import Path
 import shlex
 
-DEFAULT_CONFIG_NAME = "mcp.json"
-
-
-def load_mcp_config(path=None, *, workspace="."):
-    """读取 mcp.json；返回 (name, config) 列表，不启动任何进程。"""
+def load_mcp_config(path, *, workspace="."):
+    """读取显式指定的配置；返回 (name, config) 列表，不启动任何进程。"""
     workspace = Path(workspace).resolve()
-    if path is None:
-        candidate = workspace / DEFAULT_CONFIG_NAME
-        if not candidate.is_file():
-            return []
-        path = candidate
-    else:
-        path = Path(path).expanduser()
-        if not path.is_absolute():
-            path = workspace / path
-        if not path.is_file():
-            raise ValueError(f"MCP 配置文件不存在：{path}")
+    path = Path(path).expanduser()
+    if not path.is_absolute():
+        path = workspace / path
+    if not path.is_file():
+        raise ValueError(f"MCP 配置文件不存在：{path}")
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:

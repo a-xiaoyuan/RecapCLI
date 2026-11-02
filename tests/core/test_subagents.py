@@ -103,8 +103,9 @@ class SubagentTests(unittest.TestCase):
         aggregate = next(data for role, data in self.requests if role == "aggregate")
         self.assertEqual(aggregate["tool_choice"], "none")
         self.assertNotIn("tools", aggregate)
-        self.assertIn("analysis-only", aggregate["messages"][-1]["content"])
-        self.assertIn("review-only", aggregate["messages"][-1]["content"])
+        report = next(message["content"] for message in reversed(aggregate["messages"]) if message["role"] == "user")
+        self.assertIn("analysis-only", report)
+        self.assertIn("review-only", report)
 
     def test_child_permissions_exclude_write_exec_network_even_when_parent_grants_them(self):
         def respond(role, count, data):
@@ -271,7 +272,8 @@ class SubagentTests(unittest.TestCase):
             if role != "aggregate":
                 return reply(role + "x" * 15000)
             self.assertLessEqual(json_size(data["messages"]), 12000)
-            reports = json.loads(data["messages"][-1]["content"].split("：\n", 1)[1])
+            report = next(message["content"] for message in reversed(data["messages"]) if message["role"] == "user")
+            reports = json.loads(report.split("：\n", 1)[1])
             self.assertTrue(all(report["truncated"] for report in reports))
             return reply("报告截断，完整内容见任务追溯")
         result = self.run_multi(respond, limits=AgentLimits(max_context_bytes=12000))
@@ -301,7 +303,8 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual(result.status, "incomplete")
         self.assertIn("analysis=failed", result.answer)
         aggregate = next(data for role, data in self.requests if role == "aggregate")
-        self.assertIn("review-only", aggregate["messages"][-1]["content"])
+        report = next(message["content"] for message in reversed(aggregate["messages"]) if message["role"] == "user")
+        self.assertIn("review-only", report)
         self.assertEqual(self.counts["analysis"], 3)
 
     def test_aggregation_failure_preserves_reports_without_retry(self):

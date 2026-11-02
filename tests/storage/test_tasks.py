@@ -303,7 +303,8 @@ class TaskRuntimeTests(unittest.TestCase):
         task = self.task()
         fact = next(event["data"]["result"] for event in task["events"] if event["kind"] == "tool_result")
         self.assertEqual(fact["content"], "x" * 1000)
-        self.assertFalse(json.loads(self.requests[1]["messages"][-1]["content"])["ok"])
+        tool_message = next(message for message in self.requests[1]["messages"] if message["role"] == "tool")
+        self.assertFalse(json.loads(tool_message["content"])["ok"])
         self.assertEqual(task["status"], "incomplete")
 
     def test_model_review_is_separate_from_acceptance_and_blocked_is_a_terminal_state(self):

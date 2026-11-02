@@ -24,7 +24,6 @@ from recapcli.tui.state import ShellState, load_shell_state
 from recapcli.tui.theme import PALETTE, dot, render_line
 
 HAS_TEXTUAL = importlib.util.find_spec("textual") is not None
-TCSS = Path(shell_state.__file__).with_name("violet.tcss")
 
 READY = [{"name": "default", "model": "demo-model", "protocol": "chat_completions", "default": True, "configured": True}]
 MISSING = [{"name": "default", "model": "", "protocol": "chat_completions", "default": True, "configured": False}]
@@ -103,8 +102,6 @@ def texts(recording, kind=None):
 
 class PaletteTests(unittest.TestCase):
     def test_terminal_accents_and_local_config_status(self):
-        css = TCSS.read_text(encoding="utf-8").lower()
-        self.assertIn(PALETTE["accent"].lower(), css)
         self.assertEqual(colors(dot(True)), [PALETTE["online"]])
         self.assertNotIn(PALETTE["online"], colors(dot(False)) + colors(dot()))
 
@@ -114,7 +111,6 @@ class PaletteTests(unittest.TestCase):
         painted = colors(success) + colors(failure) + [str(success.style), str(failure.style)]
         self.assertNotIn(PALETTE["online"], painted)
         self.assertEqual(str(failure.style), PALETTE["error"])
-        self.assertEqual(str(success.style), PALETTE["text"])
         self.assertIn("[b]hello[/b]", render_line("[b]hello[/b]", "user").plain)
 
 

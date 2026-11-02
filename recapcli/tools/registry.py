@@ -37,10 +37,11 @@ TOOL_REGISTRY = {
     },
     "search_symbols": {
         "handler": search_symbols,
-        "description": "查找 Python AST 符号，返回可用 read_file 读取的路径和行范围；查询前刷新本地索引。",
+        "description": "按名称查找 Python 类、同步或异步函数，或指定 path 浏览文件/目录内的符号，返回定义路径和行范围。默认复用索引，候选始终校验文件变化。",
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string", "description": "精确符号名"},
-            "kind": {"type": "string", "description": "class、function 或 async_function"},
+            "path": {"type": "string", "description": "限定工作区相对文件或子目录，默认 .；具体路径可单独提供以列出该范围的符号"},
+            "kind": {"type": "string", "description": "可省略；省略时同时查询 class、function、async_function，确认类型后再限定"},
             "max_results": {"type": "integer", "description": "默认 50，最大 200"},
             "refresh": {"type": "boolean", "description": "强制刷新索引；默认复用 10 秒缓存，候选始终核验文件内容"},
         }, "required": [], "additionalProperties": False},

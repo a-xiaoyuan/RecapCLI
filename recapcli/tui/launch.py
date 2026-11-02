@@ -14,14 +14,6 @@ def _tty():
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _interactive_shell(args):
-    if args.prompt is not None:
-        return False
-    if args.models or args.tasks or args.task or args.compact or args.json or args.preview or args.mcp_tools:
-        return False
-    return True
-
-
 def shell_options(args):
     if args.banner != "auto" or args.color != "auto":
         raise ValueError("--banner/--color 用于行式 CLI：python -m recapcli.cli；TUI 演示请去掉这两个参数")
@@ -106,6 +98,6 @@ def dispatch(argv=None, *, force_shell=False) -> int:
         return 2
     if not force_shell and not demo and (args.banner != "auto" or args.color != "auto"):
         return cli_main(argv)
-    if force_shell or demo or (_interactive_shell(args) and _tty()):
+    if force_shell or demo or (not blocked and _tty()):
         return launch_shell(args, demo=demo)
     return cli_main(argv)
