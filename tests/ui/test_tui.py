@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -348,8 +349,9 @@ def rendered_text(widget):
     return "\n".join(strip.text for strip in widget.render_lines(Region(0, 0, widget.size.width, widget.size.height)))
 
 
-async def wait_for(pilot, predicate, rounds=60):
-    for _ in range(rounds):
+async def wait_for(pilot, predicate, timeout=15):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if predicate():
             return transcript(pilot.app)
         await pilot.pause(0.05)
