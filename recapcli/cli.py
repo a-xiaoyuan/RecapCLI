@@ -180,9 +180,8 @@ def print_mcp_tools(args, ui) -> int:
         return 1
 
 
-def main(argv=None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def _dispatch_view_flags(parser, args):
+    """只读查看旗标。命中时返回退出码，否则返回界面、横幅和能力。"""
     if args.demo:
         if args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview or args.mcp_tools:
             parser.error("--demo 只启动界面演示，不能同时提问或查看任务")
@@ -234,6 +233,39 @@ def main(argv=None) -> int:
             parser.error(str(error))
     if args.json:
         parser.error("--json 需要配合 --tasks 或 --task ID")
+    return ui, banner_mode, capabilities
+
+
+def _open_session(parser, args, store, config):
+    try:
+        if args.continue_:
+            session = store.latest()
+            if session is None:
+                parser.error("没有可恢复的会话")
+        elif args.session:
+            session = store.load(args.session)
+        else:
+            session = None
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    try:
+        profile = args.profile if args.profile is not None else (session or {}).get("model_profile")
+        if config is None:
+            config = load_config(profile) if profile is not None else load_config()
+        if session is None:
+            session = store.new_session(config.model)
+    except ConfigError as error:
+        parser.error(str(error))
+    return session, config
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    dispatched = _dispatch_view_flags(parser, args)
+    if isinstance(dispatched, int):
+        return dispatched
+    ui, banner_mode, capabilities = dispatched
     if args.compact and (args.prompt is not None or not (args.session or args.continue_)):
         parser.error("--compact 需要 --continue 或 --session，且不能同时提问")
     if args.max_steps is None:
@@ -270,26 +302,7 @@ def main(argv=None) -> int:
             ui.info(f"发现 {len(recovered)} 个所属进程已退出的任务，已标为 unknown；/tasks 查看，不自动重试。")
     except (OSError, ValueError) as error:
         parser.error(str(error))
-    try:
-        if args.continue_:
-            session = store.latest()
-            if session is None:
-                parser.error("没有可恢复的会话")
-        elif args.session:
-            session = store.load(args.session)
-        else:
-            session = None
-    except (OSError, ValueError) as error:
-        parser.error(str(error))
-
-    try:
-        profile = args.profile if args.profile is not None else (session or {}).get("model_profile")
-        if config is None:
-            config = load_config(profile) if profile is not None else load_config()
-        if session is None:
-            session = store.new_session(config.model)
-    except ConfigError as error:
-        parser.error(str(error))
+    session, config = _open_session(parser, args, store, config)
 
     try:
         print_banner(workspace=args.workspace, mode=banner_mode)

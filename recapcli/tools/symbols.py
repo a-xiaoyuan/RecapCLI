@@ -38,23 +38,20 @@ def _name(node):
         "identifier", "simple_identifier", "type_identifier", "constant"}), None)
 
 
-def extract_symbols(path, text, check):
-    language = LANGUAGES.get(Path(path).suffix.lower())
-    if language is None:
+def _python_symbols(text, check):
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
         return
-    if language == "python":
-        try:
-            tree = ast.parse(text)
-        except (SyntaxError, ValueError, RecursionError):
-            return
-        for node in ast.walk(tree):
-            check()
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                kind = "class" if isinstance(node, ast.ClassDef) else "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function"
-                if node.end_lineno is not None:
-                    yield node.name, kind, node.lineno, node.end_lineno
-        return
+    for node in ast.walk(tree):
+        check()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            kind = "class" if isinstance(node, ast.ClassDef) else "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function"
+            if node.end_lineno is not None:
+                yield node.name, kind, node.lineno, node.end_lineno
 
+
+def _treesitter_symbols(language, text, check):
     from tree_sitter_language_pack import get_parser
     tree = get_parser(language).parse(text.encode("utf-8"))
     stack = [tree.root_node]
@@ -82,35 +79,42 @@ def extract_symbols(path, text, check):
         yield name.text.decode("utf-8"), kind, start, end
 
 
-def extract_references(path, text, check):
-    """语法引用：名称与调用位置，不进行跨模块类型绑定。"""
+def extract_symbols(path, text, check):
     language = LANGUAGES.get(Path(path).suffix.lower())
     if language is None:
         return
     if language == "python":
-        try:
-            root = ast.parse(text)
-        except (SyntaxError, ValueError, RecursionError):
-            return
-
-        def visit(node, caller=""):
-            check()
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                caller = node.name
-            if isinstance(node, ast.Call):
-                name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else None
-                if name:
-                    yield name, "call", node.lineno, caller
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                for alias in node.names:
-                    module = ((node.module or "") + "." + alias.name if isinstance(node, ast.ImportFrom) else alias.name)
-                    yield module.strip("."), "import", node.lineno, caller
-            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                yield node.id, "usage", node.lineno, caller
-            for child in ast.iter_child_nodes(node):
-                yield from visit(child, caller)
-        yield from visit(root)
+        yield from _python_symbols(text, check)
         return
+    yield from _treesitter_symbols(language, text, check)
+
+
+def _python_references(text, check):
+    try:
+        root = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return
+
+    def visit(node, caller=""):
+        check()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            caller = node.name
+        if isinstance(node, ast.Call):
+            name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else None
+            if name:
+                yield name, "call", node.lineno, caller
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                module = ((node.module or "") + "." + alias.name if isinstance(node, ast.ImportFrom) else alias.name)
+                yield module.strip("."), "import", node.lineno, caller
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            yield node.id, "usage", node.lineno, caller
+        for child in ast.iter_child_nodes(node):
+            yield from visit(child, caller)
+    yield from visit(root)
+
+
+def _treesitter_references(language, text, check):
     from tree_sitter_language_pack import get_parser
     root = get_parser(language).parse(text.encode("utf-8")).root_node
     stack = [(root, "")]
@@ -141,3 +145,14 @@ def extract_references(path, text, check):
             if kind == "call":
                 value = value.split(".")[-1].split("::")[-1]
             yield value, kind, node.start_point[0] + 1, caller
+
+
+def extract_references(path, text, check):
+    """语法引用：名称与调用位置，不进行跨模块类型绑定。"""
+    language = LANGUAGES.get(Path(path).suffix.lower())
+    if language is None:
+        return
+    if language == "python":
+        yield from _python_references(text, check)
+        return
+    yield from _treesitter_references(language, text, check)
