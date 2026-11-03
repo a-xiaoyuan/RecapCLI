@@ -261,6 +261,12 @@ class ShellDriver:
                 return None
             self._turn(prompt, compact_only=True)
             return None
+        if head == "/sessions":
+            self.show_sessions()
+            return None
+        if head == "/new":
+            self._new_session()
+            return None
         if prompt.startswith("/"):
             return self._slash(prompt)
         self._turn(prompt, compact_only=False)
@@ -279,9 +285,6 @@ class ShellDriver:
         if head == "/add-dir":
             handle_command(prompt, self.presenter, self._ensure_store(), self.session, self.model or "")
             return None
-        if head == "/sessions":
-            self.show_sessions()
-            return None
         if head in {"/jobs", "/job", "/send", "/stop"}:
             handle_command(prompt, self.presenter, self._ensure_store(), self.session or {"messages": []}, self.model or "",
                            capabilities=self.options.capabilities,
@@ -292,9 +295,6 @@ class ShellDriver:
             session = self.session if self.session is not None else {"id": "", "messages": [], "summary": None}
             handle_command(prompt, self.presenter, store, session, self.model or "",
                            capabilities=self.options.capabilities, approver=self._approver() if head == "/undo" else None)
-            return None
-        if head == "/new":
-            self._new_session()
             return None
         if head in {"/history", "/summary", "/session", "/save"} and self.session is None:
             self.presenter.info("当前还没有会话。")

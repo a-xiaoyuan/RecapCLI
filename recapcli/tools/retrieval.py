@@ -142,12 +142,7 @@ def _refresh(connection, workspace, root=None):
     return budget, skipped
 
 
-def _search(workspace, *, name=None, kind=None, query=None, path=".", max_results=50, refresh=False,
-            mode="keyword", timeout_seconds=20):
-    workspace = Path(workspace).resolve(strict=True)
-    scope_target = _resolve(workspace, path)
-    scope = _relative(workspace, scope_target)
-    scan_root = workspace if scope_target.is_relative_to(workspace) else scope_target
+def _validate_search_params(*, name, kind, query, max_results, refresh, mode, timeout_seconds, scope):
     if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
         raise ToolError("max_results 必须是大于 0 的整数")
     max_results = min(max_results, MAX_RESULTS)
@@ -165,6 +160,18 @@ def _search(workspace, *, name=None, kind=None, query=None, path=".", max_result
         raise ToolError("mode 必须是 keyword 或 hybrid")
     if not 0 < timeout_seconds <= 30:
         raise ToolError("timeout_seconds 必须大于 0 且不超过 30")
+    return max_results
+
+
+def _search(workspace, *, name=None, kind=None, query=None, path=".", max_results=50, refresh=False,
+            mode="keyword", timeout_seconds=20):
+    workspace = Path(workspace).resolve(strict=True)
+    scope_target = _resolve(workspace, path)
+    scope = _relative(workspace, scope_target)
+    scan_root = workspace if scope_target.is_relative_to(workspace) else scope_target
+    max_results = _validate_search_params(
+        name=name, kind=kind, query=query, max_results=max_results, refresh=refresh,
+        mode=mode, timeout_seconds=timeout_seconds, scope=scope)
     try:
         connection = _connect(workspace)
         connection.create_function("in_scope", 1, lambda path: (workspace / path).is_relative_to(scope_target))

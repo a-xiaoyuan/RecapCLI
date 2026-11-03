@@ -135,13 +135,7 @@ def _fact_result(result):
     return cleaned
 
 
-def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
-              history=None, memory_text="", limits=None, capabilities=("read",), mode="react",
-              on_trace=None, summary=None, auto_compact=False, compact_only=False,
-              cancel_event=None, approver=None, _budget=None, _role=None, _request_reserve=0,
-              _tools_enabled=True, on_stream=None, _user_message=None,
-              extra_tools=None, extra_executor=None, access_policy=None):
-    """成功时返回完整的一轮；失败时不修改调用方的任何历史。"""
+def _validate_run(prompt, workspace, max_steps, mode, compact_only):
     workspace = Path(workspace).resolve(strict=True)
     if mode not in ("react", "plan", "multi"):
         raise ValueError("mode 必须是 react、plan 或 multi")
@@ -155,10 +149,16 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         raise ValueError("计划模式至少需要 4 次模型请求预算")
     if mode == "multi" and max_steps < 3 and not compact_only:
         raise ValueError("Multi 至少需要 3 次模型请求预算")
+    return workspace, max_steps
+
+
+def _prepare_turn_context(client, prompt, workspace, max_steps, limits, capabilities, mode, memory_text,
+                          history, summary, *, compact_only, approver, budget, role, cancel_event,
+                          tools_enabled, user_message, extra_tools, access_policy, on_event, on_trace):
     limits = limits or AgentLimits()
     if isinstance(client, ModelClient):
         limits = replace(limits, max_context_bytes=min(limits.max_context_bytes, client.metadata()["context_bytes"]))
-    budget = _budget or AgentBudget(limits, max_steps, cancel_event=cancel_event, clock=time.monotonic)
+    budget = budget or AgentBudget(limits, max_steps, cancel_event=cancel_event, clock=time.monotonic)
     capabilities = frozenset(capabilities)
     if approver is None:
         approver = fail_closed
@@ -173,7 +173,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         rule_layers = []
         rules = {"source": "AGENTS.md", "status": "skipped", "reason": "历史压缩不加载项目开发约定"}
     structure = None
-    if not compact_only and _role is None and limits.max_context_bytes >= 8192:
+    if not compact_only and role is None and limits.max_context_bytes >= 8192:
         from ..tools.code_context import repository_map
         try:
             structure = repository_map(workspace, query=prompt[:500], max_files=12,
@@ -185,115 +185,98 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         except (OSError, ValueError) as error:
             structure = {"error": type(error).__name__, "files": [], "truncated": True}
     system_text = build_system_prompt(memory_text, _rule_layers_text(rule_layers)) + runtime
-    if _role:
+    if role:
         from .subagents import ROLE_INSTRUCTIONS
-        system_text += "\n\n" + ROLE_INSTRUCTIONS[_role.split(":", 1)[0]]
+        system_text += "\n\n" + ROLE_INSTRUCTIONS[role.split(":", 1)[0]]
     planner = PlanController(on_event, limits.max_plan_steps, limits.max_replans) if mode == "plan" else None
-    if (has_image_references(prompt) and _user_message is None and isinstance(client, ModelClient)
+    if (has_image_references(prompt) and user_message is None and isinstance(client, ModelClient)
             and not client.metadata()["capabilities"]["images"]):
         raise ValueError("当前模型配置 images=false；请确认模型支持视觉后开启图片能力")
     image_approval = (lambda payload: on_trace("approval", {"source": "attachment", **payload})) if on_trace else None
     with using_access(access_policy, approver, image_approval):
-        user_message = _user_message if _user_message is not None else prepare_user_message(prompt, workspace)
-    turn = [user_message]
-    extra_definitions = list(extra_tools or ()) if _tools_enabled else []
-    definitions = tool_definitions(capabilities) + extra_definitions if _tools_enabled else []
+        prepared_user = user_message if user_message is not None else prepare_user_message(prompt, workspace)
+    turn = [prepared_user]
+    extra_definitions = list(extra_tools or ()) if tools_enabled else []
+    definitions = tool_definitions(capabilities) + extra_definitions if tools_enabled else []
     extra_names = {item["function"]["name"] for item in extra_definitions}
     history = history or []
     validate_summary(summary, history)
+    return (limits, budget, capabilities, approver, access_policy, rules, structure, memory_text,
+            system_text, planner, prepared_user, turn, definitions, extra_definitions, extra_names,
+            history, summary)
+
+
+def _request_model(client, model, messages, phase, *, tools, tools_allowed, history_messages,
+                   requests_used, max_steps, limits, budget, request_reserve, mode, workspace,
+                   role, trace, on_event, on_stream, remaining_time):
+    for attempt in range(limits.max_retries + 1):
+        if requests_used >= max_steps:
+            raise RuntimeError("模型请求预算已耗尽")
+        remaining_time()
+        if json_size(messages) > limits.max_context_bytes:
+            raise ValueError("模型消息超过上下文预算")
+        request_index = budget.request(request_reserve)
+        requests_used += 1
+        model_config = client.metadata() if isinstance(client, ModelClient) else {"protocol": "chat_completions", "model": model}
+        trace("model_request", index=request_index, phase=phase, model_config=model_config,
+              history_messages=history_messages, context_bytes=json_size(messages), tools_allowed=tools_allowed,
+              messages=messages, tools=[item["function"]["name"] for item in (tools or [])])
+        phase_label = {"plan": "规划", "execute": "执行", "review": "核对", "summary": "汇总", "compact": "历史压缩"}.get(phase, "")
+        on_event(f"[模型] 第 {request_index} 次请求" + (f"（{phase_label}）" if phase_label else ""))
+        visible_stream = (on_stream is not None and phase in {"react", "summary"}
+                          and role not in {"analysis", "review"}
+                          and (not isinstance(client, ModelClient) or client.metadata()["capabilities"]["streaming"]))
+        emitted = False
+
+        def delta(text):
+            nonlocal emitted
+            remaining_time()
+            emitted = emitted or bool(text)
+            on_stream("delta", text)
+
+        if visible_stream:
+            on_stream("start", "")
+        try:
+            response = request_completion(client, model=model, messages=messages, tools=tools,
+                                          tools_allowed=tools_allowed, timeout=min(limits.request_timeout, remaining_time()),
+                                          context_bytes=limits.max_context_bytes, workspace=workspace,
+                                          on_delta=delta if visible_stream else None, check=remaining_time)
+        except (ModelResponseError, IncompleteStreamError) as error:
+            trace("model_response", response=error.response, usage=error.usage)
+            if visible_stream:
+                on_stream("abort", "")
+            raise
+        except APIError as error:
+            if visible_stream:
+                on_stream("abort", "")
+            delay = retry_delay(error, attempt)
+            reserve = {"plan": 4, "multi": 3}.get(mode, 1) if phase == "compact" else int(tools_allowed)
+            if (delay is None or emitted or attempt >= limits.max_retries
+                    or requests_used >= max_steps - reserve
+                    or budget.requests >= budget.max_requests - request_reserve
+                    or delay >= remaining_time()):
+                raise
+            trace("model_retry", index=request_index, error_type=type(error).__name__,
+                  status_code=getattr(error, "status_code", None), delay_seconds=delay)
+            on_event(f"[重试] 模型请求暂时失败（{type(error).__name__}），{delay:g} 秒后重试；不会重放工具。")
+            budget.cancel_event.wait(delay)
+            remaining_time()
+            continue
+        except BaseException:
+            if visible_stream:
+                on_stream("abort", "")
+            raise
+        trace("model_response", response=response.model_dump(exclude_none=True),
+              usage=response.usage.model_dump(exclude_none=True) if response.usage else None)
+        remaining_time()
+        if visible_stream:
+            on_stream("end", "")
+        return response, requests_used
+
+
+def _maybe_compact(*, model, summary, history, system_text, turn, limits, mode, max_steps,
+                   compact_only, auto_compact, request_model, trace, on_event):
     new_summary = None
-    requests_used = 0
-    local_tool_calls = 0
-    format_correction = None
-    corrected_phases = set()
-
-    def trace(kind, **data):
-        if on_trace is not None:
-            try:
-                on_trace(kind, data)
-            except (OSError, ValueError, RuntimeError) as error:
-                raise TraceError(str(error)) from error
-
-    def plan_snapshot():
-        if planner is not None:
-            trace("plan", phase=planner.phase, current=planner.current, replans=planner.replans,
-                  stop_reason=planner.stop_reason,
-                  steps=[{"id": item.id, "kind": item.kind, "depends_on": item.depends_on,
-                          "description": item.description, "status": item.status,
-                          "model_review": item.evidence} for item in planner.steps])
-
-    def remaining_time():
-        return budget.remaining_time()
-
-    def request_model(messages, phase, *, tools=None, tools_allowed=False, history_messages=0):
-        nonlocal requests_used
-        for attempt in range(limits.max_retries + 1):
-            if requests_used >= max_steps:
-                raise RuntimeError("模型请求预算已耗尽")
-            remaining_time()
-            if json_size(messages) > limits.max_context_bytes:
-                raise ValueError("模型消息超过上下文预算")
-            request_index = budget.request(_request_reserve)
-            requests_used += 1
-            model_config = client.metadata() if isinstance(client, ModelClient) else {"protocol": "chat_completions", "model": model}
-            trace("model_request", index=request_index, phase=phase, model_config=model_config,
-                  history_messages=history_messages, context_bytes=json_size(messages), tools_allowed=tools_allowed,
-                  messages=messages, tools=[item["function"]["name"] for item in (tools or [])])
-            phase_label = {"plan": "规划", "execute": "执行", "review": "核对", "summary": "汇总", "compact": "历史压缩"}.get(phase, "")
-            on_event(f"[模型] 第 {request_index} 次请求" + (f"（{phase_label}）" if phase_label else ""))
-            visible_stream = (on_stream is not None and phase in {"react", "summary"}
-                              and _role not in {"analysis", "review"}
-                              and (not isinstance(client, ModelClient) or client.metadata()["capabilities"]["streaming"]))
-            emitted = False
-
-            def delta(text):
-                nonlocal emitted
-                remaining_time()
-                emitted = emitted or bool(text)
-                on_stream("delta", text)
-
-            if visible_stream:
-                on_stream("start", "")
-            try:
-                response = request_completion(client, model=model, messages=messages, tools=tools,
-                                              tools_allowed=tools_allowed, timeout=min(limits.request_timeout, remaining_time()),
-                                              context_bytes=limits.max_context_bytes, workspace=workspace,
-                                              on_delta=delta if visible_stream else None, check=remaining_time)
-            except (ModelResponseError, IncompleteStreamError) as error:
-                trace("model_response", response=error.response, usage=error.usage)
-                if visible_stream:
-                    on_stream("abort", "")
-                raise
-            except APIError as error:
-                if visible_stream:
-                    on_stream("abort", "")
-                delay = retry_delay(error, attempt)
-                reserve = {"plan": 4, "multi": 3}.get(mode, 1) if phase == "compact" else int(tools_allowed)
-                if (delay is None or emitted or attempt >= limits.max_retries
-                        or requests_used >= max_steps - reserve
-                        or budget.requests >= budget.max_requests - _request_reserve
-                        or delay >= remaining_time()):
-                    raise
-                trace("model_retry", index=request_index, error_type=type(error).__name__,
-                      status_code=getattr(error, "status_code", None), delay_seconds=delay)
-                on_event(f"[重试] 模型请求暂时失败（{type(error).__name__}），{delay:g} 秒后重试；不会重放工具。")
-                budget.cancel_event.wait(delay)
-                remaining_time()
-                continue
-            except BaseException:
-                if visible_stream:
-                    on_stream("abort", "")
-                raise
-            trace("model_response", response=response.model_dump(exclude_none=True),
-                  usage=response.usage.model_dump(exclude_none=True) if response.usage else None)
-            remaining_time()
-            if visible_stream:
-                on_stream("end", "")
-            return response
-
-    trace("project_rules", **{key: value for key, value in rules.items() if key != "text"})
-    if structure is not None:
-        trace("repository_context", **{key: value for key, value in structure.items() if key != "map"})
     covered = summary["covered_messages"] if summary else 0
     uncovered = history[covered:]
     needs_compaction = (len(uncovered) > MAX_HISTORY_MESSAGES
@@ -324,6 +307,188 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
     if compact_only:
         return TurnResult("历史压缩完成，原始消息完整保留；/summary 查看摘要与覆盖范围。", [],
                           summary=new_summary)
+    return summary, new_summary
+
+
+def _execute_tool_batch(message, turn, system, step, *, role, capabilities, planner, workspace,
+                        access_policy, approver, extra_executor, extra_names, budget,
+                        tool_context_limit, trace, on_event, remaining_time, local_tool_calls):
+    fallback_content = json.dumps(OUTPUT_LIMIT_RESULT, ensure_ascii=False, separators=(",", ":"))
+    fallbacks = [{"role": "tool", "tool_call_id": call.id, "content": fallback_content}
+                 for call in message.tool_calls]
+    if json_size([system, *turn, *fallbacks]) > tool_context_limit:
+        raise RuntimeError("工具请求本身超过上下文预算，未执行这批调用")
+    budget.reserve_tools(len(message.tool_calls))
+
+    def bound_approver(request):
+        request.check = remaining_time
+        request.time_remaining = remaining_time()
+        return approver(request)
+
+    parallel_results = {}
+    if _can_parallel_reads(message.tool_calls) and not budget.output_exhausted:
+        def read_one(call, index):
+            return execute_tool(
+                call.function.name, call.function.arguments, workspace,
+                capabilities=capabilities & {"read", "web"}, time_remaining=remaining_time(), for_model=True,
+                access_policy=access_policy, approver=bound_approver,
+                on_approval=lambda payload: trace("approval", action_id=f"{role + ':' if role else ''}{step}:{index}:{call.id}", call_id=call.id, **payload),
+            )
+        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_READS, len(message.tool_calls))) as pool:
+            futures = {}
+            for index, call in enumerate(message.tool_calls):
+                action_id = f"{role + ':' if role else ''}{step}:{index}:{call.id}"
+                trace("tool_start", action_id=action_id, call_id=call.id, name=call.function.name,
+                      arguments=call.function.arguments, skipped=False)
+                location = _tool_location(call)
+                on_event(f"[工具] {call.function.name}" + (f" · {location}" if location else ""))
+                futures[pool.submit(read_one, call, index)] = index
+            for future in as_completed(futures):
+                index = futures[future]
+                call = message.tool_calls[index]
+                action_id = f"{role + ':' if role else ''}{step}:{index}:{call.id}"
+                try:
+                    parallel_results[index] = future.result()
+                except BaseException as error:
+                    trace("tool_interrupted", action_id=action_id, call_id=call.id,
+                          name=call.function.name, error_type=type(error).__name__, outcome="unknown")
+                    parallel_results[index] = error
+                else:
+                    trace("tool_result", action_id=action_id, call_id=call.id, name=call.function.name,
+                          result=_fact_result(parallel_results[index]))
+    for index, call in enumerate(message.tool_calls):
+        remaining_time()
+        local_tool_calls += 1
+        skip_tool = budget.output_exhausted
+        action_id = f"{role + ':' if role else ''}{step}:{index}:{call.id}"
+        prepared = index in parallel_results
+        if not prepared:
+            trace("tool_start", action_id=action_id, call_id=call.id, name=call.function.name,
+                  arguments=call.function.arguments, skipped=skip_tool)
+            location = _tool_location(call)
+            on_event(f"[工具] {call.function.name}" + (f" · {location}" if location else ""))
+
+        def record_artifact(kind, record_id):
+            trace("artifact", action_id=action_id, call_id=call.id, record_type=kind, record_id=record_id)
+
+        def report_approval(payload):
+            trace("approval", action_id=action_id, call_id=call.id, **payload)
+
+        if prepared:
+            result = parallel_results[index]
+            if isinstance(result, BaseException):
+                raise result
+        else:
+            try:
+                if skip_tool:
+                    result = OUTPUT_LIMIT_RESULT
+                elif extra_executor is not None and call.function.name in extra_names:
+                    result = extra_executor(
+                        call.function.name, call.function.arguments, capabilities=(capabilities & {"read", "web"}
+                            if planner is not None and planner.readonly_batch else capabilities),
+                        approver=bound_approver, on_approval=report_approval,
+                        time_remaining=remaining_time(), check=remaining_time,
+                    )
+                else:
+                    result = execute_tool(
+                        call.function.name, call.function.arguments, workspace,
+                        capabilities=(capabilities & {"read", "web"}
+                            if planner is not None and planner.readonly_batch else capabilities),
+                        time_remaining=remaining_time(), on_record=record_artifact, access_policy=access_policy,
+                        approver=bound_approver, on_approval=report_approval, for_model=True, check=remaining_time,
+                    )
+            except BaseException as error:
+                trace("tool_interrupted", action_id=action_id, call_id=call.id, name=call.function.name,
+                      error_type=type(error).__name__, outcome="unknown")
+                raise
+        # 在上下文截断和超时检查前保存真实结果，操作事实不随模型上下文丢失。
+        if not prepared:
+            trace("tool_result", action_id=action_id, call_id=call.id, name=call.function.name,
+                  result=_fact_result(result))
+        if result.get("summary"):
+            on_event(f"[操作] {result['summary']}")
+        if planner is not None:
+            planner.observe_tool(call.function.name, result)
+        if result.get("diff"):
+            on_event("[差异]\n" + result["diff"])
+        if result.get("output"):
+            on_event("[命令输出]\n" + result["output"])
+        remaining_time()
+
+        def fits_context(content):
+            tool_message = {"role": "tool", "tool_call_id": call.id, "content": content}
+            return json_size([system, *turn, tool_message, *fallbacks[index + 1:]]) <= tool_context_limit
+
+        result, content = budget.encode_result(result, fits_context)
+        tool_message = {"role": "tool", "tool_call_id": call.id, "content": content}
+        if result.get("approval"):
+            on_event(f"[审批] {result['approval']}")
+        if result.get("ok") and "returncode" in result:
+            on_event(f"[结果] 命令已结束，退出码 {result['returncode']}")
+        else:
+            on_event(f"[结果] {'成功' if result['ok'] else '失败：' + result['error']}")
+        turn.append(tool_message)
+    return local_tool_calls
+
+
+def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
+              history=None, memory_text="", limits=None, capabilities=("read",), mode="react",
+              on_trace=None, summary=None, auto_compact=False, compact_only=False,
+              cancel_event=None, approver=None, _budget=None, _role=None, _request_reserve=0,
+              _tools_enabled=True, on_stream=None, _user_message=None,
+              extra_tools=None, extra_executor=None, access_policy=None):
+    """成功时返回完整的一轮；失败时不修改调用方的任何历史。"""
+    workspace, max_steps = _validate_run(prompt, workspace, max_steps, mode, compact_only)
+    (limits, budget, capabilities, approver, access_policy, rules, structure, memory_text,
+     system_text, planner, user_message, turn, definitions, extra_definitions, extra_names,
+     history, summary) = _prepare_turn_context(
+        client, prompt, workspace, max_steps, limits, capabilities, mode, memory_text, history, summary,
+        compact_only=compact_only, approver=approver, budget=_budget, role=_role, cancel_event=cancel_event,
+        tools_enabled=_tools_enabled, user_message=_user_message, extra_tools=extra_tools,
+        access_policy=access_policy, on_event=on_event, on_trace=on_trace)
+    requests_used = 0
+    local_tool_calls = 0
+    format_correction = None
+    corrected_phases = set()
+
+    def trace(kind, **data):
+        if on_trace is not None:
+            try:
+                on_trace(kind, data)
+            except (OSError, ValueError, RuntimeError) as error:
+                raise TraceError(str(error)) from error
+
+    def plan_snapshot():
+        if planner is not None:
+            trace("plan", phase=planner.phase, current=planner.current, replans=planner.replans,
+                  stop_reason=planner.stop_reason,
+                  steps=[{"id": item.id, "kind": item.kind, "depends_on": item.depends_on,
+                          "description": item.description, "status": item.status,
+                          "model_review": item.evidence} for item in planner.steps])
+
+    def remaining_time():
+        return budget.remaining_time()
+
+    def request_model(messages, phase, *, tools=None, tools_allowed=False, history_messages=0):
+        nonlocal requests_used
+        response, requests_used = _request_model(
+            client, model, messages, phase, tools=tools, tools_allowed=tools_allowed,
+            history_messages=history_messages, requests_used=requests_used, max_steps=max_steps,
+            limits=limits, budget=budget, request_reserve=_request_reserve, mode=mode,
+            workspace=workspace, role=_role, trace=trace, on_event=on_event, on_stream=on_stream,
+            remaining_time=remaining_time)
+        return response
+
+    trace("project_rules", **{key: value for key, value in rules.items() if key != "text"})
+    if structure is not None:
+        trace("repository_context", **{key: value for key, value in structure.items() if key != "map"})
+    compacted = _maybe_compact(
+        model=model, summary=summary, history=history, system_text=system_text, turn=turn,
+        limits=limits, mode=mode, max_steps=max_steps, compact_only=compact_only,
+        auto_compact=auto_compact, request_model=request_model, trace=trace, on_event=on_event)
+    if isinstance(compacted, TurnResult):
+        return compacted
+    summary, new_summary = compacted
 
     if mode == "multi":
         if capabilities & {"write", "exec"}:
@@ -444,118 +609,11 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
             raise RuntimeError("模型返回了缺失或重复的工具调用 ID")
         turn.append(assistant_record(message))
         trace("message", message=turn[-1])
-        fallback_content = json.dumps(OUTPUT_LIMIT_RESULT, ensure_ascii=False, separators=(",", ":"))
-        fallbacks = [{"role": "tool", "tool_call_id": call.id, "content": fallback_content}
-                     for call in message.tool_calls]
-        if json_size([system, *turn, *fallbacks]) > tool_context_limit:
-            raise RuntimeError("工具请求本身超过上下文预算，未执行这批调用")
-        budget.reserve_tools(len(message.tool_calls))
-        def bound_approver(request):
-            request.check = remaining_time
-            request.time_remaining = remaining_time()
-            return approver(request)
-
-        parallel_results = {}
-        if _can_parallel_reads(message.tool_calls) and not budget.output_exhausted:
-            def read_one(call, index):
-                return execute_tool(
-                    call.function.name, call.function.arguments, workspace,
-                    capabilities=capabilities & {"read", "web"}, time_remaining=remaining_time(), for_model=True,
-                    access_policy=access_policy, approver=bound_approver,
-                    on_approval=lambda payload: trace("approval", action_id=f"{_role + ':' if _role else ''}{step}:{index}:{call.id}", call_id=call.id, **payload),
-                )
-            with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_READS, len(message.tool_calls))) as pool:
-                futures = {}
-                for index, call in enumerate(message.tool_calls):
-                    action_id = f"{_role + ':' if _role else ''}{step}:{index}:{call.id}"
-                    trace("tool_start", action_id=action_id, call_id=call.id, name=call.function.name,
-                          arguments=call.function.arguments, skipped=False)
-                    location = _tool_location(call)
-                    on_event(f"[工具] {call.function.name}" + (f" · {location}" if location else ""))
-                    futures[pool.submit(read_one, call, index)] = index
-                for future in as_completed(futures):
-                    index = futures[future]
-                    call = message.tool_calls[index]
-                    action_id = f"{_role + ':' if _role else ''}{step}:{index}:{call.id}"
-                    try:
-                        parallel_results[index] = future.result()
-                    except BaseException as error:
-                        trace("tool_interrupted", action_id=action_id, call_id=call.id,
-                              name=call.function.name, error_type=type(error).__name__, outcome="unknown")
-                        parallel_results[index] = error
-                    else:
-                        trace("tool_result", action_id=action_id, call_id=call.id, name=call.function.name,
-                              result=_fact_result(parallel_results[index]))
-        for index, call in enumerate(message.tool_calls):
-            remaining_time()
-            local_tool_calls += 1
-            skip_tool = budget.output_exhausted
-            action_id = f"{_role + ':' if _role else ''}{step}:{index}:{call.id}"
-            prepared = index in parallel_results
-            if not prepared:
-                trace("tool_start", action_id=action_id, call_id=call.id, name=call.function.name,
-                      arguments=call.function.arguments, skipped=skip_tool)
-                location = _tool_location(call)
-                on_event(f"[工具] {call.function.name}" + (f" · {location}" if location else ""))
-
-            def record_artifact(kind, record_id):
-                trace("artifact", action_id=action_id, call_id=call.id, record_type=kind, record_id=record_id)
-
-            def report_approval(payload):
-                trace("approval", action_id=action_id, call_id=call.id, **payload)
-
-            if prepared:
-                result = parallel_results[index]
-                if isinstance(result, BaseException):
-                    raise result
-            else:
-                try:
-                    if skip_tool:
-                        result = OUTPUT_LIMIT_RESULT
-                    elif extra_executor is not None and call.function.name in extra_names:
-                        result = extra_executor(
-                            call.function.name, call.function.arguments, capabilities=(capabilities & {"read", "web"}
-                                if planner is not None and planner.readonly_batch else capabilities),
-                            approver=bound_approver, on_approval=report_approval,
-                            time_remaining=remaining_time(), check=remaining_time,
-                        )
-                    else:
-                        result = execute_tool(
-                            call.function.name, call.function.arguments, workspace,
-                            capabilities=(capabilities & {"read", "web"}
-                                if planner is not None and planner.readonly_batch else capabilities),
-                            time_remaining=remaining_time(), on_record=record_artifact, access_policy=access_policy,
-                            approver=bound_approver, on_approval=report_approval, for_model=True, check=remaining_time,
-                        )
-                except BaseException as error:
-                    trace("tool_interrupted", action_id=action_id, call_id=call.id, name=call.function.name,
-                          error_type=type(error).__name__, outcome="unknown")
-                    raise
-            # 在上下文截断和超时检查前保存真实结果，操作事实不随模型上下文丢失。
-            if not prepared:
-                trace("tool_result", action_id=action_id, call_id=call.id, name=call.function.name,
-                      result=_fact_result(result))
-            if result.get("summary"):
-                on_event(f"[操作] {result['summary']}")
-            if planner is not None:
-                planner.observe_tool(call.function.name, result)
-            if result.get("diff"):
-                on_event("[差异]\n" + result["diff"])
-            if result.get("output"):
-                on_event("[命令输出]\n" + result["output"])
-            remaining_time()
-            def fits_context(content):
-                tool_message = {"role": "tool", "tool_call_id": call.id, "content": content}
-                return json_size([system, *turn, tool_message, *fallbacks[index + 1:]]) <= tool_context_limit
-
-            result, content = budget.encode_result(result, fits_context)
-            tool_message = {"role": "tool", "tool_call_id": call.id, "content": content}
-            if result.get("approval"):
-                on_event(f"[审批] {result['approval']}")
-            if result.get("ok") and "returncode" in result:
-                on_event(f"[结果] 命令已结束，退出码 {result['returncode']}")
-            else:
-                on_event(f"[结果] {'成功' if result['ok'] else '失败：' + result['error']}")
-            turn.append(tool_message)
+        local_tool_calls = _execute_tool_batch(
+            message, turn, system, step, role=_role, capabilities=capabilities, planner=planner,
+            workspace=workspace, access_policy=access_policy, approver=approver,
+            extra_executor=extra_executor, extra_names=extra_names, budget=budget,
+            tool_context_limit=tool_context_limit, trace=trace, on_event=on_event,
+            remaining_time=remaining_time, local_tool_calls=local_tool_calls)
 
     raise RuntimeError("任务尚未完成")
