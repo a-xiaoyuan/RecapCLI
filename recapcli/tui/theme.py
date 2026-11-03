@@ -9,12 +9,13 @@ from rich.text import Text
 
 from ..ui.terminal_ui import clean_output
 
+# 与 violet.tcss 手写同步：浅灰底、深灰字、橙色强调。
 PALETTE = {
-    "base": "#161622", "stage": "#1e1e2e", "line": "#45475a",
-    "text": "#cdd6f4", "muted": "#a6adc8", "faint": "#6c7086",
-    "accent": "#cba6f7", "online": "#a6e3a1", "error": "#f38ba8",
-    "user": "#cba6f7", "assistant": "#cba6f7", "yellow": "#fab387",
-    "index": "#b4befe", "warning": "#fab387", "user_background": "#262639",
+    "base": "#f3f0eb", "stage": "#f7f4ef", "line": "#d9d1c7",
+    "text": "#3c3834", "muted": "#6f675f", "faint": "#8d857c",
+    "accent": "#d4652a", "online": "#2f7d57", "error": "#c44545",
+    "user": "#c45c26", "assistant": "#c45c26",
+    "index": "#b86a2e", "warning": "#b86a2e",
 }
 
 class QuotePanel(BlockQuote):
@@ -60,7 +61,7 @@ class GuidedAnswer:
 
 
 def render_answer(content, task=None):
-    body = AnswerMarkdown(content, code_theme="ansi_dark", hyperlinks=False)
+    body = AnswerMarkdown(content, code_theme="default", hyperlinks=False)
     body.parsed = [token for token in body.parsed if token.type != "hr"]
     for token in body.parsed:
         for child in token.children or ():

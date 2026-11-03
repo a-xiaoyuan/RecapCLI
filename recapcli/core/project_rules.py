@@ -32,11 +32,6 @@ def _read_rule(workspace, relative, max_bytes):
             "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
 
 
-def load_project_rules(workspace, max_bytes=MAX_RULE_BYTES):
-    """只读取根目录 AGENTS.md；保留既有单文件接口。"""
-    return _read_rule(workspace, Path("AGENTS.md"), max_bytes)
-
-
 def _layer_view(layer):
     return {key: value for key, value in layer.items() if key != "text"}
 

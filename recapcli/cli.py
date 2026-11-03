@@ -149,7 +149,7 @@ def build_parser():
                         help="跳过逐次提问并批准本进程内的写入和命令；执行前仍复核参数与文件指纹，变化则作废")
     parser.add_argument("--approval-timeout", type=float, default=120,
                         help="交互审批等待秒数，默认 120，最大 3600")
-    parser.add_argument("--preview", action="store_true", help="预览小幽灵与示例对话配色，不请求模型")
+    parser.add_argument("--preview", action="store_true", help="预览 Recap 字标与示例对话配色，不请求模型")
     parser.add_argument("--banner", choices=["auto", "color", "plain", "off"], default="auto",
                         help="行式启动面板：auto、color、plain 或 off；显式指定非 auto 时使用行式 CLI")
     parser.add_argument("--color", choices=["auto", "always", "never"], default="auto",

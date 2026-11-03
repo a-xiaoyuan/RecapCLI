@@ -6,7 +6,6 @@ import queue
 import threading
 import time
 
-from rich.cells import cell_len
 from rich.text import Text
 from rich.theme import Theme as RichTheme
 from textual.app import App, ComposeResult
@@ -22,7 +21,7 @@ from .status import TaskStatus, task_text, usage_text
 from .theme import PALETTE, render_answer, render_line
 from .widgets import CommandMenu, ConversationView, PromptInput, StatusScreen, ToolProgress
 from .settings import ModelConfigScreen, ModelPickerScreen
-from ..ui.terminal_art import project_version
+from ..ui.terminal_art import project_version, wordmark_text
 from ..ui.terminal_ui import clean_output
 from ..config import ConfigError, list_model_profiles
 from ..application.help import command_items, help_text
@@ -31,11 +30,18 @@ from ..application.changes import change_report, git_summary, files_summary, com
 
 
 TERMINAL_THEME = Theme(
-    name="recap-terminal", primary=PALETTE["accent"], secondary=PALETTE["accent"],
-    accent=PALETTE["accent"], foreground="ansi_default", background=PALETTE["base"],
-    surface=PALETTE["base"], panel=PALETTE["stage"], success=PALETTE["online"],
-    error=PALETTE["error"], boost="ansi_default", dark=True, ansi=True,
-    variables={"ansi-background": "ansi_default", "ansi-foreground": "ansi_default"},
+    name="recap-terminal", primary=PALETTE["accent"], secondary=PALETTE["warning"],
+    accent=PALETTE["accent"], foreground=PALETTE["text"], background=PALETTE["base"],
+    surface=PALETTE["stage"], panel=PALETTE["stage"], success=PALETTE["online"],
+    warning=PALETTE["warning"], error=PALETTE["error"], boost=PALETTE["muted"],
+    dark=False, ansi=False,
+)
+WELCOME_NOTE = "欢迎回来，从手头的代码读起。"
+WELCOME_TIPS = (
+    "/help 查看命令",
+    "F2 选模型，F3 写配置",
+    "Esc 停止，Ctrl+L 清屏",
+    "写入和命令会先审批",
 )
 DEMO_NOTE = "这是界面演示，输入未发送给模型。"
 DEMO_PROMPT = "梳理项目入口，说明启动和执行流程。"
@@ -153,7 +159,7 @@ class ConversationLine(Static):
             rendered = render_answer(shown, self.task_status)
         elif self.kind == "user":
             rendered = Text.assemble(("❯ ", "bold " + PALETTE["user"]),
-                                     (shown, "bold #ffffff"), overflow="fold")
+                                     (shown, "bold " + PALETTE["text"]), overflow="fold")
         else:
             rendered = render_line(shown, self.kind)
         self.update(rendered)
@@ -190,7 +196,7 @@ class RecapShell(App):
         super().__init__(ansi_color=True)
         self.console.push_theme(RichTheme({
             **{f"markdown.h{level}": "bold " + PALETTE["text"] for level in range(1, 7)},
-            "markdown.code": "bold #ddb6f2 on #26233a",
+            "markdown.code": "bold " + PALETTE["text"] + " on #f4e6d8",
             "markdown.block_quote": PALETTE["text"],
             "markdown.item.bullet": PALETTE["muted"],
             "markdown.item.number": PALETTE["accent"],
@@ -252,22 +258,13 @@ class RecapShell(App):
                         with Vertical(id="welcome"):
                             with Horizontal(id="welcome-columns"):
                                 with Vertical(id="welcome-primary"):
-                                    yield Static("✦ Welcome back!", id="welcome-message", markup=False)
-                                    yield Static("Your codebase companion.", id="welcome-subtitle", markup=False)
+                                    yield Static(wordmark_text(max_width=40), id="welcome-mark")
+                                    yield Static(WELCOME_NOTE, id="welcome-message", markup=False)
+                                    yield Static(self._workspace_caption(), id="welcome-subtitle", markup=False)
                                     yield Static("", id="welcome-agent", markup=False)
-                                    yield Static("tip: /help 查看命令", id="welcome-tip", markup=False)
-                                with Vertical(id="welcome-environment"):
-                                    yield Static("Environment", id="welcome-environment-title", markup=False)
-                                    path = clean_output(str(self.state.workspace))
-                                    if cell_len(path) > 24:
-                                        path = "..." + ("\\" if "\\" in path else "/") + self.state.workspace.name
-                                    path_label = Text("cwd: " + path, no_wrap=True, overflow="ellipsis")
-                                    path_label.truncate(27, overflow="ellipsis")
-                                    yield Static(path_label, id="welcome-cwd", markup=False)
-                                    yield Static(Text.assemble(("branch: ", PALETTE["muted"]),
-                                                              (clean_output(self.state.branch) or "无 Git 分支", PALETTE["online"]),
-                                                              no_wrap=True, overflow="ellipsis"), id="welcome-branch", markup=False)
-                                    yield Static("", id="welcome-model", markup=False)
+                                with Vertical(id="welcome-tips"):
+                                    yield Static("Tips", id="welcome-tips-title", markup=False)
+                                    yield Static("\n".join(WELCOME_TIPS), id="welcome-tips-body", markup=False)
                         yield Vertical(id="transcript")
                 with Horizontal(id="footer-frame"):
                     with Vertical(id="footer"):
@@ -336,7 +333,28 @@ class RecapShell(App):
             self.screen_stack[0].set_class(width >= 128, "-wide")
         if self.query("#input-prefix"):
             self.query_one("#input-prefix", Static).update("❯" if width < 72 else "RecapCLI ❯")
+        self.call_after_refresh(self._refresh_wordmark)
         self.call_after_refresh(self._refresh_hints)
+
+    def _workspace_caption(self):
+        """目录和分支留在左栏副文；模型已经出现在按键提示里。"""
+        path = clean_output(str(self.state.workspace))
+        branch = clean_output(self.state.branch) or "无 Git 分支"
+        caption = Text(no_wrap=True, overflow="ellipsis")
+        caption.append(path, style=PALETTE["muted"])
+        caption.append("  ·  ", style=PALETTE["faint"])
+        caption.append(branch, style=PALETTE["online"] if self.state.branch else PALETTE["muted"])
+        return caption
+
+    def _refresh_wordmark(self):
+        if not self.query("#welcome-mark"):
+            return
+        primary = self.query_one("#welcome-primary")
+        width = primary.content_size.width or primary.size.width
+        if width <= 1 or width == getattr(self, "_mark_width", None):
+            return
+        self._mark_width = width
+        self.query_one("#welcome-mark", Static).update(wordmark_text(max_width=width))
 
     def _cursor_text(self):
         text = Text("  ", style=PALETTE["faint"])
@@ -539,8 +557,6 @@ class RecapShell(App):
                      ("Agent 执行中" if self._busy else "Agent Ready")), style=PALETTE["text"])
         agent.append(" · " + mode, style=PALETTE["muted"])
         self.query_one("#welcome-agent", Static).update(agent)
-        model = self._display_model or self._selected_profile().get("model") or "未配置模型"
-        self.query_one("#welcome-model", Static).update(Text("model: " + clean_output(model), no_wrap=True, overflow="ellipsis"))
         self._refresh_inspector(mode)
         send = self.query_one("#send", GlyphButton)
         send.update("■" if self._busy else "↵")

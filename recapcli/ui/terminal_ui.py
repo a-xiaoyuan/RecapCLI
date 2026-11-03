@@ -14,24 +14,25 @@ from rich.theme import Theme
 from .terminal_art import terminal_output, write_terminal
 
 
+# 只给文字和代码块上色，不铺满终端背景。代码块用浅色主题，避免深色底块。
 THEME = Theme({
-    "user": "bold #96dfcf",
-    "assistant": "bold #d4b6f7",
-    "model": "#ada6c5",
-    "tool": "#94d8e9",
-    "success": "#acdba4",
-    "error": "bold #f3a1b2",
-    "muted": "#a9b1c6",
-    "preview": "#efd396",
-    "markdown.h1": "bold #d4b6f7",
-    "markdown.h2": "bold #d4b6f7",
-    "markdown.h3": "bold #b8c9f5",
-    "markdown.strong": "bold #d4b6f7",
-    "markdown.em": "italic #b8c9f5",
-    "markdown.code": "#f0d59c on #242735",
-    "markdown.item.bullet": "#96dfcf",
-    "markdown.link": "underline #94d8e9",
-    "markdown.block_quote": "#b0bfd1",
+    "user": "bold #c45c26",
+    "assistant": "bold #d4652a",
+    "model": "#6f675f",
+    "tool": "#3d6d8c",
+    "success": "#2f7d57",
+    "error": "bold #c44545",
+    "muted": "#6f675f",
+    "preview": "#b86a2e",
+    "markdown.h1": "bold #d4652a",
+    "markdown.h2": "bold #d4652a",
+    "markdown.h3": "bold #c45c26",
+    "markdown.strong": "bold #c45c26",
+    "markdown.em": "italic #6f675f",
+    "markdown.code": "#3c3834 on #f4e6d8",
+    "markdown.item.bullet": "#d4652a",
+    "markdown.link": "underline #c45c26",
+    "markdown.block_quote": "#5c564e",
 })
 
 
@@ -101,7 +102,7 @@ class TerminalUI:
             console.print()
             console.print(Text("RecapCLI>", style="assistant"))
             if color:
-                console.print(Padding(Markdown(answer, code_theme="monokai", hyperlinks=False), (0, 0, 0, 2)))
+                console.print(Padding(Markdown(answer, code_theme="default", hyperlinks=False), (0, 0, 0, 2)))
             else:
                 # 保存到文件时保留原始 Markdown，便于再次阅读或处理。
                 console.print(Text(answer), soft_wrap=True)

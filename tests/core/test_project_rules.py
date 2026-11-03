@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import recapcli.core.project_rules as project_rules
 from recapcli.core.project_rules import (
     load_rule_layers,
     project_rules_description,
@@ -11,6 +12,11 @@ from recapcli.core.project_rules import (
 
 
 class ProjectRuleSummaryTests(unittest.TestCase):
+    def test_single_file_loader_is_not_part_of_the_api(self):
+        self.assertFalse(hasattr(project_rules, "load_project_rules"))
+        for name in ("load_rule_layers", "summarize_rule_layers", "project_rules_description"):
+            self.assertTrue(callable(getattr(project_rules, name)))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

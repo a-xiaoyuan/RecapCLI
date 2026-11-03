@@ -85,9 +85,6 @@ class Presenter:
             raise EOFError
         return item
 
-    def clear_transcript(self):
-        self._call(self.app.clear_transcript_sync)
-
     def replace_transcript(self, rows):
         self._call(self.app.replace_transcript_sync, tuple(rows))
 
