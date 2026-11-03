@@ -216,6 +216,15 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(result["replacements"], 2)
         self.assertEqual(path.read_text(encoding="utf-8"), "new new")
 
+    def test_edit_missing_match_reports_nearest_line(self):
+        path = self.workspace / "file.py"
+        path.write_text("def calculate(value):\n    return value + 1\n", encoding="utf-8")
+        result = self.call("edit_file", path="file.py", old_text="def calcluate(value):",
+                           new_text="def add(value):")
+        self.assertFalse(result["ok"])
+        self.assertIn("最接近第 1 行", result["error"])
+        self.assertIn("def calculate(value)", path.read_text(encoding="utf-8"))
+
     def test_create_and_restore_new_file(self):
         result = self.call("edit_file", path="pkg/new.py", old_text="", new_text="print('hello')\n")
         self.assertTrue(result["created"])

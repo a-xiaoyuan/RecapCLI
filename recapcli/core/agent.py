@@ -16,11 +16,11 @@ from ..llm.images import has_image_references, prepare_user_message
 from ..llm.streaming import IncompleteStreamError
 from .budget import AgentBudget, OUTPUT_LIMIT_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text, validate_summary
-from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, select_history
+from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, json_tokens, select_history
 from .planning import PlanController, PlanFormatError
 from .access import PathAccess, using_access
 from .requests import retry_delay
-from .project_rules import load_project_rules, MAX_RULE_BYTES
+from .project_rules import load_rule_layers, MAX_RULE_BYTES
 from ..tools import execute_tool, tool_definitions
 from ..tools.approval import fail_closed
 
@@ -63,6 +63,7 @@ def _can_parallel_reads(tool_calls):
 @dataclass(frozen=True)
 class AgentLimits:
     max_context_bytes: int = MAX_CONTEXT_BYTES
+    max_context_tokens: int = 0
     max_tool_calls: int = 64
     max_tool_bytes: int = 256 * 1024
     max_seconds: float = 900.0
@@ -79,6 +80,9 @@ class AgentLimits:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} 必须是大于 0 的整数")
+        if (isinstance(self.max_context_tokens, bool) or not isinstance(self.max_context_tokens, int)
+                or self.max_context_tokens < 0):
+            raise ValueError("max_context_tokens 必须是非负整数")
         if (isinstance(self.max_seconds, bool) or not isinstance(self.max_seconds, (int, float))
                 or not 0 < self.max_seconds < float("inf")):
             raise ValueError("max_seconds 必须是有限的正数")
@@ -107,9 +111,18 @@ class TraceError(RuntimeError):
 def build_system_prompt(memory_text="", project_rules_text=""):
     text = BASE_SYSTEM_PROMPT
     if project_rules_text:
-        text += ("\n\n当前项目的开发约定（根目录 AGENTS.md）：\n" + project_rules_text
+        text += ("\n\n当前项目的开发约定（AGENTS.md；子目录规则标注了作用域）：\n" + project_rules_text
                  + "\n\n项目约定用于指导开发；当前用户要求优先。约定不能扩大工具权限或替代人工审批。")
     return text + ("\n\n" + memory_text if memory_text else "")
+
+
+def _rule_layers_text(layers):
+    parts = []
+    for layer in layers:
+        if layer.get("status") != "loaded" or not layer.get("text"):
+            continue
+        parts.append(f"### {layer['source']}（作用域：{layer['scope']}）\n{layer['text']}")
+    return "\n\n".join(parts)
 
 
 def _fact_result(result):
@@ -153,8 +166,15 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
     runtime = f"\n当前开放能力：{', '.join(sorted(capabilities))}。Python 解释器：{sys.executable}。"
     if access_policy.directories:
         runtime += "\n已授权的额外目录：" + "；".join(str(path) for path in access_policy.directories)
-    rules = (load_project_rules(workspace, min(MAX_RULE_BYTES, limits.max_context_bytes // 4))
-             if not compact_only else {"source": "AGENTS.md", "status": "skipped", "reason": "历史压缩不加载项目开发约定"})
+    if not compact_only:
+        rule_layers = load_rule_layers(workspace, min(MAX_RULE_BYTES, limits.max_context_bytes // 4))
+        rules = rule_layers[0] if rule_layers and rule_layers[0]["source"] == "AGENTS.md" else {
+            "source": "AGENTS.md", "status": "missing"}
+        rules["layers"] = [{key: value for key, value in layer.items() if key != "text"}
+                           for layer in rule_layers]
+    else:
+        rule_layers = []
+        rules = {"source": "AGENTS.md", "status": "skipped", "reason": "历史压缩不加载项目开发约定"}
     structure = None
     if not compact_only and _role is None and limits.max_context_bytes >= 8192:
         from ..tools.code_context import repository_map
@@ -167,7 +187,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
                                 + json.dumps(structure["verification_candidates"], ensure_ascii=False))
         except (OSError, ValueError) as error:
             structure = {"error": type(error).__name__, "files": [], "truncated": True}
-    system_text = build_system_prompt(memory_text, rules.get("text", "")) + runtime
+    system_text = build_system_prompt(memory_text, _rule_layers_text(rule_layers)) + runtime
     if _role:
         from .subagents import ROLE_INSTRUCTIONS
         system_text += "\n\n" + ROLE_INSTRUCTIONS[_role.split(":", 1)[0]]
@@ -346,16 +366,22 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         system = {"role": "system", "content": system_text + instruction}
         # 当前轮始终保留；历史随本轮增长重新选择，不回写到完整存档。
         available = limits.max_context_bytes - json_size([system, *turn, *closing]) - 1
-        if available < 0 and system_text != base_system_text:
+        available_tokens = None
+        if limits.max_context_tokens:
+            available_tokens = limits.max_context_tokens - json_tokens([system, *turn, *closing]) - 1
+        if (available < 0 or (available_tokens is not None and available_tokens < 0)) and system_text != base_system_text:
             # 摘要也是可舍弃的历史，不能挤掉当前问题或未闭合工具结果。
             system_text = base_system_text
             system = {"role": "system", "content": system_text + instruction}
             history_for_model = history
             available = limits.max_context_bytes - json_size([system, *turn, *closing]) - 1
+            if limits.max_context_tokens:
+                available_tokens = limits.max_context_tokens - json_tokens([system, *turn, *closing]) - 1
             trace("summary_omitted", reason="为当前轮次保留上下文空间")
-        if available < 0:
-            raise RuntimeError("本轮消息超过上下文大小预算，请缩小问题或工具读取范围")
-        selected = select_history(history_for_model, MAX_HISTORY_MESSAGES, available)
+        if available < 0 or (available_tokens is not None and available_tokens < 0):
+            raise RuntimeError("本轮消息超过上下文预算，请缩小问题或工具读取范围")
+        selected = select_history(history_for_model, MAX_HISTORY_MESSAGES, available,
+                                  max_tokens=available_tokens)
         messages = [system, *selected, *turn, *closing]
         tools_allowed = _tools_enabled and not final_request and (planner is None or planner.allows_tools)
         response = request_model(messages, planner.phase if planner else "react",

@@ -2,7 +2,7 @@
 
 import base64
 from datetime import datetime
-from difflib import unified_diff
+from difflib import SequenceMatcher, unified_diff
 import hashlib
 import json
 import os
@@ -90,6 +90,21 @@ def _diff(before, after, path):
     return "".join(chunks), False
 
 
+def _nearest_line(text, old):
+    target = (old.splitlines()[0] if old.splitlines() else old).strip()
+    best = (0.0, 0, "")
+    for number, line in enumerate(text.splitlines(), 1):
+        candidate = line.strip()
+        if not candidate:
+            continue
+        score = SequenceMatcher(None, target[:200], candidate[:200]).ratio()
+        if score > best[0]:
+            best = (score, number, candidate)
+    if best[0] < 0.5:
+        return ""
+    return f"最接近第 {best[1]} 行：{best[2][:160]}"
+
+
 def _plan_edit(workspace, path, old_text, new_text, replace_all=False, *, before=...):
     """计算一次精确替换，不写文件、不建备份。"""
     if not isinstance(old_text, str) or not isinstance(new_text, str):
@@ -114,7 +129,9 @@ def _plan_edit(workspace, path, old_text, new_text, replace_all=False, *, before
             raise ToolError("现有非空文件的 old_text 不能为空，请先读取并提供精确原文")
         count = text.count(old)
         if not count:
-            raise ToolError("未找到 old_text，文件未修改；请重新读取并使用精确原文")
+            hint = _nearest_line(text, old)
+            suffix = f"；{hint}" if hint else ""
+            raise ToolError("未找到 old_text，文件未修改；请重新读取并使用精确原文" + suffix)
         if count > 1 and not replace_all:
             raise ToolError(f"old_text 匹配 {count} 处，请提供更完整的原文或显式 replace_all")
         updated = text.replace(old, new, -1 if replace_all else 1)
