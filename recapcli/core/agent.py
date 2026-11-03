@@ -20,7 +20,7 @@ from .context import MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, json_size, json_to
 from .planning import PlanController, PlanFormatError
 from .access import PathAccess, using_access
 from .requests import retry_delay
-from .project_rules import load_rule_layers, MAX_RULE_BYTES
+from .project_rules import load_rule_layers, summarize_rule_layers, MAX_RULE_BYTES
 from ..tools import execute_tool, tool_definitions
 from ..tools.approval import fail_closed
 
@@ -168,10 +168,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         runtime += "\n已授权的额外目录：" + "；".join(str(path) for path in access_policy.directories)
     if not compact_only:
         rule_layers = load_rule_layers(workspace, min(MAX_RULE_BYTES, limits.max_context_bytes // 4))
-        rules = rule_layers[0] if rule_layers and rule_layers[0]["source"] == "AGENTS.md" else {
-            "source": "AGENTS.md", "status": "missing"}
-        rules["layers"] = [{key: value for key, value in layer.items() if key != "text"}
-                           for layer in rule_layers]
+        rules = summarize_rule_layers(rule_layers)
     else:
         rule_layers = []
         rules = {"source": "AGENTS.md", "status": "skipped", "reason": "历史压缩不加载项目开发约定"}
