@@ -37,6 +37,10 @@ def load_project_rules(workspace, max_bytes=MAX_RULE_BYTES):
     return _read_rule(workspace, Path("AGENTS.md"), max_bytes)
 
 
+def _layer_view(layer):
+    return {key: value for key, value in layer.items() if key != "text"}
+
+
 def load_rule_layers(workspace, max_bytes=MAX_RULE_BYTES, max_files=MAX_RULE_FILES):
     """读取根目录和子目录的 AGENTS.md，按根目录优先返回。"""
     workspace = Path(workspace).resolve()
@@ -72,16 +76,136 @@ def load_rule_layers(workspace, max_bytes=MAX_RULE_BYTES, max_files=MAX_RULE_FIL
     return layers
 
 
-def project_rules_description(rules):
-    if rules is None:
-        return "本轮未记录项目规则；普通提问时读取根目录 AGENTS.md"
-    status = rules["status"]
-    layers = rules.get("layers", [])
+def summarize_rule_layers(layers):
+    """把分层结果收成一条规则摘要。
+
+    status 描述实际进入上下文的结果，而不是单独的根目录文件：
+    loaded 表示至少一份正文已加载；skipped 表示没有正文且至少一份被跳过；
+    empty 表示找到的文件都为空；missing 表示没有 AGENTS.md。
+    loaded 时 bytes 是已加载文件的字节合计。根目录文件本身被加载时，sha256 仍是该根文件指纹。
+    """
+    public = [_layer_view(layer) for layer in layers]
+    loaded = [layer for layer in public if layer.get("status") == "loaded"]
+    skipped = [layer for layer in public if layer.get("status") == "skipped"]
+    empty = [layer for layer in public if layer.get("status") == "empty"]
+    root = next((layer for layer in public if layer.get("source") == "AGENTS.md"), None)
+
+    if loaded:
+        primary = root if root and root.get("status") == "loaded" else loaded[0]
+        record = {
+            "source": primary.get("source", "AGENTS.md"),
+            "scope": primary.get("scope", "."),
+            "status": "loaded",
+            "bytes": sum(layer.get("bytes", 0) for layer in loaded),
+            "layers": public,
+        }
+        fingerprint = root.get("sha256") if root and root.get("status") == "loaded" else None
+        if not fingerprint and len(loaded) == 1:
+            fingerprint = loaded[0].get("sha256")
+        if fingerprint:
+            record["sha256"] = fingerprint
+        return record
+
+    if skipped:
+        chosen = root if root and root.get("status") == "skipped" else skipped[0]
+        return {
+            "source": chosen.get("source", "AGENTS.md"),
+            "scope": chosen.get("scope", "."),
+            "status": "skipped",
+            "reason": chosen.get("reason", "未加载"),
+            "layers": public,
+        }
+
+    if empty:
+        chosen = root if root and root.get("status") == "empty" else empty[0]
+        record = {
+            "source": chosen.get("source", "AGENTS.md"),
+            "scope": chosen.get("scope", "."),
+            "status": "empty",
+            "layers": public,
+        }
+        if "bytes" in chosen:
+            record["bytes"] = chosen["bytes"]
+        if chosen.get("sha256"):
+            record["sha256"] = chosen["sha256"]
+        return record
+
+    return {"source": "AGENTS.md", "status": "missing", "layers": public}
+
+
+def _skipped_text(layer, rules):
+    source = layer.get("source", rules.get("source", "AGENTS.md"))
+    reason = layer.get("reason") or rules.get("reason") or ""
+    if reason:
+        return f"{source} 未加载 · {reason}"
+    return f"{source} 未加载"
+
+
+def _single_rule_description(rules):
+    status = rules.get("status")
+    source = rules.get("source", "AGENTS.md")
     if status == "loaded":
-        scope = "" if len(layers) <= 1 else f" · 含 {len(layers)} 个规则文件"
-        return f"{rules['source']} · 已加载 {rules['bytes']} 字节{scope}"
+        return f"{source} · 已加载 {rules.get('bytes', 0)} 字节"
     if status == "missing":
         return "根目录未找到 AGENTS.md"
     if status == "empty":
+        return "AGENTS.md 是空文件" if source == "AGENTS.md" else f"{source} 是空文件"
+    reason = rules.get("reason") or ""
+    return f"{source} 未加载 · {reason}" if reason else f"{source} 未加载"
+
+
+def _loaded_rules_description(loaded, layers):
+    total = sum(int(layer.get("bytes") or 0) for layer in loaded)
+    primary = next((layer.get("source") for layer in loaded if layer.get("source") == "AGENTS.md"), None)
+    primary = primary or loaded[0].get("source", "AGENTS.md")
+    shown = loaded[0].get("bytes", total) if len(loaded) == 1 else total
+    text = f"{primary} · 已加载 {shown} 字节"
+    if len(loaded) > 1:
+        text += f" · 含 {len(loaded)} 个规则文件"
+    notes = []
+    empty = [layer for layer in layers if layer.get("status") == "empty"]
+    skipped = [layer for layer in layers if layer.get("status") == "skipped"]
+    if len(empty) == 1 and empty[0].get("source") == "AGENTS.md":
+        notes.append("根目录 AGENTS.md 为空")
+    elif empty:
+        notes.append(f"{len(empty)} 个空文件")
+    if skipped:
+        notes.append(f"{len(skipped)} 个未加载")
+    if notes:
+        text += " · " + " · ".join(notes)
+    return text
+
+
+def _unloaded_rules_description(rules, layers):
+    skipped = [layer for layer in layers if layer.get("status") == "skipped"]
+    empty = [layer for layer in layers if layer.get("status") == "empty"]
+    if skipped and len(skipped) == 1 and not empty:
+        return _skipped_text(skipped[0], rules)
+    if skipped:
+        reason = skipped[0].get("reason") or rules.get("reason") or ""
+        text = f"{len(skipped)} 个规则文件未加载"
+        if empty:
+            text += f" · {len(empty)} 个空文件"
+        if reason:
+            text += f" · {reason}"
+        return text
+    if len(empty) == 1 and empty[0].get("source") == "AGENTS.md":
         return "AGENTS.md 是空文件"
-    return "AGENTS.md 未加载 · " + rules["reason"]
+    if empty:
+        names = "、".join(layer.get("source", "AGENTS.md") for layer in empty)
+        return f"规则文件为空：{names}"
+    if rules.get("status") == "missing":
+        return "根目录未找到 AGENTS.md"
+    return _single_rule_description(rules)
+
+
+def project_rules_description(rules):
+    if rules is None:
+        return "本轮未记录项目规则；普通提问时读取根目录 AGENTS.md"
+    layers = [layer for layer in (rules.get("layers") or []) if isinstance(layer, dict)]
+    if not layers:
+        return _single_rule_description(rules)
+    loaded = [layer for layer in layers if layer.get("status") == "loaded"]
+    if loaded:
+        return _loaded_rules_description(loaded, layers)
+    return _unloaded_rules_description(rules, layers)

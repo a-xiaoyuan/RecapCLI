@@ -13,7 +13,7 @@ from openai import OpenAI
 
 from recapcli.core.agent import AgentLimits, run_agent
 from recapcli.core.context import json_size, select_history
-from recapcli.core.project_rules import MAX_RULE_BYTES
+from recapcli.core.project_rules import MAX_RULE_BYTES, project_rules_description
 from recapcli.cli import main
 from recapcli.storage.session import SessionStore
 from recapcli.ui.terminal_ui import TerminalUI
@@ -80,6 +80,11 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(source["status"], "loaded")
         self.assertNotIn("text", source)
         self.assertIn("src/AGENTS.md", [layer["source"] for layer in source["layers"]])
+        summary = project_rules_description(source)
+        self.assertIn("已加载", summary)
+        self.assertIn("2 个规则文件", summary)
+        self.assertNotIn("根目录未找到", summary)
+        self.assertNotIn("是空文件", summary)
         rules.write_text("验证命令：python verify_beta.py", encoding="utf-8")
         events.clear()
         _, requests = self.run_with_replies([reply("已更新约定")], on_trace=lambda kind, data: events.append((kind, data)))
@@ -100,6 +105,52 @@ class AgentTests(unittest.TestCase):
                 source = next(data for kind, data in events if kind == "project_rules")
                 self.assertEqual(source["status"], "skipped")
                 self.assertTrue(source["reason"])
+                self.assertNotIn("已加载", project_rules_description(source))
+
+    def test_loaded_subdirectory_rules_are_not_described_as_a_missing_root(self):
+        (self.root / "AGENTS.md").write_text("父目录约定不应加载", encoding="utf-8")
+        (self.workspace / "src").mkdir()
+        (self.workspace / "src" / "AGENTS.md").write_text("只在子目录生效", encoding="utf-8")
+        events = []
+        _, requests = self.run_with_replies([reply("已读子目录约定")],
+                                            on_trace=lambda kind, data: events.append((kind, data)))
+        system = requests[0]["messages"][0]["content"]
+        self.assertIn("只在子目录生效", system)
+        self.assertIn("作用域：src", system)
+        self.assertNotIn("父目录约定不应加载", system)
+        self.assertNotIn("### AGENTS.md", system)
+        source = next(data for kind, data in events if kind == "project_rules")
+        self.assertEqual(source["status"], "loaded")
+        self.assertEqual(source["source"], "src/AGENTS.md")
+        self.assertEqual([layer["source"] for layer in source["layers"]], ["src/AGENTS.md"])
+        self.assertEqual(source["layers"][0]["status"], "loaded")
+        self.assertNotIn("text", source)
+        self.assertTrue(all("text" not in layer for layer in source["layers"]))
+        summary = project_rules_description(source)
+        self.assertIn("src/AGENTS.md", summary)
+        self.assertIn("已加载", summary)
+        self.assertNotIn("根目录未找到", summary)
+        self.assertNotIn("空文件", summary)
+
+    def test_empty_root_does_not_hide_loaded_subdirectory_rules(self):
+        (self.workspace / "AGENTS.md").write_text(" \n\t", encoding="utf-8")
+        (self.workspace / "src").mkdir()
+        (self.workspace / "src" / "AGENTS.md").write_text("子目录约定仍要加载", encoding="utf-8")
+        events = []
+        _, requests = self.run_with_replies([reply("已读空根与子目录")],
+                                            on_trace=lambda kind, data: events.append((kind, data)))
+        system = requests[0]["messages"][0]["content"]
+        self.assertIn("子目录约定仍要加载", system)
+        self.assertNotIn("### AGENTS.md", system)
+        source = next(data for kind, data in events if kind == "project_rules")
+        self.assertEqual(source["status"], "loaded")
+        self.assertEqual([layer["status"] for layer in source["layers"]], ["empty", "loaded"])
+        summary = project_rules_description(source)
+        self.assertIn("src/AGENTS.md", summary)
+        self.assertIn("已加载", summary)
+        self.assertIn("根目录 AGENTS.md 为空", summary)
+        self.assertNotEqual(summary, "AGENTS.md 是空文件")
+        self.assertNotIn("根目录未找到", summary)
 
     def test_file_result_is_sent_back_with_matching_call_id(self):
         answer, requests = self.run_with_replies([
