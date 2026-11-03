@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from recapcli.cli import main
-from recapcli.ui.terminal_art import cell_width
+from recapcli.cli import build_parser, main
+from recapcli.ui.terminal_art import cell_width, print_banner, wordmark_text
 from recapcli.ui.terminal_ui import TerminalUI
 
 
@@ -31,7 +31,9 @@ class TerminalUITests(unittest.TestCase):
         self.assertNotIn("###", plain)
         self.assertNotIn("```", plain)
         self.assertNotIn("**重点**", plain)
-        self.assertGreaterEqual(len(set(re.findall(r"38;2;\d+;\d+;\d+", text))), 4)
+        colors = set(re.findall(r"38;2;\d+;\d+;\d+", text))
+        self.assertGreaterEqual(len(colors), 4)
+        self.assertNotIn("48;2;39;40;34", text)
 
     def test_plain_mode_preserves_markdown_without_escape_codes(self):
         for color, env in [("never", {}), ("auto", {"NO_COLOR": "1"}), ("auto", {})]:
@@ -109,6 +111,25 @@ class TerminalUITests(unittest.TestCase):
         self.assertIn("[工具] read_file", ANSI.sub("", text))
         self.assertIn("RecapCLI>", ANSI.sub("", text))
         self.assertGreaterEqual(len(set(re.findall(r"38;2;\d+;\d+;\d+", text))), 5)
+        self.assertNotIn("48;2;39;40;34", text)
+
+    def test_preview_help_and_banner_use_the_wordmark(self):
+        help_text = build_parser().format_help()
+        self.assertIn("字标", help_text)
+        self.assertNotIn("小幽灵", help_text)
+        mark = wordmark_text(max_width=40)
+        self.assertNotIn("\x1b", mark.plain)
+        self.assertIn("▀", mark.plain)
+        output = io.StringIO()
+        with patch("recapcli.ui.terminal_art.shutil.get_terminal_size", return_value=os.terminal_size((96, 32))):
+            print_banner(output, workspace="/tmp/recap-preview", preview=True, mode="color")
+        text = output.getvalue()
+        plain = ANSI.sub("", text)
+        self.assertIn("RecapCLI", plain)
+        self.assertIn("终端里的代码阅读搭档", plain)
+        self.assertIn("从手头的代码读起，改动留有记录。", plain)
+        self.assertNotIn("小幽灵", plain)
+        self.assertIn("▀", plain)
 
 
 if __name__ == "__main__":

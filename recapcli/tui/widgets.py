@@ -120,7 +120,7 @@ class ToolProgress(Static):
     """同一轮的工具事件组成一棵树；未知结果不标为成功。"""
 
     FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    INDEX_TOOLS = {"build_code_index", "search_code_index", "search_symbols"}
+    INDEX_TOOLS = {"search_code_index", "search_symbols"}
 
     def __init__(self):
         super().__init__("", classes="turn progress-turn", markup=False)

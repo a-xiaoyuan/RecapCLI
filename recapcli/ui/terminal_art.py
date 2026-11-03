@@ -1,4 +1,4 @@
-"""用终端色块绘制软萌小幽灵，并提供共用的终端兼容处理。"""
+"""用等宽方块像素绘制 Recap 字标，并提供共用的终端兼容处理。"""
 
 from contextlib import contextmanager
 import os
@@ -12,56 +12,24 @@ from pathlib import Path
 from ..config import PROJECT_ROOT
 
 
-# 圆圆的薄荷白小幽灵、粉色腮红与挥动的小手；每个字符承载上下两个像素。
-GHOST = (
-    "",
-    "",
-    "                      g",
-    "                     gwg",
-    "          ooooooo     g",
-    "        ooiwwwwwboo",
-    " l     oiwwwwwwwwwbo",
-    "lwl   oiwwwwwwwwwwwbo",
-    " l   oiwwwwwwwwwwwwwbo",
-    "     oiwwwwwwwwwwwwwbo",
-    "    oiwwwwwwwwwwwwwwwbwio",
-    "    oiwwwwwwwwwwwwwwwbwio",
-    "    oiwwwwwwwwwwwwwwwbio",
-    "    oiwwwwdwwwwwwdwwwbo",
-    "  oiwiwwwddwwwwwddwwwbo",
-    "  oiwiwwwwwwwwwwwwwwwbo",
-    "   owiwccwwwwwwwwwccwbo",
-    "    oiwwwwwwmwmwwwwwwbo",
-    "    oiwwwwwwwmwwwwwwwbo",
-    "    oiwwwwwwwwwwwwwwwbo",
-    "    oiwwwwwwwwwwwwwwwbo",
-    "     oiwwwwwwwwwwwwwwbo",
-    "     oiwwwwwwwwwwwwwbo",
-    "     oiwwwiiwwwiiwwwbo",
-    "     oiwwo owwwio owbo",
-    "      oooo  oooo   oo",
-    "                       l",
-    "                      lwl",
-    "                       l",
-)
-
-PALETTE = {
-    "o": (83, 88, 124),     # 柔和的蓝紫轮廓
-    "b": (179, 206, 226),   # 身体边缘阴影
-    "l": (193, 178, 239),   # 薰衣草色小星星
-    "i": (214, 239, 241),   # 浅薄荷色边缘
-    "w": (245, 252, 252),   # 软软的白色身体
-    "g": (255, 219, 149),   # 奶油金色小星星
-    "d": (74, 79, 115),     # 豆豆眼
-    "c": (250, 177, 199),   # 粉色腮红
-    "m": (183, 113, 151),   # 小小的笑脸
+# 五枚等宽字母，橙色方块像素。显示时上下两格合成一个半块字符。
+_LETTERS = {
+    "R": ("oooo ", "o   o", "o   o", "oooo ", "o  o ", "o   o", "o   o"),
+    "E": ("ooooo", "o    ", "o    ", "oooo ", "o    ", "o    ", "ooooo"),
+    "C": (" oooo", "o    ", "o    ", "o    ", "o    ", "o    ", " oooo"),
+    "A": (" ooo ", "o   o", "o   o", "ooooo", "o   o", "o   o", "o   o"),
+    "P": ("oooo ", "o   o", "o   o", "oooo ", "o    ", "o    ", "o    "),
 }
+RECAP_MARK = tuple(" ".join(letter[row] for letter in (_LETTERS[name] for name in "RECAP"))
+                   for row in range(len(_LETTERS["R"])))
 
+# 与 tui 强调色 #d4652a 一致。只涂字标像素，不给整块终端铺底。
+PIXEL_COLORS = {"o": (212, 101, 42)}
 
 RESET = "\033[0m"
-TEAL = "\033[36m"
-# 启动面板里小幽灵的最大宽度；缩小占比，把空间留给标题、提示与工作区信息。
-GHOST_MAX_WIDTH = 16
+ACCENT = "\033[38;2;212;101;42m"
+MUTED = "\033[38;2;111;103;95m"
+MARK_MAX_WIDTH = max(map(len, RECAP_MARK))
 
 
 def cell_width(text):
@@ -94,10 +62,10 @@ def fit_text(text, width, *, middle=False):
     return result + " " * (width - cell_width(result))
 
 
-def compact_sprite(max_width=None, max_height=None):
-    """按窗口等比缩小像素画；空间足够时保留原图，不放大。"""
-    width = max(map(len, GHOST))
-    rows = [row.ljust(width) for row in GHOST]
+def scale_rows(source, max_width=None, max_height=None):
+    """按窗口等比缩小像素行；空间足够时保留原图，不放大。"""
+    width = max(map(len, source))
+    rows = [row.ljust(width) for row in source]
     height = len(rows)
     scale = min(1, (max_width or width) / width, (max_height or height) / height)
     target_width = max(1, int(width * scale))
@@ -105,40 +73,70 @@ def compact_sprite(max_width=None, max_height=None):
     scaled = [[rows[min(height - 1, int((y + 0.5) * height / target_height))]
                    [min(width - 1, int((x + 0.5) * width / target_width))]
                for x in range(target_width)] for y in range(target_height)]
-    if scale < 1 and target_width >= 12:
-        # 缩小时补回可能被采样跳过的五官。
-        for source_x, source_y, color in [(10, 13, "d"), (17, 13, "d"), (13, 18, "m")]:
-            x = min(target_width - 1, int((source_x + 0.5) * target_width / width))
-            y = min(target_height - 1, int((source_y + 0.5) * target_height / height))
-            scaled[y][x] = color
     return ["".join(row) for row in scaled]
 
 
-def pixel_lines(rows=None):
-    """上下两个像素合为一个字符，保持像素比例并减少启动画面高度。"""
-    rows = compact_sprite() if rows is None else list(rows)
+def _half_blocks(rows):
+    """上下两个像素合为一个字符，返回每一显示行的像素对。"""
     width = max(map(len, rows), default=0)
     if not width:
         return []
     rows = [row.ljust(width) for row in rows]
-    rows += [" " * width] if len(rows) % 2 else []
+    if len(rows) % 2:
+        rows.append(" " * width)
     lines = []
     for y in range(0, len(rows), 2):
+        lines.append(list(zip(rows[y], rows[y + 1])))
+    return lines
+
+
+def pixel_lines(rows=None):
+    """字标的 ANSI 行，供行式启动面板打印。TUI 不要把这些字符串放进 Static。"""
+    pairs = _half_blocks(scale_rows(RECAP_MARK) if rows is None else list(rows))
+    lines = []
+    for row in pairs:
         line = ""
-        for top, bottom in zip(rows[y], rows[y + 1]):
+        for top, bottom in row:
             line += RESET
             if top == bottom == " ":
                 line += " "
                 continue
             if top != " ":
-                line += "\033[38;2;{};{};{}m".format(*PALETTE[top])
+                line += "\033[38;2;{};{};{}m".format(*PIXEL_COLORS[top])
             if bottom != " " and top != " ":
-                line += "\033[48;2;{};{};{}m".format(*PALETTE[bottom])
+                line += "\033[48;2;{};{};{}m".format(*PIXEL_COLORS[bottom])
             elif bottom != " ":
-                line += "\033[38;2;{};{};{}m".format(*PALETTE[bottom])
+                line += "\033[38;2;{};{};{}m".format(*PIXEL_COLORS[bottom])
             line += "▄" if top == " " else "▀"
         lines.append(line + RESET)
     return lines
+
+
+def wordmark_text(max_width=None, max_height=None):
+    """Rich 文本字标。窄到无法辨认时退回 RECAP，不含 ANSI 转义。"""
+    from rich.color import Color
+    from rich.style import Style
+    from rich.text import Text
+
+    rows = scale_rows(RECAP_MARK, max_width, max_height)
+    if not rows or len(rows[0]) < 12:
+        return Text("RECAP", style=Style(color=Color.from_rgb(*PIXEL_COLORS["o"]), bold=True))
+    ink = Style(color=Color.from_rgb(*PIXEL_COLORS["o"]))
+    solid = Style(color=ink.color, bgcolor=ink.color)
+    text = Text()
+    for index, row in enumerate(_half_blocks(rows)):
+        if index:
+            text.append("\n")
+        for top, bottom in row:
+            if top == bottom == " ":
+                text.append(" ")
+            elif top != " " and bottom != " ":
+                text.append("▀", style=solid)
+            elif top != " ":
+                text.append("▀", style=ink)
+            else:
+                text.append("▄", style=ink)
+    return text
 
 
 def _clean(text):
@@ -213,8 +211,10 @@ def _render_banner(path, preview, columns, height, color):
             return fit_text(path, available, middle=True)
         return label + fit_text(path, available - cell_width(label), middle=True)
 
+    tagline = "终端里的代码阅读搭档"
+
     def plain():
-        lines = [fit_text(title, width), fit_text("你的终端代码阅读搭档", width),
+        lines = [fit_text(title, width), fit_text(tagline, width),
                  fit_text(mode, width), workspace_text(width), fit_text("--help 查看帮助", width)]
         return "\n".join(line.rstrip() for line in lines[:max(1, height - 3)]) + "\n"
 
@@ -224,10 +224,10 @@ def _render_banner(path, preview, columns, height, color):
     body_budget = height - 7  # 两条边框、提示、空行，加三行后续输入区域。
     if body_budget < 8:
         return plain()
-    rows = compact_sprite(max_width=GHOST_MAX_WIDTH, max_height=body_budget * 2)
+    rows = scale_rows(RECAP_MARK, max_width=min(inner, MARK_MAX_WIDTH), max_height=body_budget * 2)
     side_by_side = inner - len(rows[0]) - 3 >= 24
     if not side_by_side:
-        rows = compact_sprite(max_width=min(inner, GHOST_MAX_WIDTH), max_height=(body_budget - 5) * 2)
+        rows = scale_rows(RECAP_MARK, max_width=min(inner, MARK_MAX_WIDTH), max_height=(body_budget - 5) * 2)
     if len(rows[0]) < 12:
         return plain()
     art = pixel_lines(rows)
@@ -235,22 +235,27 @@ def _render_banner(path, preview, columns, height, color):
     output = []
 
     def border(left, right):
-        output.append(TEAL + left + "─" * (width - 2) + right + RESET)
+        output.append(ACCENT + left + "─" * (width - 2) + right + RESET)
 
     def panel_row(content):
-        output.append(TEAL + "│ " + RESET + content + TEAL + " │" + RESET)
+        output.append(ACCENT + "│ " + RESET + content + ACCENT + " │" + RESET)
 
     def styled(text, index, available):
-        color = "\033[1m" if index == 0 else TEAL if index in {3, 4} else ""
+        color = "\033[1m" + ACCENT if index == 0 else MUTED if index in {3, 4} else ""
         return color + fit_text(text, available) + RESET
 
     border("╭", "╮")
     if side_by_side:
-        info = [title, "你的终端代码阅读搭档", "", "读项目  /  查代码  /  工具调用",
-                mode, None, "", "小幽灵，陪你慢慢读懂代码。"]
+        info = [title, tagline, "", "读项目  /  查代码  /  工具调用",
+                mode, None, "", "从手头的代码读起，改动留有记录。"]
         available = inner - art_width - 3
-        info_offset = (len(art) - len(info)) // 2
-        for index, line in enumerate(art):
+        row_count = max(len(art), len(info))
+        art_offset = (row_count - len(art)) // 2
+        info_offset = (row_count - len(info)) // 2
+        blank = " " * art_width
+        for index in range(row_count):
+            art_index = index - art_offset
+            line = art[art_index] if 0 <= art_index < len(art) else blank
             info_index = index - info_offset
             text = info[info_index] if 0 <= info_index < len(info) else ""
             if text is None:
@@ -261,11 +266,11 @@ def _render_banner(path, preview, columns, height, color):
             left = (inner - art_width) // 2
             panel_row(" " * left + line + " " * (inner - art_width - left))
         panel_row(" " * inner)
-        for index, text in enumerate([title, "你的终端代码阅读搭档", mode, workspace_text(inner)]):
+        for index, text in enumerate([title, tagline, mode, workspace_text(inner)]):
             panel_row(styled(text, index, inner))
     border("╰", "╯")
-    hint = "  --preview 预览   --help 帮助   Ctrl+C 退出"
-    output.append("\033[35m" + fit_text(hint, width).rstrip() + RESET)
+    hint = "  --preview 预览字标   --help 帮助   Ctrl+C 退出"
+    output.append(ACCENT + fit_text(hint, width).rstrip() + RESET)
     return "\n".join(output) + "\n\n"
 
 

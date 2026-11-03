@@ -101,6 +101,25 @@ def texts(recording, kind=None):
 
 
 class PaletteTests(unittest.TestCase):
+    def test_light_palette_drops_unused_keys(self):
+        self.assertEqual(PALETTE["base"], "#f3f0eb")
+        self.assertEqual(PALETTE["text"], "#3c3834")
+        self.assertEqual(PALETTE["accent"], "#d4652a")
+        self.assertNotIn("yellow", PALETTE)
+        self.assertNotIn("user_background", PALETTE)
+
+    def test_removed_presenter_and_rule_helpers_stay_gone(self):
+        import recapcli.core.project_rules as rules
+        from recapcli.tui.driver import Presenter
+        self.assertFalse(hasattr(rules, "load_project_rules"))
+        self.assertTrue(hasattr(rules, "load_rule_layers"))
+        self.assertFalse(hasattr(Presenter, "clear_transcript"))
+        self.assertTrue(hasattr(Presenter, "push_cancel"))
+        if HAS_TEXTUAL:
+            from recapcli.tui.widgets import ToolProgress
+            self.assertEqual(ToolProgress.INDEX_TOOLS, {"search_code_index", "search_symbols"})
+            self.assertNotIn("search_text", ToolProgress.INDEX_TOOLS)
+
     def test_terminal_accents_and_local_config_status(self):
         self.assertEqual(colors(dot(True)), [PALETTE["online"]])
         self.assertNotIn(PALETTE["online"], colors(dot(False)) + colors(dot()))
@@ -389,12 +408,25 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.query(".bubble, #pills, #toolbar"))
             self.assertFalse(app.query("#stream-cursor"))
             welcome = app.query_one("#welcome")
+            from recapcli.tui.app import TERMINAL_THEME
+            screen_bg = app.screen.styles.background
+            self.assertEqual(screen_bg.a, 1)
+            self.assertEqual(screen_bg.hex6.lower(), PALETTE["base"])
+            self.assertFalse(TERMINAL_THEME.dark)
             self.assertEqual(welcome.region.width, 86)
             self.assertEqual(welcome.styles.border_bottom[0], "round")
             self.assertEqual(welcome.region.y, app.query_one("#conversation").region.y + 1)
             self.assertGreaterEqual(app.query(".turn").first().region.y, welcome.region.bottom)
             self.assertLessEqual(welcome.region.right, 144)
             self.assertFalse(app.query("#model-header, #welcome-purpose, #welcome-example"))
+            welcome_text = str(app.query_one("#welcome-message").render())
+            self.assertIn("欢迎回来", welcome_text)
+            self.assertNotIn("Welcome back", welcome_text)
+            self.assertNotIn("Your codebase companion", welcome_text)
+            self.assertIn("Tips", str(app.query_one("#welcome-tips-title").render()))
+            self.assertIn("/help", str(app.query_one("#welcome-tips-body").render()))
+            self.assertIn("▀", str(app.query_one("#welcome-mark").render()))
+            self.assertFalse(app.query("#welcome-environment, #welcome-cwd, #welcome-branch, #welcome-model, #welcome-mascot, #rail"))
             self.assertFalse(app.query_one("#command-menu").display)
             self.assertIn("/config", str(app.query_one("#key-hints").render()))
             self.assertIs(app.focused, app.query_one("#prompt"))
@@ -421,8 +453,12 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(app.focused, prompt)
             await pilot.resize_terminal(44, 24)
             await pilot.pause()
-            self.assertEqual(app.query_one("#welcome-branch").region.height, 1)
-            self.assertFalse(app.query("#welcome-guide, #welcome-workspace-block"))
+            self.assertEqual(app.query_one("#welcome-subtitle").region.height, 1)
+            self.assertTrue(app.query_one("#welcome-mark").display)
+            self.assertTrue(app.query_one("#welcome-tips").display)
+            self.assertFalse(app.query_one("#welcome-tips-title").display)
+            self.assertIn("欢迎回来", str(app.query_one("#welcome-message").render()))
+            self.assertFalse(app.query("#welcome-guide, #welcome-workspace-block, #welcome-environment"))
             self.assertLessEqual(app.query_one("#welcome").region.right, 44)
 
     async def test_restored_profile_and_override_remain_available_in_details(self):
@@ -734,6 +770,9 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(144, 40)) as pilot:
                 await pilot.pause()
                 self.assertIn("界面演示", str(app.query_one("#welcome-agent").render()))
+                self.assertIn("欢迎回来", str(app.query_one("#welcome-message").render()))
+                self.assertNotIn("demo-model", str(app.query_one("#welcome").render()))
+                self.assertIn("demo-model", str(app.query_one("#key-hints").render()))
                 self.assertEqual(len(app.query(".turn")), 3)
                 self.assertTrue(app.query_one("#stream-cursor").display)
                 self.assertTrue(app.query_one("#welcome").display)

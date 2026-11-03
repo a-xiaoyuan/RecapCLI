@@ -27,7 +27,10 @@ class PackageTests(unittest.TestCase):
                 contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as error:
             runpy.run_module("recapcli", run_name="__main__")
         self.assertEqual(error.exception.code, 0)
-        self.assertIn(f"RecapCLI  v{version}", output.getvalue())
+        text = output.getvalue()
+        self.assertIn(f"RecapCLI  v{version}", text)
+        self.assertIn("终端里的代码阅读搭档", text)
+        self.assertNotIn("小幽灵", text)
         config.assert_not_called()
         client.assert_not_called()
 
