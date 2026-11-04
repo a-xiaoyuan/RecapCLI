@@ -4,7 +4,6 @@ import asyncio
 import os
 from pathlib import Path
 import queue
-import re
 import threading
 import time
 
@@ -13,23 +12,24 @@ from rich.theme import Theme as RichTheme
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.message import Message
 from textual.theme import Theme
-from textual.widgets import OptionList, Static, TextArea
+from textual.widgets import Static
 
+from .transcript import TranscriptMixin
+from .status_bar import StatusBarMixin
+from .command_input import CommandInputMixin
+from .approval_panel import ApprovalPanelMixin
+from .clipboard import ClipboardMixin
 from .driver import Presenter, ShellDriver, ShellOptions
-from .state import ShellState, workspace_files
-from .status import TaskStatus, task_text, usage_text
-from .theme import PALETTE, render_answer, render_line
-from .widgets import ApprovalMenu, CommandMenu, ConversationView, PromptInput, StatusScreen, TodoPanel, ToolProgress
+from .state import ShellState
+from .status import TaskStatus
+from .theme import PALETTE
+from .widgets import ApprovalMenu, CommandMenu, ConversationView, GlyphButton, PromptInput, StatusScreen
 from .settings import ModelConfigScreen, ModelPickerScreen
 from ..base.version import project_version
 from ..ui.terminal_ui import clean_output
 from ..config import ConfigError, list_model_profiles
 from ..tools.approval import interpret_approval_line
-from ..application.help import command_items, help_text
-from ..core.project_rules import project_rules_description
-from ..application.changes import change_report, git_summary, files_summary, commands_summary
 
 
 # 跟随终端：背景和前景都用终端自己的颜色，只有强调色固定。
@@ -65,61 +65,7 @@ DEMO_REPLY = (
     "> 编辑与命令执行由启动选项控制，需要时仍会请求审批。\n\n"
     "*界面演示：以上为示例内容，未调用工具或模型。*"
 )
-APPROVAL_GUARD_SECONDS = 0.4  # 菜单刚弹出时用户可能还在打字，这段时间的按键不算决定。
-MENTION_FILES_TTL = 30
-MENTION_LIMIT = 20
 MISSING_CONFIG = "还没有可用的模型配置。按 F3 填写模型、接口地址和 API Key；F2 可选择已有配置。"
-
-
-def _copy_windows_clipboard(text):
-    """直接写入 Windows Unicode 剪贴板，兼容不支持 OSC 52 的 IDE 终端。"""
-    import ctypes as ct
-    from ctypes import wintypes as wt
-
-    user = ct.WinDLL("user32", use_last_error=True)
-    kernel = ct.WinDLL("kernel32", use_last_error=True)
-    user.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD,
-                                    ct.c_int, ct.c_int, ct.c_int, ct.c_int,
-                                    wt.HWND, wt.HMENU, wt.HINSTANCE, ct.c_void_p]
-    user.CreateWindowExW.restype = wt.HWND
-    user.DestroyWindow.argtypes, user.DestroyWindow.restype = [wt.HWND], wt.BOOL
-    user.OpenClipboard.argtypes, user.OpenClipboard.restype = [wt.HWND], wt.BOOL
-    user.CloseClipboard.argtypes, user.CloseClipboard.restype = [], wt.BOOL
-    user.EmptyClipboard.argtypes, user.EmptyClipboard.restype = [], wt.BOOL
-    user.SetClipboardData.argtypes, user.SetClipboardData.restype = [wt.UINT, wt.HANDLE], wt.HANDLE
-    kernel.GlobalAlloc.argtypes, kernel.GlobalAlloc.restype = [wt.UINT, ct.c_size_t], wt.HANDLE
-    kernel.GlobalLock.argtypes, kernel.GlobalLock.restype = [wt.HANDLE], ct.c_void_p
-    kernel.GlobalUnlock.argtypes, kernel.GlobalUnlock.restype = [wt.HANDLE], wt.BOOL
-    kernel.GlobalFree.argtypes, kernel.GlobalFree.restype = [wt.HANDLE], wt.HANDLE
-
-    # OpenClipboard 的所有者需要有效窗口；IDE 终端不一定有控制台窗口。
-    window = user.CreateWindowExW(0, "STATIC", "RecapCLI clipboard", 0, 0, 0, 0, 0,
-                                 None, None, None, None)
-    if not window:
-        raise ct.WinError(ct.get_last_error())
-    memory, opened = None, False
-    try:
-        data = (text + "\0").encode("utf-16-le")
-        memory = kernel.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
-        if not memory:
-            raise ct.WinError(ct.get_last_error())
-        pointer = kernel.GlobalLock(memory)
-        if not pointer:
-            raise ct.WinError(ct.get_last_error())
-        ct.memmove(pointer, data, len(data))
-        kernel.GlobalUnlock(memory)
-        if not user.OpenClipboard(window):
-            raise ct.WinError(ct.get_last_error())
-        opened = True
-        if not user.EmptyClipboard() or not user.SetClipboardData(13, memory):  # CF_UNICODETEXT
-            raise ct.WinError(ct.get_last_error())
-        memory = None  # 系统接管内存，成功后不能释放。
-    finally:
-        if opened:
-            user.CloseClipboard()
-        if memory:
-            kernel.GlobalFree(memory)
-        user.DestroyWindow(window)
 
 
 def version_label():
@@ -128,64 +74,9 @@ def version_label():
     return "v" + clean_output(release) if release else "开发版"
 
 
-class GlyphButton(Static):
-    can_focus = True
-
-    class Pressed(Message):
-        def __init__(self, action):
-            super().__init__()
-            self.action = action
-
-    def __init__(self, glyph, action, tooltip, **kwargs):
-        super().__init__(glyph, markup=False, **kwargs)
-        self.action = action
-        self.tooltip = tooltip
-
-    def on_click(self):
-        self.post_message(self.Pressed(self.action))
-
-    def on_key(self, event):
-        if event.key in {"enter", "space"}:
-            event.stop()
-            self.post_message(self.Pressed(self.action))
 
 
-class ConversationLine(Static):
-    """回答使用 Markdown；用户输入保持字面显示。"""
-
-    def __init__(self, content, kind):
-        self.kind = kind
-        self.content_text = ""
-        self.task_status = None
-        super().__init__("", classes=f"turn {kind}-turn", markup=False)
-        self.set_content(content)
-
-    def set_content(self, content, kind=None):
-        if kind is not None:
-            self.remove_class(f"{self.kind}-turn")
-            self.kind = kind
-            self.add_class(f"{kind}-turn")
-        self.content_text = clean_output(content)
-        shown = self.content_text
-        if self.kind == "assistant":
-            rendered = render_answer(shown, self.task_status)
-        elif self.kind == "user":
-            rendered = Text.assemble(("› ", "bold " + PALETTE["accent"]), (shown, "bold"), overflow="fold")
-        else:
-            rendered = render_line(shown, self.kind)
-        self.update(rendered)
-
-    def set_task(self, task):
-        self.task_status = task
-        self.set_content(self.content_text)
-
-    def get_selection(self, selection):
-        if selection.start is None and selection.end is None:
-            return self.content_text, "\n\n"
-        return super().get_selection(selection)
-
-
-class RecapShell(App):
+class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPanelMixin, ClipboardMixin, App):
     """终端壳。--demo 只演示界面；其余输入走现有 run_agent。"""
 
     CSS_PATH = "recap.tcss"
@@ -355,406 +246,6 @@ class RecapShell(App):
             caption.append(" · " + clean_output(self.state.branch))
         return caption
 
-    def _static(self, content, kind):
-        return ConversationLine(content, kind)
-
-    def _follow_latest(self, *, force=False):
-        conversation = self.query_one("#conversation", ConversationView)
-        if force:
-            conversation.follow_latest()
-            self._has_new_content = False
-        elif conversation.following:
-            conversation.scroll_end(animate=False)
-        else:
-            self._has_new_content = True
-        self._refresh_navigation()
-
-    def _refresh_navigation(self):
-        if self.query("#jump-latest"):
-            following = self.query_one("#conversation", ConversationView).following
-            if following:
-                self._has_new_content = False
-            button = self.query_one("#jump-latest", GlyphButton)
-            button.display = not following
-            button.update("↓ 新内容" if self._has_new_content else "↓ 回到底部")
-            self.query_one("#status-row").display = bool(self._status_message) or not following
-
-    def on_conversation_view_following_changed(self):
-        self._refresh_navigation()
-
-    async def _append(self, content, kind="user"):
-        await self.query_one("#transcript").mount(self._static(content, kind))
-        self._follow_latest(force=True)
-
-    def append_line(self, content, kind):
-        self.query_one("#transcript").mount(self._static(content, kind))
-        self._follow_latest(force=kind == "user")
-
-    def event_update(self, message):
-        message = clean_output(message)
-        prefix, separator, _ = message.partition("] ")
-        name = prefix.removeprefix("[")
-        role = name if separator and (name in {"analysis", "review", "aggregate", "planner", "reviewer", "team_summary"}
-                                     or name.startswith("worker:")) else ""
-        event = message.removeprefix(f"[{role}] ") if role else message
-        if event.startswith("[待办]\n"):
-            if self._todo_widget is None:
-                self._todo_widget = TodoPanel()
-                self.query_one("#transcript").mount(self._todo_widget)
-            self._todo_widget.show(event.removeprefix("[待办]\n"))
-            self._follow_latest()
-            return
-        if event.startswith("[模型]"):
-            self.set_activity("请求模型 · " + event.removeprefix("[模型]").strip())
-            model = self._display_model or self._selected_profile().get("model") or "当前模型"
-            message = (f"[{role}] " if role else "") + "[模型] 请求模型 · " + clean_output(model)
-        if event.startswith("[工具]"):
-            self.set_activity("工具 · " + event.removeprefix("[工具]").strip())
-        if event.startswith(("[模型]", "[工具]")) and self._progress_widget is None:
-            self._progress_widget = ToolProgress()
-            self.query_one("#transcript").mount(self._progress_widget)
-        if self._progress_widget is not None and self._progress_widget.observe(message, role):
-            self._follow_latest()
-        else:
-            self.append_line(message, "event")
-
-    def stream_update(self, kind, text):
-        if kind == "start":
-            self._response_widget = None
-            self._response_text = ""
-        elif kind == "delta":
-            self._response_text += text
-            if self._response_widget is None:
-                self._response_widget = self._static(self._response_text, "assistant")
-                self._turn_answer_widget = self._response_widget
-                self._response_widget.set_task(self._task_status)
-                self.query_one("#transcript").mount(self._response_widget)
-            else:
-                self._response_widget.set_content(self._response_text)
-            self._follow_latest()
-        elif kind == "end":
-            if self._progress_widget is not None:
-                self._progress_widget.complete_request()
-        elif kind == "abort":
-            if self._response_widget is not None:
-                self._response_widget.set_content("[回答未完成]\n" + self._response_text, "error")
-            self._response_widget = None
-            self._response_text = ""
-
-    def finish_answer(self, answer):
-        if self._progress_widget is not None:
-            for role in {row["role"] for row in self._progress_widget.rows}:
-                self._progress_widget.complete_request(role)
-        if self._response_widget is not None:
-            self._response_widget.set_content(answer)
-            self._turn_answer_widget = self._response_widget
-        else:
-            self._turn_answer_widget = self._static(answer, "assistant")
-            self.query_one("#transcript").mount(self._turn_answer_widget)
-        self._turn_answer_widget.set_task(self._task_status)
-        self._follow_latest()
-        self._response_widget = None
-        self._response_text = ""
-
-    async def clear_transcript_sync(self):
-        self._response_widget = None
-        self._turn_answer_widget = None
-        self._response_text = ""
-        self._progress_widget = None
-        self._todo_widget = None
-        await self.query_one("#transcript").remove_children()
-        self._follow_latest(force=True)
-
-    async def replace_transcript_sync(self, rows):
-        self._task_status = TaskStatus()
-        self._refresh_status()
-        self._response_widget = None
-        self._turn_answer_widget = None
-        self._response_text = ""
-        self._progress_widget = None
-        self._todo_widget = None
-        transcript = self.query_one("#transcript")
-        await transcript.remove_children()
-        for kind, text in rows:
-            await transcript.mount(self._static(text, kind))
-        self._follow_latest(force=True)
-
-    def apply_model(self, model, ready):
-        if self.driver is not None and self.driver.client is not None:
-            model = self.driver.client.model
-        self._display_model = str(model)
-        self._model_ready = bool(ready)
-        self._refresh_status()
-
-    def apply_task(self, task):
-        self._task_status = TaskStatus.from_task(task)
-        if self._turn_answer_widget is not None:
-            self._turn_answer_widget.set_task(self._task_status)
-        self._refresh_status()
-
-    def _status_details(self):
-        profile = self._selected_profile()
-        metadata = self.driver.client.metadata() if self.driver is not None and self.driver.client is not None else None
-        capabilities = metadata.get("capabilities", {}) if metadata else (profile or {})
-        model = self._display_model or (profile or {}).get("model") or "未配置模型"
-        flags = ["图片" if capabilities.get("images") else "纯文本", "流式" if capabilities.get("streaming") else "整段"]
-        tools = {"read": "读取与检索", "write": "编辑与恢复", "exec": "执行命令", "web": "网页搜索"}
-        granted = "\n".join("• " + label for key, label in tools.items() if key in self.options.capabilities)
-        task = self._task_status
-        report = task.changes or change_report({})
-        text = Text()
-        for title, content in (
-            ("模型", model + " · " + profile.get("name", "default") + "\n" + " · ".join(flags) + "\n" + ("本地配置齐全，接口尚需实际请求验证" if self._model_ready else "模型配置未齐")),
-            ("工作区", str(self.state.workspace)),
-            ("项目规则", project_rules_description(task.project_rules)),
-            ("开始时的 Git 状态 · 左列暂存区 / 右列工作区", git_summary(report["git"])),
-            ("模式与工具", self.options.mode + "\n" + (granted if capabilities.get("tools", True) else "当前模型未开放工具")),
-            ("本次任务", task_text(task, busy=self._busy, approval=self._approval) + "\n" + (task.task_id or "还没有任务")),
-            ("Token 用量", usage_text(task)),
-            ("本轮文件 · 编辑 / 恢复工具记录", files_summary(report)),
-            ("本轮命令记录", commands_summary(report)),
-        ):
-            text.append(title + "\n", style="bold")
-            text.append(clean_output(content) + "\n\n", style=PALETTE["text"])
-        return text
-
-    def _tick_status(self):
-        if self._busy:
-            self._refresh_status()
-
-    def set_activity(self, activity):
-        self._activity = clean_output(activity)
-        self._refresh_status()
-
-    def _refresh_status(self):
-        if not self.query("#status-line"):
-            return
-        label = "停止中…等待在途操作返回" if self._cancel_requested else task_text(self._task_status, busy=self._busy, approval=self._approval)
-        if self._busy and not self._approval and not self._cancel_requested and self._busy_since is not None:
-            elapsed = max(0, int(time.monotonic() - self._busy_since))
-            activity = self._activity or "正在处理"
-            if self._response_text and activity.startswith("请求模型"):
-                activity = "正在回答"
-            label = f"● {activity} · {elapsed}s"
-        if self.demo:
-            label = ""
-        elif not self._busy:
-            label = ("模型请求超时，详情见上方提示" if "APITimeoutError" in self._task_status.stop_reason else
-                     ("任务未完成，详情见上方提示" if self._task_status.status in {"failed", "blocked", "unknown"} else ""))
-        color = PALETTE["error"] if self._task_status.status == "failed" and not self._busy else PALETTE["accent"]
-        self.query_one("#status-line", Static).update(Text(label, style=color, no_wrap=True, overflow="ellipsis"))
-        self._status_message = label
-        self._refresh_navigation()
-        mode = " / ".join({"read": "读取", "write": "编辑", "exec": "命令", "web": "网页"}[item]
-                          for item in self.options.capabilities)
-        agent = Text(no_wrap=True, overflow="ellipsis")
-        if self.demo:
-            agent.append("界面演示 · 不请求模型")
-        elif not self._model_ready:
-            agent.append("模型未配置 · F3 设置")
-        else:
-            agent.append(clean_output(self._display_model or self._selected_profile().get("model") or "当前模型"))
-        agent.append(" · " + self.options.mode + " · " + mode)
-        self.query_one("#welcome-agent", Static).update(agent)
-        self._refresh_hints()
-        if isinstance(self.screen, StatusScreen) and self.screen.query("#status-body"):
-            self.screen.query_one("#status-body", Static).update(self._status_details())
-
-    def _refresh_hints(self):
-        if not self.query("#key-hints"):
-            return
-        if self._cancel_requested:
-            hint = "正在停止 · 草稿保留 · ctrl+q 退出"
-        elif self._approval:
-            hint = "↑↓ 选择 · enter 确认 · 数字键直选 · esc 停止本轮"
-        elif self._busy:
-            hint = "esc 停止 · 可先写下一条 · ctrl+g 详情"
-        elif self.demo:
-            hint = "界面演示 · /help 命令 · ctrl+q 退出"
-        elif self.size.width < 72:
-            hint = "enter 发送 · /help" if self._model_ready else "/config 设置 · /help"
-        else:
-            hint = ("enter 发送 · shift+enter 换行 · /help 命令 · ctrl+g 详情" if self._model_ready
-                    else "/config 设置模型 · /help 命令")
-        self.query_one("#key-hints", Static).update(Text(hint, style=PALETTE["muted"], no_wrap=True, overflow="ellipsis"))
-
-    def _hide_commands(self):
-        self._command_anchor = None
-        for selector in ("#command-menu", "#command-help", "#command-hint"):
-            self.query_one(selector).display = False
-        self.query_one("#prompt", PromptInput).suggestion = ""
-
-    def _show_commands(self, topic="common", query=""):
-        if len(self.screen_stack) > 1:
-            return
-        self._command_anchor = self.query_one("#prompt", PromptInput).text
-        menu = self.query_one("#command-menu", CommandMenu)
-        items = command_items(query, topic)
-        menu.show_commands(items, max(3, min(7, self.size.height // 3)))
-        body = self.query_one("#command-help", Static)
-        body.display = topic == "keys" or (not items and topic not in {"all", "common"})
-        if body.display:
-            body.update(help_text(topic))
-        hint = self.query_one("#command-hint", Static)
-        hint.display = menu.display or body.display
-        hint.update("Esc 收起" if body.display else "↑↓ 选择 · Tab 补全 · Enter 确认 · Esc 收起")
-        self.query_one("#prompt", PromptInput).update_suggestion()
-
-    def on_text_area_changed(self, event: TextArea.Changed):
-        if event.text_area.id != "prompt" or not self.query("#command-menu"):
-            return
-        value = event.text_area.text
-        if value == self._command_anchor:
-            return
-        mention = None if self._approval or value == self._command_dismissed else self._mention_query(event.text_area)
-        if mention is not None:
-            self._show_mentions(mention)
-        elif self._busy or self._approval or value == self._command_dismissed or not value.startswith("/") or any(char.isspace() for char in value):
-            self._hide_commands()
-        else:
-            self._show_commands("all", value)
-
-    def dismiss_command_menu(self, value):
-        """程序写入输入框的内容（如历史记录）不触发命令列表。"""
-        self._command_dismissed = value
-        self._hide_commands()
-
-    def _mention_query(self, prompt):
-        row, column = prompt.cursor_location
-        match = re.search(r"(?:^|\s)@([^\s@]*)$", prompt.document.get_line(row)[:column])
-        if match is None or match.group(1).startswith("image:"):
-            return None
-        return match.group(1)
-
-    def _mention_candidates(self, query):
-        now = time.monotonic()
-        if self._mention_files is None or now - self._mention_loaded > MENTION_FILES_TTL:
-            self._mention_files = workspace_files(self.state.workspace)
-            self._mention_loaded = now
-        needle = query.casefold()
-        found = [path for path in self._mention_files if needle in path.casefold()]
-        found.sort(key=lambda path: (not path.rsplit("/", 1)[-1].casefold().startswith(needle), len(path), path))
-        return found[:MENTION_LIMIT]
-
-    def _show_mentions(self, query):
-        prompt = self.query_one("#prompt", PromptInput)
-        self._command_anchor = prompt.text
-        menu = self.query_one("#command-menu", CommandMenu)
-        menu.show_commands([("@" + path, "", "", "file") for path in self._mention_candidates(query)],
-                           max(3, min(7, self.size.height // 3)))
-        hint = self.query_one("#command-hint", Static)
-        hint.display = menu.display
-        hint.update("↑↓ 选择 · Tab / Enter 插入路径 · Esc 收起")
-        prompt.suggestion = ""
-
-    def _insert_mention(self, name):
-        prompt = self.query_one("#prompt", PromptInput)
-        row, column = prompt.cursor_location
-        start = prompt.document.get_line(row)[:column].rfind("@")
-        self._hide_commands()
-        prompt.replace(name + " ", (row, start), (row, column))
-        prompt.focus()
-
-    def approval_key(self, event):
-        menu = self.query_one("#approval-menu", ApprovalMenu)
-        if not self._approval or not menu.display or self.query_one("#prompt", PromptInput).text:
-            return False
-        if event.key == "up":
-            menu.action_cursor_up()
-            return True
-        if event.key == "down":
-            menu.action_cursor_down()
-            return True
-        if event.key == "enter":
-            index = menu.highlighted
-        elif event.key.isdigit() and 1 <= int(event.key) <= len(menu.values):
-            index = int(event.key) - 1
-        else:
-            return False
-        if time.monotonic() - self._approval_since >= APPROVAL_GUARD_SECONDS:
-            self._choose_approval(index)
-        return True
-
-    def _choose_approval(self, index):
-        self.approval_queue.put(self.query_one("#approval-menu", ApprovalMenu).values[index])
-        self.end_approval()
-
-    def command_menu_key(self, event):
-        menu = self.query_one("#command-menu", CommandMenu)
-        if not menu.display:
-            return False
-        if event.key in {"up", "down"}:
-            if event.key == "up":
-                menu.action_cursor_up()
-            else:
-                menu.action_cursor_down()
-            self.query_one("#prompt", PromptInput).update_suggestion()
-        elif event.key in {"tab", "enter"}:
-            self._choose_command(insert_only=event.key == "tab")
-        else:
-            return False
-        return True
-
-    def _choose_command(self, *, insert_only=False):
-        menu = self.query_one("#command-menu", CommandMenu)
-        if menu.highlighted is None:
-            return
-        name, arguments, _, _ = menu.commands[menu.highlighted]
-        if name.startswith("@"):
-            self._insert_mention(name)
-            return
-        prompt = self.query_one("#prompt", PromptInput)
-        required =bool(arguments and not (arguments.startswith("[") and arguments.endswith("]")))
-        if insert_only or required:
-            value = name + (" " if arguments else "")
-            self._command_dismissed = value
-            prompt.load_text(value)
-            prompt.move_cursor((0, len(value)))
-            self._hide_commands()
-        elif self._busy:
-            self.notify("本轮仍在处理，Esc 停止后可执行命令。")
-        else:
-            self._hide_commands()
-            prompt.load_text("")
-            self._submit_value(name)
-        if len(self.screen_stack) == 1:
-            prompt.focus()
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
-        if event.option_list.id == "command-menu":
-            event.stop()
-            self._choose_command()
-        elif event.option_list.id == "approval-menu":
-            event.stop()
-            self._choose_approval(event.option_index)
-
-    def begin_approval(self, message):
-        self._hide_commands()
-        if len(self.screen_stack) > 1:
-            self.pop_screen()
-        self.append_line(message, "approval")
-        self._approval = True
-        self._approval_since = time.monotonic()
-        prompt = self.query_one("#prompt", PromptInput)
-        self._approval_draft = prompt.text
-        prompt.load_text("")
-        prompt.placeholder = "也可输入 approve、reject 或 cancel"
-        remember = re.search(r"^输入 always 可在本会话允许(.+)。$", message, re.MULTILINE)
-        self.query_one("#approval-menu", ApprovalMenu).show_choices(
-            [("approve", "批准")] + ([("always", f"批准，本会话允许{remember.group(1)}")] if remember else [])
-            + [("reject", "拒绝")])
-        prompt.focus()
-        self._refresh_status()
-
-    def end_approval(self):
-        if self._approval:
-            self.query_one("#prompt", PromptInput).load_text(self._approval_draft)
-            self._approval_draft = ""
-        self.query_one("#approval-menu", ApprovalMenu).display = False
-        self._approval = False
-        if self._busy:
-            self.query_one("#prompt", PromptInput).placeholder = "可先写下一条问题，Esc 停止本轮…"
-        self._refresh_status()
 
     def _lock(self):
         self._turn_answer_widget = None
@@ -936,34 +427,6 @@ class RecapShell(App):
     def action_jump_latest(self):
         self._follow_latest(force=True)
 
-    def copy_to_clipboard(self, text):
-        if os.name != "nt":
-            super().copy_to_clipboard(text)
-            return True
-        try:
-            _copy_windows_clipboard(text)
-        except OSError as error:
-            self.notify(f"复制失败：无法写入系统剪贴板（{error}）。", severity="error")
-            return False
-        self._clipboard = text
-        return True
-
-    def action_copy_reply(self, *, all_messages=False):
-        rows = [row for row in self.query(ConversationLine)
-                if row.kind in {"user", "assistant"} and row.content_text]
-        if all_messages:
-            text = "\n\n".join(("用户" if row.kind == "user" else "RecapCLI") + "\n" + row.content_text
-                               for row in rows)
-        else:
-            text = next((row.content_text for row in reversed(rows) if row.kind == "assistant"), "")
-        if not text:
-            self.notify("暂无可复制的对话。")
-            return
-        if self.copy_to_clipboard(text):
-            self.notify("已复制完整对话。" if all_messages else "已复制完整回答。")
-
-    def action_copy(self):
-        self.action_copy_reply()
 
     def action_history_up(self):
         self.query_one("#conversation", ConversationView).scroll_page_up(animate=False)

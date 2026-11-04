@@ -30,17 +30,9 @@ COMMANDS = (
     ("/stop", "命令ID", "停止命令及其子进程", "tasks"),
     ("/undo", "[组ID]", "审批后撤销编辑组，需要 --allow-write", "tasks"),
     ("/task-verify", "ID passed|failed 命令ID 说明", "登记人工验收", "tasks"),
-    ("/memory", "", "查看长期记忆", "memory"),
+    ("/memory", "[search|update|expire|activate|candidates|propose|accept|reject ...]", "查看和管理长期记忆", "memory"),
     ("/remember", "[preference|fact] 文本", "添加偏好或项目事实", "memory"),
-    ("/memory-search", "问题", "检索有效记忆", "memory"),
-    ("/memory-update", "ID 文本", "更新记忆", "memory"),
-    ("/memory-expire", "ID", "标记记忆失效", "memory"),
-    ("/memory-activate", "ID", "恢复失效记忆", "memory"),
     ("/forget", "ID|all", "删除记忆", "memory"),
-    ("/memory-candidates", "", "查看经验候选", "memory"),
-    ("/memory-propose", "任务ID [文本]", "从任务提炼候选", "memory"),
-    ("/memory-accept", "ID", "接纳经验候选", "memory"),
-    ("/memory-reject", "ID", "拒绝经验候选", "memory"),
 )
 COMMON = {"/model", "/config", "/new", "/open", "/tasks", "/diff", "/copy", "/mcp", "/help", "/exit"}
 GROUPS = {"common": "常用", "models": "模型", "sessions": "会话", "tasks": "任务与审批", "memory": "记忆", "keys": "快捷键"}

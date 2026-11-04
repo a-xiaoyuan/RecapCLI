@@ -59,7 +59,7 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
         app = self.app()
         draft = "第一行\n第二行，包含中文"
         answer = "完整回答\n" * 1400
-        with patch("recapcli.tui.app._copy_windows_clipboard"):
+        with patch("recapcli.tui.clipboard._copy_windows_clipboard"):
             async with app.run_test(size=(80, 24)) as pilot:
                 app.append_line("请解释调用链", "user")
                 app.append_line(answer, "assistant")
@@ -81,7 +81,7 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_copy_commands_keep_full_answers_and_do_not_request_the_model(self):
         app = self.app()
         answer = "## 完整回答\n\n" + "中文与代码 `value`\n" * 900
-        with patch("recapcli.tui.app._copy_windows_clipboard"):
+        with patch("recapcli.tui.clipboard._copy_windows_clipboard"):
             async with app.run_test(size=(80, 24)) as pilot:
                 app.append_line("解释代码", "user")
                 app.append_line(answer, "assistant")

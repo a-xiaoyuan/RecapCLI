@@ -1,7 +1,6 @@
 """上下文计量与历史选择：按 token 估算，并用服务端返回的真实用量校准。"""
 
 from copy import deepcopy
-import json
 
 from ..base.tokens import estimate_tokens, json_size, json_tokens  # noqa: F401  (re-exported)
 from ..config import DEFAULT_CONTEXT_TOKENS  # noqa: F401  (re-exported)

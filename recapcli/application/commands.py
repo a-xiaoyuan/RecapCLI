@@ -276,7 +276,7 @@ def _cmd_task_verify(name, argument, ui, store, session, model, *, capabilities,
         ui.info("人工验收已记录，执行终态保持原值；此结论仅覆盖填写的验收范围。")
         try:
             candidate = store.propose_task_memory(tasks.get(arguments[0]))
-            ui.info(f"已生成经验候选 {candidate['id']}；/memory-candidates 查看，/memory-accept ID 接纳。")
+            ui.info(f"已生成经验候选 {candidate['id']}；/memory candidates 查看，/memory accept ID 接纳。")
         except (OSError, ValueError) as error:
             ui.error(f"人工验收已保存，经验候选未生成：{error}")
     except (OSError, ValueError) as error:
@@ -287,7 +287,7 @@ def _cmd_task_verify(name, argument, ui, store, session, model, *, capabilities,
 def _cmd_memory(name, argument, ui, store, session, model, *, capabilities, approver):
     try:
         if name == "/memory-search" and not argument:
-            raise ValueError("用法：/memory-search 问题")
+            raise ValueError("用法：/memory search 问题")
         show_memory(ui, store, query=argument if name == "/memory-search" else None,
                     candidates=name == "/memory-candidates")
     except (OSError, ValueError) as error:
@@ -339,7 +339,7 @@ def _cmd_memory_update(name, argument, ui, store, session, model, *, capabilitie
     try:
         key, separator, text = argument.partition(" ")
         if not separator:
-            raise ValueError("用法：/memory-update ID 文本")
+            raise ValueError("用法：/memory update ID 文本")
         item = store.update_memory(key, text)
     except (OSError, ValueError) as error:
         ui.error(f"命令执行失败：{error}")
@@ -393,11 +393,21 @@ _COMMANDS: dict[str, callable] = {
 }
 
 
+# /memory 的子命令；原来的 /memory-xxx 写法继续可用，只是不再列入帮助。
+MEMORY_ACTIONS = {"search", "update", "expire", "activate", "candidates", "propose", "accept", "reject"}
+
+
 def handle_command(command, ui, store, session, model, *, capabilities=("read",), approver=None):
     """处理会话命令；返回新的 session 或退出标记。"""
     parts = command.split(maxsplit=1)
     name = parts[0].lower()
     argument = parts[1].strip() if len(parts) > 1 else ""
+    if name == "/memory" and argument:
+        action, _, rest = argument.partition(" ")
+        if action.lower() not in MEMORY_ACTIONS:
+            ui.error("用法：/memory [search|update|expire|activate|candidates|propose|accept|reject] ...")
+            return session
+        name, argument = f"/memory-{action.lower()}", rest.strip()
     handler = _COMMANDS.get(name)
     if handler is None:
         ui.error(f"未知命令：{name}，输入 /help 查看命令。")

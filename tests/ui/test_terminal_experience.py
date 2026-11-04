@@ -147,7 +147,7 @@ class ComposerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mention_inserts_path_in_place(self):
         files = ["README.md", "recapcli/core/agent.py"]
-        with patch("recapcli.tui.app.workspace_files", return_value=files):
+        with patch("recapcli.tui.command_input.workspace_files", return_value=files):
             async with self.app.run_test(size=(100, 30)) as pilot:
                 await pilot.press("看", "space", "@", "a", "g")
                 await pilot.pause()
@@ -159,7 +159,7 @@ class ComposerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(menu.display)
 
     async def test_image_reference_is_not_a_mention(self):
-        with patch("recapcli.tui.app.workspace_files", return_value=["image:a.png"]):
+        with patch("recapcli.tui.command_input.workspace_files", return_value=["image:a.png"]):
             async with self.app.run_test(size=(100, 30)) as pilot:
                 self.prompt().load_text("@image:a")
                 self.prompt().move_cursor(self.prompt().document.end)

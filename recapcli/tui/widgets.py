@@ -11,7 +11,65 @@ from rich.text import Text
 from textual.widgets import Button, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from .theme import PALETTE
+from ..ui.terminal_ui import clean_output
+from .theme import PALETTE, render_answer, render_line
+
+
+class GlyphButton(Static):
+    can_focus = True
+
+    class Pressed(Message):
+        def __init__(self, action):
+            super().__init__()
+            self.action = action
+
+    def __init__(self, glyph, action, tooltip, **kwargs):
+        super().__init__(glyph, markup=False, **kwargs)
+        self.action = action
+        self.tooltip = tooltip
+
+    def on_click(self):
+        self.post_message(self.Pressed(self.action))
+
+    def on_key(self, event):
+        if event.key in {"enter", "space"}:
+            event.stop()
+            self.post_message(self.Pressed(self.action))
+
+
+class ConversationLine(Static):
+    """回答使用 Markdown；用户输入保持字面显示。"""
+
+    def __init__(self, content, kind):
+        self.kind = kind
+        self.content_text = ""
+        self.task_status = None
+        super().__init__("", classes=f"turn {kind}-turn", markup=False)
+        self.set_content(content)
+
+    def set_content(self, content, kind=None):
+        if kind is not None:
+            self.remove_class(f"{self.kind}-turn")
+            self.kind = kind
+            self.add_class(f"{kind}-turn")
+        self.content_text = clean_output(content)
+        shown = self.content_text
+        if self.kind == "assistant":
+            rendered = render_answer(shown, self.task_status)
+        elif self.kind == "user":
+            rendered = Text.assemble(("› ", "bold " + PALETTE["accent"]), (shown, "bold"), overflow="fold")
+        else:
+            rendered = render_line(shown, self.kind)
+        self.update(rendered)
+
+    def set_task(self, task):
+        self.task_status = task
+        self.set_content(self.content_text)
+
+    def get_selection(self, selection):
+        if selection.start is None and selection.end is None:
+            return self.content_text, "\n\n"
+        return super().get_selection(selection)
 
 
 class PromptInput(TextArea):

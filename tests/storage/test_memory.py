@@ -35,6 +35,15 @@ class MemoryTests(unittest.TestCase):
             tasks.verify(task_id, "passed", command_id, "仅验证 Kafka 消费幂等的本地断言")
         return tasks.get(task_id), command_id
 
+    def test_memory_subcommands_share_the_old_handlers(self):
+        item = self.store.add_memory("子命令事实")
+        self.command(f"/memory expire {item['id']}")
+        self.assertEqual(self.store.memory_items()[0]["status"], "expired")
+        self.command(f"/memory-activate {item['id']}")
+        self.assertEqual(self.store.memory_items()[0]["status"], "active")
+        self.command("/memory unknown")
+        self.assertIn("用法：/memory", self.errors.getvalue())
+
     def test_query_selects_relevant_facts_and_persistent_preferences(self):
         kafka = self.store.add_memory("Kafka 消费通过业务唯一键实现幂等")
         unrelated = self.store.add_memory("向量检索使用 RRF 融合召回")
