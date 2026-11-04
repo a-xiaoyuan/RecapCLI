@@ -34,9 +34,8 @@ def shell_options(args):
         raise ValueError("Multi 至少需要 3 次模型请求预算")
     try:
         limits = AgentLimits(
-            max_context_bytes=args.context_bytes, max_context_tokens=args.context_tokens,
-            max_tool_calls=args.max_tool_calls,
-            max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds,
+            max_context_tokens=args.context_tokens or AgentLimits.max_context_tokens,
+            max_tool_calls=args.max_tool_calls, max_seconds=args.max_seconds,
             request_timeout=args.request_timeout, max_retries=args.max_retries,
             max_plan_steps=args.plan_steps, max_replans=args.plan_replans,
         )
@@ -92,9 +91,9 @@ def dispatch(argv=None, *, force_shell=False) -> int:
         code = error.code
         return int(code) if isinstance(code, int) else (0 if code is None else 1)
     demo = args.demo
-    blocked = args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview or args.mcp_tools
+    blocked = args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.mcp_tools
     if demo and blocked:
-        print("--demo 只启动界面演示，不能和提问、任务查看或 --preview 同时使用。", file=sys.stderr)
+        print("--demo 只启动界面演示，不能和提问或任务查看同时使用。", file=sys.stderr)
         return 2
     if force_shell and blocked:
         print("这些参数属于命令行入口：python -m recapcli.cli …", file=sys.stderr)

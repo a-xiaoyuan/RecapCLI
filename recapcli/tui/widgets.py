@@ -8,8 +8,6 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from rich.text import Text
-from rich.segment import Segment
-from rich.tree import Tree
 from textual.widgets import Button, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
@@ -98,7 +96,7 @@ class CommandMenu(OptionList):
             label.append(name, style="bold " + PALETTE["accent"])
             if arguments:
                 label.append(" " + arguments, style=PALETTE["muted"])
-            label.append("  ·  " + description, style=PALETTE["text"])
+            label.append("  " + description, style=PALETTE["muted"])
             self.add_option(Option(label, id=name))
         self.styles.height = min(len(commands), max_rows)
         self.display = bool(commands)
@@ -106,18 +104,8 @@ class CommandMenu(OptionList):
             self.highlighted = 0
 
 
-class CompactTree(Tree):
-    """不显示空的根节点行，同时保留子节点的连接线。"""
-
-    def __rich_console__(self, console, options):
-        for index, line in enumerate(Segment.split_lines(super().__rich_console__(console, options))):
-            if index:
-                yield from line
-                yield Segment.line()
-
-
 class ToolProgress(Static):
-    """同一轮的工具事件组成一棵树；未知结果不标为成功。"""
+    """同一轮的模型请求与工具调用：运行中显示当前一项，结束后收成一行摘要；失败与未知单列。"""
 
     FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     INDEX_TOOLS = {"search_code_index", "search_symbols"}
@@ -128,6 +116,7 @@ class ToolProgress(Static):
         self.content_text = ""
         self._frame = 0
         self._timer = None
+        self._started = time.monotonic()
 
     def on_mount(self):
         self._timer = self.set_interval(0.12, self._animate)
@@ -151,7 +140,7 @@ class ToolProgress(Static):
             if row is None:
                 return False
             result = event.removeprefix("[结果]").strip()
-            state = "failed" if result.startswith("失败") else "done"
+            state = "failed" if result.startswith("失败") else "skipped" if result.startswith("未执行") else "done"
             if "退出码 " in result and result.rsplit("退出码 ", 1)[1] != "0":
                 state = "warning"
             row.update(state=state, duration=time.monotonic() - row["started"],
@@ -185,41 +174,66 @@ class ToolProgress(Static):
         if not self.rows:
             self.update("")
             return
+        tools = [row for row in self.rows if row["kind"] == "tool"]
         requests = sum(row["kind"] == "request" for row in self.rows)
-        tools = sum(row["kind"] == "tool" for row in self.rows)
-        reads = sum(row["label"].split(" ", 1)[0] in {"read_file", "find_files", "list_directory"}
-                    for row in self.rows if row["kind"] == "tool")
-        searches = sum(row["label"].split(" ", 1)[0] in self.INDEX_TOOLS
-                       for row in self.rows if row["kind"] == "tool")
-        active = next((row for row in reversed(self.rows) if row["state"] == "running"), None)
-        tree = CompactTree("", guide_style=PALETTE["faint"])
-        if active is not None:
-            label = Text(self.FRAMES[self._frame] + " ", style=PALETTE["accent"])
-            if active["role"]:
-                label.append(active["role"] + " · ", style=PALETTE["muted"])
-            label.append(active["label"], style=PALETTE["text"])
-            tree.add(label)
-        summary = f"模型请求 {requests} 次 · 工具 {tools} 次"
+        reads = sum(row["label"].split(" ", 1)[0] in {"read_file", "find_files", "list_directory"} for row in tools)
+        searches = sum(row["label"].split(" ", 1)[0] in self.INDEX_TOOLS for row in tools)
+        parts = ([f"模型请求 {requests} 次"] if requests else []) + [f"工具 {len(tools)} 次"]
         if reads:
-            summary += f" · 读取 {reads}"
+            parts.append(f"读取 {reads}")
         if searches:
-            summary += f" · 搜索 {searches}"
-        tree.add(Text(("✓ " if not running else "◇ ") + summary,
-                      style=PALETTE["online"] if not running else PALETTE["muted"]))
+            parts.append(f"搜索 {searches}")
+        text = Text(no_wrap=False)
+        active = next((row for row in reversed(self.rows) if row["state"] == "running"), None)
+        if active is not None:
+            text.append(self.FRAMES[self._frame] + " ", style=PALETTE["accent"])
+            if active["role"]:
+                text.append(active["role"] + " · ", style=PALETTE["muted"])
+            text.append(active["label"] + "\n")
+            text.append("  ⎿ " + " · ".join(parts), style=PALETTE["muted"])
+        else:
+            elapsed = time.monotonic() - self._started
+            text.append("✓ ", style=PALETTE["online"])
+            text.append(" · ".join(parts) + f" · {elapsed:.1f}s", style=PALETTE["muted"])
         for row in self.rows:
-            if row["state"] not in {"failed", "warning", "unknown"}:
+            if row["state"] not in {"failed", "warning", "unknown", "skipped"}:
                 continue
             color = PALETTE["error"] if row["state"] == "failed" else PALETTE["warning"]
-            label = Text("◈ ", style=color)
+            text.append("\n  ⎿ ", style=PALETTE["muted"])
+            text.append("✗ " if row["state"] == "failed" else "! ", style=color)
             if row["role"]:
-                label.append(row["role"] + " · ", style=PALETTE["muted"])
-            label.append(row["label"], style=PALETTE["text"])
+                text.append(row["role"] + " · ", style=PALETTE["muted"])
+            text.append(row["label"])
             if row["detail"]:
-                label.append(" · " + row["detail"], style=color)
-            if row["duration"] is not None:
-                label.append(f" ({row['duration']:.1f}s)", style=PALETTE["faint"])
-            tree.add(label)
-        self.update(tree)
+                text.append(" · " + row["detail"], style=color)
+        self.update(text)
+
+
+class TodoPanel(Static):
+    """模型用 todo_write 维护的清单；同一轮内原地更新。"""
+
+    def __init__(self):
+        super().__init__("", classes="turn todo-turn", markup=False)
+        self.content_text = ""
+
+    def show(self, body):
+        self.content_text = body
+        lines = [line for line in body.splitlines() if line.strip()]
+        done = sum(line.startswith("☑") for line in lines)
+        text = Text()
+        text.append("待办", style="bold")
+        text.append(f"  {done}/{len(lines)}", style=PALETTE["muted"])
+        for line in lines:
+            mark, _, content = line.partition(" ")
+            text.append("\n")
+            if mark == "☑":
+                text.append("☑ " + content, style=PALETTE["muted"] + " strike")
+            elif mark == "◐":
+                text.append("◐ ", style=PALETTE["accent"])
+                text.append(content, style="bold")
+            else:
+                text.append("☐ " + content)
+        self.update(text)
 
 
 class ConversationView(VerticalScroll):

@@ -22,6 +22,12 @@ from recapcli.core.context import json_size
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
 from recapcli.ui.terminal_ui import TerminalUI
+from recapcli.core.context import json_tokens as _json_tokens
+from recapcli.core.todos import TODO_TOOL as _TODO_TOOL
+from recapcli.tools import tool_definitions as _tool_definitions
+
+# 工具定义计入上下文窗口；测试窗口 = 工具定义 + 约 1300 token 的消息空间。
+WINDOW = _json_tokens(_tool_definitions({"read"}) + [_TODO_TOOL]) + 1300
 
 
 def reply(content=None, calls=None):
@@ -162,27 +168,12 @@ class SubagentTests(unittest.TestCase):
                 overlap.wait(timeout=5)
             return self.reading(role, count, data)
         result = self.run_multi(respond, limits=AgentLimits(max_tool_calls=1))
-        facts = [data for kind, data in self.traces if kind == "tool_result"]
+        facts = [data for kind, data in self.traces if kind == "tool_result"
+                 and data["result"].get("execution_status") != "not_executed"]
         self.assertEqual(len(facts), 1)
         self.assertTrue(facts[0]["result"]["ok"])
         self.assertEqual(result.status, "incomplete")
         self.assertEqual(next(data for kind, data in self.traces if kind == "subagent_budget")["tool_calls"], 1)
-
-    def test_shared_output_budget_counts_both_inflight_tools(self):
-        overlap = Barrier(2)
-
-        def execute(*args, **kwargs):
-            overlap.wait(timeout=5)
-            return {"ok": True, "content": "x" * 600}
-        with patch("recapcli.core.agent.execute_tool", side_effect=execute):
-            result = self.run_multi(self.reading, limits=AgentLimits(max_tool_calls=4, max_tool_bytes=1000))
-        outputs = [json.loads(message["content"]) for role, data in self.requests if role != "aggregate"
-                   for message in data["messages"] if message["role"] == "tool"]
-        self.assertEqual(sum(item["ok"] for item in outputs), 1)
-        budget = next(data for kind, data in self.traces if kind == "subagent_budget")
-        self.assertLessEqual(budget["tool_bytes"], 1000)
-        self.assertTrue(budget["output_exhausted"])
-        self.assertEqual(result.status, "incomplete")
 
     def test_pre_cancelled_task_makes_no_model_requests(self):
         cancelled = Event()
@@ -278,12 +269,12 @@ class SubagentTests(unittest.TestCase):
             reports = json.loads(report.split("：\n", 1)[1])
             self.assertTrue(all(report["truncated"] for report in reports))
             return reply("报告截断，完整内容见任务追溯")
-        result = self.run_multi(respond, limits=AgentLimits(max_context_bytes=12000))
+        result = self.run_multi(respond, limits=AgentLimits(max_context_tokens=WINDOW + 1700))
         self.assertEqual(result.status, "returned")
         reports = [data for kind, data in self.traces if kind == "subagent_result"]
         self.assertTrue(all(len(report["answer"]) > 15000 for report in reports))
 
-    def test_timeout_during_aggregation_is_not_downgraded_to_a_returned_report(self):
+    def test_late_aggregate_response_is_used_without_another_request(self):
         clock = [0.0]
         limits = AgentLimits(max_seconds=3)
         budget = AgentBudget(limits, 20, clock=lambda: clock[0])
@@ -292,9 +283,10 @@ class SubagentTests(unittest.TestCase):
             if role == "aggregate":
                 clock[0] = 4.0
             return reply(role)
-        with self.assertRaisesRegex(RuntimeError, "时间预算"):
-            self.run_multi(respond, limits=limits, _budget=budget)
+        # 汇总响应在截止后才到：照常使用这份回答，不重新请求，也不把已有报告丢掉。
+        result = self.run_multi(respond, limits=limits, _budget=budget)
         self.assertEqual(budget.requests, 3)
+        self.assertIn("aggregate", result.answer)
 
     def test_failed_child_keeps_other_report_and_marks_incomplete(self):
         def respond(role, count, data):
@@ -339,7 +331,7 @@ class SubagentTests(unittest.TestCase):
                 return reply(json.dumps({field: "保留来源与未验证项" for field in SUMMARY_FIELDS}))
             return reply(role + " 报告")
         result = self.run_multi(respond, history=history, auto_compact=True, max_steps=4,
-                                limits=AgentLimits(max_context_bytes=5000))
+                                limits=AgentLimits(max_context_tokens=WINDOW))
         self.assertEqual(self.counts, {"compact": 1, "analysis": 1, "review": 1, "aggregate": 1})
         self.assertEqual(result.status, "returned")
         self.assertIsNotNone(result.summary)

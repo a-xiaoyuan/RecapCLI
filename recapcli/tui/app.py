@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 import queue
 import threading
 import time
@@ -19,9 +20,9 @@ from .driver import Presenter, ShellDriver, ShellOptions
 from .state import ShellState
 from .status import TaskStatus, task_text, usage_text
 from .theme import PALETTE, render_answer, render_line
-from .widgets import CommandMenu, ConversationView, PromptInput, StatusScreen, ToolProgress
+from .widgets import CommandMenu, ConversationView, PromptInput, StatusScreen, TodoPanel, ToolProgress
 from .settings import ModelConfigScreen, ModelPickerScreen
-from ..ui.terminal_art import project_version, wordmark_text
+from ..ui.terminal import project_version
 from ..ui.terminal_ui import clean_output
 from ..config import ConfigError, list_model_profiles
 from ..application.help import command_items, help_text
@@ -29,31 +30,38 @@ from ..core.project_rules import project_rules_description
 from ..application.changes import change_report, git_summary, files_summary, commands_summary
 
 
+# 跟随终端：背景和前景都用终端自己的颜色，只有强调色固定。
 TERMINAL_THEME = Theme(
-    name="recap-terminal", primary=PALETTE["accent"], secondary=PALETTE["warning"],
-    accent=PALETTE["accent"], foreground=PALETTE["text"], background=PALETTE["base"],
-    surface=PALETTE["stage"], panel=PALETTE["stage"], success=PALETTE["online"],
-    warning=PALETTE["warning"], error=PALETTE["error"], boost=PALETTE["muted"],
-    dark=False, ansi=False,
-)
-WELCOME_NOTE = "欢迎回来，从手头的代码读起。"
-WELCOME_TIPS = (
-    "/help 查看命令",
-    "F2 选模型，F3 写配置",
-    "Esc 停止，Ctrl+L 清屏",
-    "写入和命令会先审批",
+    name="recap-terminal", primary=PALETTE["accent"], secondary="ansi_bright_black",
+    accent=PALETTE["accent"], foreground="ansi_default", background="ansi_default",
+    surface="ansi_default", panel="ansi_default", success="ansi_green",
+    warning="ansi_yellow", error="ansi_red", boost="ansi_default",
+    dark=True, ansi=True,
+    variables={
+        "ansi-background": "ansi_default", "ansi-foreground": "ansi_default",
+        "border": "ansi_bright_black", "border-blurred": "ansi_bright_black",
+        "block-cursor-foreground": "ansi_default", "block-cursor-background": "ansi_default",
+        "block-cursor-text-style": "bold reverse", "block-hover-background": "ansi_default",
+        "input-cursor-background": PALETTE["accent"], "input-cursor-foreground": "ansi_black",
+        "input-cursor-text-style": "none",
+        "input-selection-background": "ansi_bright_black", "input-selection-foreground": "ansi_default",
+        "screen-selection-background": "ansi_bright_black", "screen-selection-foreground": "ansi_default",
+        "scrollbar": "ansi_bright_black", "scrollbar-hover": "ansi_bright_black", "scrollbar-active": PALETTE["accent"],
+        "scrollbar-background": "ansi_default", "scrollbar-background-hover": "ansi_default",
+        "scrollbar-background-active": "ansi_default", "scrollbar-corner-color": "ansi_default",
+        "footer-background": "ansi_default",
+    },
 )
 DEMO_NOTE = "这是界面演示，输入未发送给模型。"
 DEMO_PROMPT = "梳理项目入口，说明启动和执行流程。"
+DEMO_TODO = "☑ 定位启动入口\n◐ 梳理会话调度\n☐ 说明 Agent 执行循环"
 DEMO_REPLY = (
     "启动与执行分为三个部分：\n\n"
-    "- **启动入口** · `tui/launch.py` 选择终端或行式界面。\n"
-    "- **会话调度** · `tui/driver.py` 连接会话、任务与审批。\n"
-    "- **任务执行** · `core/agent.py` 负责模型请求和工具调用。\n\n"
-    "> **权限提示**\n> 编辑与命令执行由启动选项控制，需要时仍会请求审批。\n\n"
-    "接下来可以：\n\n"
-    "1. 解释启动流程\n2. 查看当前模型配置\n3. 继续阅读 Agent 执行过程\n\n"
-    "*界面演示：以上为示例内容，进度为演示事件，未调用工具或模型。*"
+    "- **启动入口** `tui/launch.py` 选择终端界面或行式 CLI。\n"
+    "- **会话调度** `tui/driver.py` 连接会话、任务记录与审批。\n"
+    "- **任务执行** `core/agent.py` 负责模型请求、工具调用和收尾。\n\n"
+    "> 编辑与命令执行由启动选项控制，需要时仍会请求审批。\n\n"
+    "*界面演示：以上为示例内容，未调用工具或模型。*"
 )
 MISSING_CONFIG = "还没有可用的模型配置。按 F3 填写模型、接口地址和 API Key；F2 可选择已有配置。"
 
@@ -112,8 +120,7 @@ def _copy_windows_clipboard(text):
 def version_label():
     """版本读取项目元数据，避免在界面里维护第二份版本号。"""
     release = project_version()
-    label = "v" + clean_output(release) if release else "开发版"
-    return Text(label, style=PALETTE["muted"], no_wrap=True)
+    return "v" + clean_output(release) if release else "开发版"
 
 
 class GlyphButton(Static):
@@ -158,8 +165,7 @@ class ConversationLine(Static):
         if self.kind == "assistant":
             rendered = render_answer(shown, self.task_status)
         elif self.kind == "user":
-            rendered = Text.assemble(("❯ ", "bold " + PALETTE["user"]),
-                                     (shown, "bold " + PALETTE["text"]), overflow="fold")
+            rendered = Text.assemble(("› ", "bold " + PALETTE["accent"]), (shown, "bold"), overflow="fold")
         else:
             rendered = render_line(shown, self.kind)
         self.update(rendered)
@@ -177,7 +183,7 @@ class ConversationLine(Static):
 class RecapShell(App):
     """终端壳。--demo 只演示界面；其余输入走现有 run_agent。"""
 
-    CSS_PATH = "violet.tcss"
+    CSS_PATH = "recap.tcss"
     TITLE = "RecapCLI"
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [Binding("f1", "show_help", "帮助", priority=True),
@@ -195,11 +201,11 @@ class RecapShell(App):
     def __init__(self, state: ShellState, *, demo=False, options: ShellOptions | None = None, client_factory=None):
         super().__init__(ansi_color=True)
         self.console.push_theme(RichTheme({
-            **{f"markdown.h{level}": "bold " + PALETTE["text"] for level in range(1, 7)},
-            "markdown.code": "bold " + PALETTE["text"] + " on #f4e6d8",
-            "markdown.block_quote": PALETTE["text"],
+            **{f"markdown.h{level}": "bold" for level in range(1, 7)},
+            "markdown.code": PALETTE["accent"],
+            "markdown.block_quote": PALETTE["muted"],
             "markdown.item.bullet": PALETTE["muted"],
-            "markdown.item.number": PALETTE["accent"],
+            "markdown.item.number": PALETTE["muted"],
             "markdown.link": "underline " + PALETTE["accent"],
             "markdown.link_url": PALETTE["muted"],
         }))
@@ -207,7 +213,6 @@ class RecapShell(App):
         self.demo = demo
         self.options = options or ShellOptions(workspace=state.workspace)
         self.client_factory = client_factory
-        self._cursor_visible = True
         self._busy = False
         self._busy_since = None
         self._activity = ""
@@ -218,6 +223,7 @@ class RecapShell(App):
         self._response_widget = None
         self._turn_answer_widget = None
         self._progress_widget = None
+        self._todo_widget = None
         self._status_message = ""
         self._response_text = ""
         self._task_status = TaskStatus()
@@ -250,43 +256,38 @@ class RecapShell(App):
         return next((p for p in self._profiles if p.get("default")), self._profiles[0] if self._profiles else {})
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="shell"):
-            with Vertical(id="stage"):
-                yield Static("", id="task-inspector", markup=False)
-                with ConversationView(id="conversation"):
-                    with Vertical(id="history"):
-                        with Vertical(id="welcome"):
-                            with Horizontal(id="welcome-columns"):
-                                with Vertical(id="welcome-primary"):
-                                    yield Static(wordmark_text(max_width=40), id="welcome-mark")
-                                    yield Static(WELCOME_NOTE, id="welcome-message", markup=False)
-                                    yield Static(self._workspace_caption(), id="welcome-subtitle", markup=False)
-                                    yield Static("", id="welcome-agent", markup=False)
-                                with Vertical(id="welcome-tips"):
-                                    yield Static("Tips", id="welcome-tips-title", markup=False)
-                                    yield Static("\n".join(WELCOME_TIPS), id="welcome-tips-body", markup=False)
-                        yield Vertical(id="transcript")
-                with Horizontal(id="footer-frame"):
-                    with Vertical(id="footer"):
-                        yield CommandMenu(id="command-menu")
-                        yield Static("", id="command-help", markup=False)
-                        yield Static("", id="command-hint", markup=False)
-                        with Horizontal(id="status-row"):
-                            yield Static("", id="status-line", markup=False)
-                            yield GlyphButton("↓ 回到底部", "latest", "回到底部并恢复自动跟随（Ctrl+End）", id="jump-latest")
-                        with Horizontal(id="composer"):
-                            yield Static("RecapCLI ❯", id="input-prefix", markup=False)
-                            placeholder = "界面演示，不发送请求" if self.demo else "输入问题，/ 查看命令…"
-                            yield PromptInput(placeholder=placeholder, id="prompt")
-                            yield GlyphButton("↵", "send", "发送（Enter）", id="send")
-                        yield Static("", id="key-hints", markup=False)
+        with Vertical(id="stage"):
+            with ConversationView(id="conversation"):
+                with Vertical(id="history"):
+                    with Vertical(id="welcome"):
+                        yield Static(self._welcome_title(), id="welcome-title", markup=False)
+                        yield Static(self._workspace_caption(), id="welcome-subtitle", markup=False)
+                        yield Static("", id="welcome-agent", markup=False)
+                    yield Vertical(id="transcript")
+            with Vertical(id="footer"):
+                yield CommandMenu(id="command-menu")
+                yield Static("", id="command-help", markup=False)
+                yield Static("", id="command-hint", markup=False)
+                with Horizontal(id="status-row"):
+                    yield Static("", id="status-line", markup=False)
+                    yield GlyphButton("↓ 回到底部", "latest", "回到底部并恢复自动跟随（Ctrl+End）", id="jump-latest")
+                with Horizontal(id="composer"):
+                    yield Static("›", id="input-prefix", markup=False)
+                    placeholder = "界面演示，不发送请求" if self.demo else "输入问题，/ 查看命令…"
+                    yield PromptInput(placeholder=placeholder, id="prompt")
+                yield Static("", id="key-hints", markup=False)
+
+    def _welcome_title(self):
+        title = Text(no_wrap=True, overflow="ellipsis")
+        title.append("◆ ", style=PALETTE["accent"])
+        title.append("RecapCLI", style="bold")
+        title.append("  " + version_label(), style=PALETTE["muted"])
+        return title
 
     async def on_mount(self):
         self.ui_thread = threading.get_ident()
         self.register_theme(TERMINAL_THEME)
         self.theme = "recap-terminal"
-        self.query_one("#welcome").border_title = Text.assemble(
-            ("◆ RecapCLI ", "bold " + PALETTE["accent"]), version_label())
         self._apply_width(self.size.width)
         self.set_interval(1, self._tick_status)
         if self.demo:
@@ -295,11 +296,10 @@ class RecapShell(App):
                 self.event_update("[工具] " + name)
                 await asyncio.sleep(0.06)
                 self.event_update("[结果] 成功")
+            self.event_update("[待办]\n" + DEMO_TODO)
             await self._append(DEMO_REPLY, "assistant")
-            await self.query_one("#transcript").mount(Static(self._cursor_text(), id="stream-cursor"))
-            self.set_interval(0.6, self._blink_cursor)
             for note in self.state.notes:
-                await self._append(note, "assistant")
+                await self._append(note, "info")
         else:
             startup_notes = self.driver.prepare()
             profile = self._selected_profile()
@@ -330,41 +330,18 @@ class RecapShell(App):
     def _apply_width(self, width):
         if self.screen_stack:
             self.screen_stack[0].set_class(width < 72, "-narrow")
-            self.screen_stack[0].set_class(width >= 128, "-wide")
-        if self.query("#input-prefix"):
-            self.query_one("#input-prefix", Static).update("❯" if width < 72 else "RecapCLI ❯")
-        self.call_after_refresh(self._refresh_wordmark)
         self.call_after_refresh(self._refresh_hints)
 
     def _workspace_caption(self):
-        """目录和分支留在左栏副文；模型已经出现在按键提示里。"""
         path = clean_output(str(self.state.workspace))
-        branch = clean_output(self.state.branch) or "无 Git 分支"
+        home = clean_output(str(Path.home()))
+        if path.startswith(home + os.sep) or path == home:
+            path = "~" + path[len(home):]
         caption = Text(no_wrap=True, overflow="ellipsis")
-        caption.append(path, style=PALETTE["muted"])
-        caption.append("  ·  ", style=PALETTE["faint"])
-        caption.append(branch, style=PALETTE["online"] if self.state.branch else PALETTE["muted"])
+        caption.append(path)
+        if self.state.branch:
+            caption.append(" · " + clean_output(self.state.branch))
         return caption
-
-    def _refresh_wordmark(self):
-        if not self.query("#welcome-mark"):
-            return
-        primary = self.query_one("#welcome-primary")
-        width = primary.content_size.width or primary.size.width
-        if width <= 1 or width == getattr(self, "_mark_width", None):
-            return
-        self._mark_width = width
-        self.query_one("#welcome-mark", Static).update(wordmark_text(max_width=width))
-
-    def _cursor_text(self):
-        text = Text("  ", style=PALETTE["faint"])
-        text.append("█" if self._cursor_visible else " ", style=PALETTE["online"])
-        return text
-
-    def _blink_cursor(self):
-        if self.query("#stream-cursor"):
-            self._cursor_visible = not self._cursor_visible
-            self.query_one("#stream-cursor", Static).update(self._cursor_text())
 
     def _static(self, content, kind):
         return ConversationLine(content, kind)
@@ -408,6 +385,13 @@ class RecapShell(App):
         role = name if separator and (name in {"analysis", "review", "aggregate", "planner", "reviewer", "team_summary"}
                                      or name.startswith("worker:")) else ""
         event = message.removeprefix(f"[{role}] ") if role else message
+        if event.startswith("[待办]\n"):
+            if self._todo_widget is None:
+                self._todo_widget = TodoPanel()
+                self.query_one("#transcript").mount(self._todo_widget)
+            self._todo_widget.show(event.removeprefix("[待办]\n"))
+            self._follow_latest()
+            return
         if event.startswith("[模型]"):
             self.set_activity("请求模型 · " + event.removeprefix("[模型]").strip())
             model = self._display_model or self._selected_profile().get("model") or "当前模型"
@@ -465,6 +449,7 @@ class RecapShell(App):
         self._turn_answer_widget = None
         self._response_text = ""
         self._progress_widget = None
+        self._todo_widget = None
         await self.query_one("#transcript").remove_children()
         self._follow_latest(force=True)
 
@@ -475,6 +460,7 @@ class RecapShell(App):
         self._turn_answer_widget = None
         self._response_text = ""
         self._progress_widget = None
+        self._todo_widget = None
         transcript = self.query_one("#transcript")
         await transcript.remove_children()
         for kind, text in rows:
@@ -516,7 +502,7 @@ class RecapShell(App):
             ("本轮文件 · 编辑 / 恢复工具记录", files_summary(report)),
             ("本轮命令记录", commands_summary(report)),
         ):
-            text.append(title + "\n", style=PALETTE["accent"] + " bold")
+            text.append(title + "\n", style="bold")
             text.append(clean_output(content) + "\n\n", style=PALETTE["text"])
         return text
 
@@ -537,55 +523,30 @@ class RecapShell(App):
             activity = self._activity or "正在处理"
             if self._response_text and activity.startswith("请求模型"):
                 activity = "正在回答"
-            label = f"{activity} · {elapsed}s"
-        if self._task_status.status == "failed" and not self._busy and "APITimeoutError" in self._task_status.stop_reason:
-            label += " · 模型请求超时，详情见上方提示"
+            label = f"● {activity} · {elapsed}s"
         if self.demo:
             label = ""
         elif not self._busy:
             label = ("模型请求超时，详情见上方提示" if "APITimeoutError" in self._task_status.stop_reason else
                      ("任务未完成，详情见上方提示" if self._task_status.status in {"failed", "blocked", "unknown"} else ""))
-        color = PALETTE["error"] if self._task_status.status == "failed" and not self._busy else (PALETTE["accent"] if self._busy else PALETTE["faint"])
+        color = PALETTE["error"] if self._task_status.status == "failed" and not self._busy else PALETTE["accent"]
         self.query_one("#status-line", Static).update(Text(label, style=color, no_wrap=True, overflow="ellipsis"))
         self._status_message = label
         self._refresh_navigation()
         mode = " / ".join({"read": "读取", "write": "编辑", "exec": "命令", "web": "网页"}[item]
                           for item in self.options.capabilities)
-        agent = Text()
-        agent.append("● ", style=PALETTE["online"] if self._model_ready else PALETTE["faint"])
-        agent.append("界面演示" if self.demo else ("Agent 待配置" if not self._model_ready else
-                     ("Agent 执行中" if self._busy else "Agent Ready")), style=PALETTE["text"])
-        agent.append(" · " + mode, style=PALETTE["muted"])
+        agent = Text(no_wrap=True, overflow="ellipsis")
+        if self.demo:
+            agent.append("界面演示 · 不请求模型")
+        elif not self._model_ready:
+            agent.append("模型未配置 · F3 设置")
+        else:
+            agent.append(clean_output(self._display_model or self._selected_profile().get("model") or "当前模型"))
+        agent.append(" · " + self.options.mode + " · " + mode)
         self.query_one("#welcome-agent", Static).update(agent)
-        self._refresh_inspector(mode)
-        send = self.query_one("#send", GlyphButton)
-        send.update("■" if self._busy else "↵")
-        send.tooltip = "停止本轮（Esc）" if self._busy else "发送（Enter）"
         self._refresh_hints()
         if isinstance(self.screen, StatusScreen) and self.screen.query("#status-body"):
             self.screen.query_one("#status-body", Static).update(self._status_details())
-
-    def _refresh_inspector(self, mode):
-        task = self._task_status
-        files = list(task.modified_files)
-        file_text = "\n".join(files[:6]) if files else "暂无本轮编辑"
-        if len(files) > 6:
-            file_text += f"\n还有 {len(files) - 6} 个 · Ctrl+G 查看"
-        requests = task.requests
-        if self._progress_widget is not None:
-            requests = max(requests, sum(row["kind"] == "request" for row in self._progress_widget.rows))
-        body = Text()
-        for title, content in (
-            ("本轮任务", task_text(task, busy=self._busy, approval=self._approval)),
-            ("执行模式", self.options.mode + " · " + mode),
-            ("模型请求", f"{requests} 次" if task.task_id or requests else "尚未开始"),
-            ("Token 用量", usage_text(task) if task.task_id else "尚无任务用量"),
-            ("本轮编辑", file_text),
-        ):
-            body.append(title + "\n", style="bold " + PALETTE["accent"])
-            body.append(clean_output(content) + "\n\n", style=PALETTE["muted"])
-        body.append("Ctrl+G 查看完整详情", style=PALETTE["faint"])
-        self.query_one("#task-inspector", Static).update(body)
 
     def _refresh_hints(self):
         if not self.query("#key-hints"):
@@ -595,15 +556,15 @@ class RecapShell(App):
         elif self._approval:
             hint = "输入 approve / reject / cancel · esc 停止本轮"
         elif self._busy:
-            hint = "esc 停止 · 可编辑下一条草稿 · ctrl+g 详情"
+            hint = "esc 停止 · 可先写下一条 · ctrl+g 详情"
+        elif self.demo:
+            hint = "界面演示 · /help 命令 · ctrl+q 退出"
+        elif self.size.width < 72:
+            hint = "enter 发送 · /help" if self._model_ready else "/config 设置 · /help"
         else:
-            hint = "Enter 发送 · Shift+Enter 换行 · /help 命令" if self._model_ready else "/config 设置 · /help 命令"
-        model = self._display_model or self._selected_profile().get("model") or "未配置模型"
-        prefix = clean_output(model) + " · " if self.size.width >= 100 else ""
-        if self.size.width < 72 and not self._busy and not self._approval:
-            hint = "Enter 发送 · /help 命令" if self._model_ready else "/config 设置 · /help 命令"
-        label = Text(prefix + hint, style=PALETTE["muted"], no_wrap=True, overflow="ellipsis")
-        self.query_one("#key-hints", Static).update(label)
+            hint = ("enter 发送 · shift+enter 换行 · /help 命令 · ctrl+g 详情" if self._model_ready
+                    else "/config 设置模型 · /help 命令")
+        self.query_one("#key-hints", Static).update(Text(hint, style=PALETTE["muted"], no_wrap=True, overflow="ellipsis"))
 
     def _hide_commands(self):
         self._command_anchor = None
@@ -707,6 +668,7 @@ class RecapShell(App):
         self._turn_answer_widget = None
         self._task_status = TaskStatus()
         self._progress_widget = None
+        self._todo_widget = None
         self._busy = True
         self._busy_since = time.monotonic()
         self._activity = ""
@@ -810,12 +772,7 @@ class RecapShell(App):
         await self._submit()
 
     async def on_glyph_button_pressed(self, event: GlyphButton.Pressed):
-        if event.action == "send":
-            if self._busy:
-                self.action_cancel_turn()
-            else:
-                await self._submit()
-        elif event.action == "latest":
+        if event.action == "latest":
             self.action_jump_latest()
         if len(self.screen_stack) == 1:
             self.query_one("#prompt", PromptInput).focus()

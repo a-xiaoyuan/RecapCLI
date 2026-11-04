@@ -8,7 +8,7 @@ from ..tools.filesystem import ToolError, _resolve
 
 MAX_RULE_BYTES = 8 * 1024
 MAX_RULE_FILES = 20
-SKIP_DIRECTORIES = {".git", ".recapcli", ".revocli", ".archer", ".venv", "node_modules", "__pycache__"}
+SKIP_DIRECTORIES = {".git", ".recapcli", ".venv", "node_modules", "__pycache__"}
 
 
 def _read_rule(workspace, relative, max_bytes):

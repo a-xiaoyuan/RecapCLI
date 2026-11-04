@@ -6,7 +6,7 @@ import json
 
 from openai import OpenAI, APITimeoutError, APIConnectionError, APIStatusError
 
-from ..config import load_config
+from ..config import DEFAULT_CONTEXT_TOKENS, load_config
 from .protocols import complete
 
 
@@ -78,14 +78,14 @@ class ModelClient:
                 "capabilities": {"tools": getattr(self.config, "tools", True),
                                  "images": getattr(self.config, "images", False),
                                  "streaming": getattr(self.config, "streaming", False)},
-                "context_bytes": getattr(self.config, "context_bytes", 256 * 1024)}
+                "context_tokens": getattr(self.config, "context_tokens", DEFAULT_CONTEXT_TOKENS)}
 
     def switch(self, profile):
         candidate = load_config(profile)
         sdk = self._open(candidate)
         self.config, self._sdk = candidate, sdk
 
-    def complete(self, *, model, messages, tools=None, tools_allowed=True, timeout=30, context_bytes=None,
+    def complete(self, *, model, messages, tools=None, tools_allowed=True, timeout=30, context_tokens=None,
                  workspace=None, on_delta=None, check=None):
         if model != self.model:
             raise ValueError("请求模型与当前配置不一致；请通过模型配置切换，避免混用协议私有状态")
@@ -95,24 +95,24 @@ class ModelClient:
             raise ValueError("当前模型配置 images=false；请确认模型支持视觉后开启 images 或切换视觉模型")
         if not getattr(self.config, "streaming", False):
             on_delta = None
-        maximum = getattr(self.config, "context_bytes", 256 * 1024)
-        if context_bytes is not None:
-            maximum = min(maximum, context_bytes)
+        maximum = getattr(self.config, "context_tokens", DEFAULT_CONTEXT_TOKENS)
+        if context_tokens is not None:
+            maximum = min(maximum, context_tokens)
         return complete(self._sdk, getattr(self.config, "protocol", "chat_completions"),
                         model=model, messages=messages, tools=tools, tools_allowed=tools_allowed,
-                        timeout=timeout, origin=self.origin, context_bytes=maximum,
+                        timeout=timeout, origin=self.origin, context_tokens=maximum,
                         workspace=workspace, on_delta=on_delta, check=check)
 
 
-def request_completion(client, *, model, messages, tools=None, tools_allowed=True, timeout=30, context_bytes=None,
+def request_completion(client, *, model, messages, tools=None, tools_allowed=True, timeout=30, context_tokens=None,
                        workspace=None, on_delta=None, check=None):
     if isinstance(client, ModelClient):
         return client.complete(model=model, messages=messages, tools=tools, tools_allowed=tools_allowed,
-                               timeout=timeout, context_bytes=context_bytes, workspace=workspace, on_delta=on_delta, check=check)
+                               timeout=timeout, context_tokens=context_tokens, workspace=workspace, on_delta=on_delta, check=check)
     # 保留 Python API 接收现有 OpenAI 客户端的兼容性。
     if isinstance(client, OpenAI):
         # 请求重试由 Agent 统一计数和取消，不叠加调用方 SDK 的默认重试。
         client = client.with_options(max_retries=0)
     return complete(client, "chat_completions", model=model, messages=messages, tools=tools,
-                    tools_allowed=tools_allowed, timeout=timeout, context_bytes=context_bytes,
+                    tools_allowed=tools_allowed, timeout=timeout, context_tokens=context_tokens,
                     workspace=workspace, on_delta=on_delta, check=check)

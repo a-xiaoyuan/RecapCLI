@@ -65,6 +65,8 @@ OPENAI_MODEL=your-model-id
 # 第三方兼容接口按服务商说明填写 API 根地址
 # OPENAI_BASE_URL=https://your-provider.example/v1
 # OPENAI_PROTOCOL=chat_completions
+# 模型上下文窗口（token），默认 128000
+# OPENAI_CONTEXT_TOKENS=200000
 ```
 
 多个模型可参考 [models.example.toml](models.example.toml)，在配置目录创建 `models.toml`。密钥通过 `api_key_env` 引用 `.env` 或环境变量，不直接写进 TOML。
@@ -186,7 +188,23 @@ recapcli --mcp-repo --mcp-config .\mcp-fetch.json
 
 `--mode plan` 支持带步骤 ID、类型及依赖的计划；独立只读步骤可以同批处理，修改和验证按依赖执行。每步保留模型核对依据，模型核对不等于测试或人工验收。
 
-计划默认最多 12 步、2 次重规划，可用 `--plan-steps`、`--plan-replans` 调整。`--max-steps` 是模型请求数上限，ReAct 默认 32，Plan/Multi 默认 48；整轮时间默认 900 秒，可用 `--max-seconds` 调整。上下文默认按 UTF-8 字节限制，也可用 `--context-tokens` 增加粗略 token 估算上限；验证步骤必须有实际成功结束的命令，后台运行中不能登记为验证通过。
+计划默认最多 12 步、2 次重规划，可用 `--plan-steps`、`--plan-replans` 调整。验证步骤必须有实际成功结束的命令，后台运行中不能登记为验证通过。
+
+### 预算与收尾
+
+| 项目 | 默认值 | 调整 |
+| --- | --- | --- |
+| 上下文窗口 | 128000 token | 模型配置 `context_tokens`，或 `--context-tokens` |
+| 模型请求 | ReAct 50，Plan/Multi 60 | `--max-steps` |
+| 工具调用 | 100 | `--max-tool-calls` |
+| 整轮时间 | 1800 秒（最后约 60 秒留给收尾） | `--max-seconds` |
+| 单次请求超时 | 120 秒 | `--request-timeout` |
+
+上下文按 token 估算，并用服务端返回的 `prompt_tokens` 校准；工具定义也计入窗口。当前轮接近窗口的 75% 时，较早的工具结果会换成一行占位（完整内容仍在任务记录里，模型需要时重新读取），最近几条结果保留原文。单条结果放不下时只保留收据并提示缩小范围。
+
+任何一项预算用完都不会让任务直接失败：Agent 停止调用工具，用最后一次请求汇总已完成的工作和未完成项，状态记为 `incomplete`；连这次请求也发不出去时，用本轮事实生成结束说明。
+
+涉及多个文件或多个入口的任务，模型会用 `todo_write` 维护待办清单（界面里显示为“待办”）；结束前清单还有未完成项时会被提醒一次。
 
 `--mode multi` 默认仍是只读分析与审查。显式加上 `--allow-write` 或 `--allow-exec` 后，使用规划者、执行 Worker、独立审查和汇总流程；只读 Worker 可并发，修改和验证串行，沿用原有审批、共享预算与任务记录。审查可提出一轮剩余修正。执行团队与 CLI/TUI 复用同一运行层。
 
@@ -213,7 +231,7 @@ RECAPCLI_EMBEDDING_API_KEY=你的Embedding服务密钥
 - 工作区是默认目录。可直接指定外部文件的绝对路径，首次访问时确认其所在目录，本次运行中复用授权。也可输入 `/add-dir "目录"` 或启动时重复传入 `--add-dir "目录"`；`/add-dir` 不带参数可查看当前范围。授权不跨重启自动保留。
 - 默认只读。`--allow-write` 与 `--allow-exec` 分别开放编辑和命令，默认逐次确认；`--yes` 会跳过逐次确认。
 - 文件工具按路径规则拦截 `.env`、私钥文件和常见凭据目录。获准执行的命令以当前用户权限运行，**没有操作系统沙箱隔离**，不能把文件工具的限制视作命令的权限边界。
-- 工具读取的项目内容可能发送到你配置的模型服务。会话、记忆、任务和编辑备份保存在目标项目的 `.recapcli/`；已有的 `.revocli/` 或 `.archer/` 数据目录会沿用。
+- 工具读取的项目内容可能发送到你配置的模型服务。会话、记忆、任务和编辑备份保存在目标项目的 `.recapcli/`。
 - 工作区根目录和子目录的 `AGENTS.md` 可说明开发约定和验证命令，每轮重新读取；子目录规则会标注作用域，其中的文字不能扩大工具权限或代替审批。
 
 文件读写、搜索和编辑适用于各种文本代码。语法符号定位覆盖 Python、Java、JavaScript/TypeScript（含 JSX/TSX）、Go、Rust、C/C++、C#、Kotlin、Ruby、PHP；解析器随依赖安装，运行时不下载语法。符号位置不等于完整语言服务器的类型或调用关系分析。命令执行成功与任务验收是两回事，可通过任务记录核对实际结果。
@@ -246,9 +264,12 @@ tests/           单元与集成测试
 本地测试与打包：
 
 ```sh
-uv run python -X utf8 -m unittest discover -s tests
+uv run python -X utf8 tests/fast.py                       # 除终端界面外的回归，约半分钟
+uv run python -X utf8 -m unittest discover -s tests       # 全量，包括较慢的 TUI 测试
 uv build
 ```
+
+仓库根目录的 [AGENTS.md](AGENTS.md) 写了目录分工、按改动选择的测试命令和开发约定；用 RecapCLI（或其他 Agent）开发 RecapCLI 时会自动读取。
 
 [CI](.github/workflows/ci.yml) 在推送和 Pull Request 时运行检查：测试矩阵覆盖 Windows / Ubuntu、Python 3.12 / 3.13；打包检查在源码目录外安装 wheel，验证安装后的命令入口与配置保存。
 

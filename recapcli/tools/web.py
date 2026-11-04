@@ -230,18 +230,13 @@ def _decode(data, content_type):
 
 
 def _select_provider(values):
-    """未指定时已有 Brave 密钥用 Brave，否则用 Tavily；两个服务变量不一致则拒绝。"""
+    """未指定时已有 Brave 密钥用 Brave，否则用 Tavily。"""
     brave = (values.get("BRAVE_API_KEY") or "").strip()
     tavily = (values.get("TAVILY_API_KEY") or "").strip()
-    current = (values.get("RECAP_WEB_PROVIDER") or "").strip()
-    legacy = (values.get("REVO_WEB_PROVIDER") or "").strip()
-    if current and legacy and current.casefold() != legacy.casefold():
-        raise ToolError("RECAP_WEB_PROVIDER 与旧变量 REVO_WEB_PROVIDER 不一致，请只保留 RECAP_WEB_PROVIDER")
-    chosen = current or legacy
-    label = "RECAP_WEB_PROVIDER" if current or not legacy else "REVO_WEB_PROVIDER"
+    chosen = (values.get("RECAP_WEB_PROVIDER") or "").strip()
     provider = chosen.casefold() or ("brave" if brave else "tavily" if tavily else "brave")
     if provider not in {"brave", "tavily"}:
-        raise ToolError(f"{label} 必须是 brave 或 tavily")
+        raise ToolError("RECAP_WEB_PROVIDER 必须是 brave 或 tavily")
     key_name = "BRAVE_API_KEY" if provider == "brave" else "TAVILY_API_KEY"
     key = brave if provider == "brave" else tavily
     if not key:

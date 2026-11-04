@@ -11,28 +11,30 @@ from rich.padding import Padding
 from rich.text import Text
 from rich.theme import Theme
 
-from .terminal_art import terminal_output, write_terminal
+from .terminal import terminal_output, write_terminal
 
 
-# 只给文字和代码块上色，不铺满终端背景。代码块用浅色主题，避免深色底块。
+# 跟随终端前景/背景：正文用默认色，次要信息用 ANSI 灰，只保留一个强调色。
+ACCENT = "#d97757"
 THEME = Theme({
-    "user": "bold #c45c26",
-    "assistant": "bold #d4652a",
-    "model": "#6f675f",
-    "tool": "#3d6d8c",
-    "success": "#2f7d57",
-    "error": "bold #c44545",
-    "muted": "#6f675f",
-    "preview": "#b86a2e",
-    "markdown.h1": "bold #d4652a",
-    "markdown.h2": "bold #d4652a",
-    "markdown.h3": "bold #c45c26",
-    "markdown.strong": "bold #c45c26",
-    "markdown.em": "italic #6f675f",
-    "markdown.code": "#3c3834 on #f4e6d8",
-    "markdown.item.bullet": "#d4652a",
-    "markdown.link": "underline #c45c26",
-    "markdown.block_quote": "#5c564e",
+    "user": "bold " + ACCENT,
+    "assistant": "bold " + ACCENT,
+    "model": "bright_black",
+    "tool": "bright_black",
+    "success": "green",
+    "error": "bold red",
+    "muted": "bright_black",
+    "notice": ACCENT,
+    "markdown.h1": "bold",
+    "markdown.h2": "bold",
+    "markdown.h3": "bold",
+    "markdown.strong": "bold",
+    "markdown.em": "italic",
+    "markdown.code": ACCENT,
+    "markdown.item.bullet": "bright_black",
+    "markdown.item.number": "bright_black",
+    "markdown.link": "underline " + ACCENT,
+    "markdown.block_quote": "bright_black",
 })
 
 
@@ -69,22 +71,22 @@ class TerminalUI:
         ), error=error)
 
     def user(self, prompt):
-        text = Text("你> ", style="user")
+        text = Text("› ", style="user")
         text.append(clean_output(prompt), style="default")
         self._output(lambda console, color: console.print(text))
 
     def read_prompt(self):
-        self._print("你> ", style="user", end="")
+        self._print("› ", style="user", end="")
         return input()
 
     def event(self, event):
         self._finish_stream()
         if event.startswith("[结果]"):
-            style = "success" if event.startswith("[结果] 成功") else "error"
-        elif event.startswith("[工具]") or event.startswith("[审批]"):
-            style = "tool"
+            style = "error" if event.startswith("[结果] 失败") else "success"
+        elif event.startswith("[待办]") or event.startswith("[收尾]"):
+            style = "notice"
         else:
-            style = "model"
+            style = "tool"
         self._print(event, style=style)
 
     def answer(self, answer):
@@ -100,7 +102,7 @@ class TerminalUI:
 
         def draw(console, color):
             console.print()
-            console.print(Text("RecapCLI>", style="assistant"))
+            console.print(Text("●", style="assistant"))
             if color:
                 console.print(Padding(Markdown(answer, code_theme="default", hyperlinks=False), (0, 0, 0, 2)))
             else:
@@ -121,7 +123,7 @@ class TerminalUI:
             self._finish_stream()
         elif kind == "delta":
             if not self._stream_visible:
-                self._print("\nRecapCLI> ", style="assistant", end="")
+                self._print("\n● ", style="assistant", end="")
                 self._stream_visible = True
             text = clean_output(text)
             self._stream_text += text
@@ -145,20 +147,4 @@ class TerminalUI:
         self._print(message, style="muted")
 
     def show_approval(self, message):
-        self._print(message, style="preview")
-
-    def preview(self):
-        self._print("界面预览 · 以下对话与日志均为演示，不请求模型", style="preview")
-        self.user("读取 README.md，说明项目如何运行")
-        self.event("[模型] 第 1 次请求")
-        self.event("[工具] read_file")
-        self.event("[结果] 成功")
-        self.event("[模型] 第 2 次请求")
-        self.answer(
-            "### 运行 RecapCLI\n\n"
-            "先安装依赖，再发送一次提问：\n\n"
-            "```powershell\nuv sync\nuv run python -m recapcli \"读取 README.md\"\n```\n\n"
-            "- **只读工具**：使用 `read_file` 读取工作区文件。\n"
-            "- **执行过程**：模型请求 → 工具执行 → 结果回传 → 回答。\n\n"
-            "> 这是本地配色示例，未请求模型或读取文件。"
-        )
+        self._print(message, style="notice")

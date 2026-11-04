@@ -17,6 +17,12 @@ from recapcli.core.compaction import prepare_compaction, turn_ends
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
 from recapcli.ui.terminal_ui import TerminalUI
+from recapcli.core.context import json_tokens as _json_tokens
+from recapcli.core.todos import TODO_TOOL as _TODO_TOOL
+from recapcli.tools import tool_definitions as _tool_definitions
+
+# 工具定义计入上下文窗口；测试窗口 = 工具定义 + 约 1300 token 的消息空间。
+WINDOW = _json_tokens(_tool_definitions({"read"}) + [_TODO_TOOL]) + 1300
 
 
 CONTENT = {"goal": "修复会话保存", "constraints": "使用 uv；保留原始历史",
@@ -99,7 +105,7 @@ class CompactionTests(unittest.TestCase):
     def test_auto_compaction_shares_request_budget_and_preserves_input(self):
         original = copy.deepcopy(self.session["messages"])
         self.run_turn([reply(json.dumps(CONTENT)), reply("完成回答")], max_steps=2,
-                      limits=AgentLimits(max_context_bytes=5000))
+                      limits=AgentLimits(max_context_tokens=WINDOW))
         task = self.tasks()[0]
         phases = [event["data"]["phase"] for event in task["events"] if event["kind"] == "model_request"]
         self.assertEqual(phases, ["compact", "react"])
@@ -111,7 +117,7 @@ class CompactionTests(unittest.TestCase):
 
     def test_auto_failure_falls_back_and_keeps_failed_request_in_usage(self):
         self.run_turn([reply("invalid json"), reply("回退后回答")], max_steps=2,
-                      limits=AgentLimits(max_context_bytes=5000))
+                      limits=AgentLimits(max_context_tokens=WINDOW))
         self.assertNotIn("summary", self.session)
         self.assertEqual(self.session["messages"][-1]["content"], "回退后回答")
         task = self.tasks()[0]
@@ -120,7 +126,7 @@ class CompactionTests(unittest.TestCase):
 
     def test_network_failure_falls_back_but_missing_usage_stays_unknown(self):
         self.run_turn([httpx2.ConnectError("offline"), reply("回退")], max_steps=2,
-                      limits=AgentLimits(max_context_bytes=5000))
+                      limits=AgentLimits(max_context_tokens=WINDOW))
         self.assertIsNone(self.tasks()[0]["usage"])
         self.assertEqual(self.tasks()[0]["model_requests"], 2)
 
@@ -142,7 +148,7 @@ class CompactionTests(unittest.TestCase):
         self.assertFalse(any(event["kind"] == "tool_start" for event in self.tasks()[0]["events"]))
 
     def test_auto_compaction_cannot_consume_only_final_request(self):
-        self.run_turn([reply("唯一回答")], max_steps=1, limits=AgentLimits(max_context_bytes=5000))
+        self.run_turn([reply("唯一回答")], max_steps=1, limits=AgentLimits(max_context_tokens=WINDOW))
         self.assertEqual(len(self.requests), 1)
         self.assertNotIn("summary", self.session)
         self.assertTrue(any(event["kind"] == "compaction_skipped" for event in self.tasks()[0]["events"]))
@@ -157,7 +163,7 @@ class CompactionTests(unittest.TestCase):
 
         with patch.object(TaskStore, "append", new=fail), self.assertRaises(RuntimeError):
             self.run_turn([reply(json.dumps(CONTENT))], max_steps=2,
-                          limits=AgentLimits(max_context_bytes=5000))
+                          limits=AgentLimits(max_context_tokens=WINDOW))
         self.assertEqual(len(self.requests), 1)
         self.assertNotIn("summary", self.session)
 
@@ -217,7 +223,7 @@ class CompactionTests(unittest.TestCase):
     def test_no_memory_and_no_auto_compact_make_only_the_answer_request(self):
         self.store.add_memory("必须注入的偏好", kind="preference")
         self.run_turn([reply("回答")], memory_enabled=False, auto_compact=False,
-                      limits=AgentLimits(max_context_bytes=5000))
+                      limits=AgentLimits(max_context_tokens=WINDOW))
         self.assertEqual(len(self.requests), 1)
         self.assertNotIn("必须注入的偏好", self.requests[0]["messages"][0]["content"])
         self.assertNotIn("summary", self.session)
@@ -227,7 +233,7 @@ class CompactionTests(unittest.TestCase):
         self.requests = []
         self.run_turn([reply(json.dumps({"steps": ["核对"]})), reply("执行说明"),
                        reply(json.dumps({"status": "completed", "reason": "模型核对", "steps": []})), reply("汇总")],
-                      mode="plan", max_steps=4, limits=AgentLimits(max_context_bytes=5000))
+                      mode="plan", max_steps=4, limits=AgentLimits(max_context_tokens=WINDOW))
         self.assertEqual(len(self.requests), 4)
         self.assertIn("历史摘要", self.requests[0]["messages"][0]["content"])
         self.assertEqual(self.tasks()[0]["verification_status"], "unverified")
@@ -235,18 +241,20 @@ class CompactionTests(unittest.TestCase):
     def test_compaction_time_counts_against_the_same_deadline(self):
         clock = [0.0]
         with self.client([reply(json.dumps(CONTENT))], on_request=lambda: clock.__setitem__(0, 11.0)) as client, \
-                patch("recapcli.core.agent.time.monotonic", side_effect=lambda: clock[0]), \
-                self.assertRaisesRegex(RuntimeError, "时间预算"):
-            run_agent(client, "test-model", "继续", self.workspace, history=self.session["messages"],
-                      auto_compact=True, max_steps=2, limits=AgentLimits(max_context_bytes=5000, max_seconds=10),
-                      on_event=lambda event: None)
+                patch("recapcli.core.agent.time.monotonic", side_effect=lambda: clock[0]):
+            result = run_agent(client, "test-model", "继续", self.workspace, history=self.session["messages"],
+                               auto_compact=True, max_steps=2, limits=AgentLimits(max_context_tokens=WINDOW, max_seconds=10),
+                               on_event=lambda event: None)
+        # 压缩用完了时间：不再发请求，用已有事实收尾而不是抛错。
         self.assertEqual(len(self.requests), 1)
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("时间", result.answer)
 
     def test_library_compaction_does_not_mutate_caller_history(self):
         original = copy.deepcopy(self.session["messages"])
         with self.client([reply(json.dumps(CONTENT)), reply("回答")]) as client:
             result = run_agent(client, "test-model", "继续", self.workspace, history=self.session["messages"],
-                               auto_compact=True, max_steps=2, limits=AgentLimits(max_context_bytes=5000),
+                               auto_compact=True, max_steps=2, limits=AgentLimits(max_context_tokens=WINDOW),
                                on_event=lambda event: None)
         self.assertEqual(self.session["messages"], original)
         self.assertIsNotNone(result.summary)
@@ -262,7 +270,7 @@ class CompactionTests(unittest.TestCase):
     def test_auto_compaction_and_plan_share_all_five_requests(self):
         self.run_turn([reply(json.dumps(CONTENT)), reply(json.dumps({"steps": ["核对"]})), reply("说明"),
                        reply(json.dumps({"status": "completed", "reason": "模型核对", "steps": []})), reply("汇总")],
-                      mode="plan", max_steps=5, limits=AgentLimits(max_context_bytes=5000))
+                      mode="plan", max_steps=5, limits=AgentLimits(max_context_tokens=WINDOW))
         self.assertEqual(len(self.requests), 5)
         task = self.tasks()[0]
         self.assertEqual(task["model_requests"], 5)

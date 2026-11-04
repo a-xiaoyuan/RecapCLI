@@ -114,7 +114,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
     payload = []
     for report in reports:
         raw = report["answer"].encode("utf-8")
-        cap = limits.max_context_bytes // 4
+        cap = limits.context_bytes // 4
         payload.append({**report, "answer": raw[:cap].decode("utf-8", errors="ignore"),
                         "truncated": len(raw) > cap})
     aggregate_prompt = user_message["content"] + "\n\n以下 JSON 为子代理报告（truncated=true 表示正文截断，完整报告见任务追溯）：\n" + json.dumps(payload, ensure_ascii=False)
@@ -139,6 +139,8 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
             access_policy=access_policy,
         )
         body = aggregate.answer
+        if aggregate.status != "returned":
+            fallback_reason = f"汇总未正常完成（{aggregate.stop_reason}）"
     except TraceError:
         raise
     except (APIError, OSError, ValueError, RuntimeError) as error:

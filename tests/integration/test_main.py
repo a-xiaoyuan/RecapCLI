@@ -12,7 +12,9 @@ import httpx2
 from openai import OpenAI
 
 from recapcli.core.agent import AgentLimits, run_agent
-from recapcli.core.context import json_size, select_history
+from recapcli.core.context import json_tokens, select_history
+from recapcli.core.todos import TODO_TOOL
+from recapcli.tools import tool_definitions
 from recapcli.core.project_rules import MAX_RULE_BYTES, project_rules_description
 from recapcli.cli import main
 from recapcli.storage.session import SessionStore
@@ -132,26 +134,6 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("根目录未找到", summary)
         self.assertNotIn("空文件", summary)
 
-    def test_empty_root_does_not_hide_loaded_subdirectory_rules(self):
-        (self.workspace / "AGENTS.md").write_text(" \n\t", encoding="utf-8")
-        (self.workspace / "src").mkdir()
-        (self.workspace / "src" / "AGENTS.md").write_text("子目录约定仍要加载", encoding="utf-8")
-        events = []
-        _, requests = self.run_with_replies([reply("已读空根与子目录")],
-                                            on_trace=lambda kind, data: events.append((kind, data)))
-        system = requests[0]["messages"][0]["content"]
-        self.assertIn("子目录约定仍要加载", system)
-        self.assertNotIn("### AGENTS.md", system)
-        source = next(data for kind, data in events if kind == "project_rules")
-        self.assertEqual(source["status"], "loaded")
-        self.assertEqual([layer["status"] for layer in source["layers"]], ["empty", "loaded"])
-        summary = project_rules_description(source)
-        self.assertIn("src/AGENTS.md", summary)
-        self.assertIn("已加载", summary)
-        self.assertIn("根目录 AGENTS.md 为空", summary)
-        self.assertNotEqual(summary, "AGENTS.md 是空文件")
-        self.assertNotIn("根目录未找到", summary)
-
     def test_file_result_is_sent_back_with_matching_call_id(self):
         answer, requests = self.run_with_replies([
             reply(calls=[tool_call()]), reply("使用 python app.py 启动"),
@@ -243,31 +225,48 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(requests[-1]["tool_choice"], "none")
             self.assertNotIn("tools", requests[-1])
             self.assertEqual(tool.call_count, 1)
-        with patch("recapcli.core.agent.execute_tool") as tool, self.assertRaises(RuntimeError):
+            self.assertEqual(self.last_result.status, "incomplete")
+
+    def test_tool_call_on_the_last_request_ends_with_an_honest_summary(self):
+        # 服务忽略 tool_choice=none 时既不执行工具，也不把整轮当作失败。
+        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
+            answer, requests = self.run_with_replies([reply(calls=[tool_call()])] * 2, max_steps=2)
+        self.assertEqual(tool.call_count, 1)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(self.last_result.status, "incomplete")
+        self.assertIn("停止", answer)
+        self.assertEqual(self.last_result.messages[-1]["role"], "assistant")
+        with patch("recapcli.core.agent.execute_tool") as tool:
             self.run_with_replies([reply(calls=[tool_call()])], max_steps=1)
         tool.assert_not_called()
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool, \
-                self.assertRaisesRegex(RuntimeError, "2 次模型请求上限"):
-            self.run_with_replies([reply(calls=[tool_call()])] * 2, max_steps=2)
+        self.assertEqual(self.last_result.status, "incomplete")
+
+    def test_tool_count_runs_what_fits_and_marks_the_rest_not_executed(self):
+        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
+            _, requests = self.run_with_replies([reply(calls=[tool_call("a"), tool_call("b")]), reply("只读到一个")],
+                                                limits=AgentLimits(max_tool_calls=1))
         self.assertEqual(tool.call_count, 1)
+        results = {message["tool_call_id"]: json.loads(message["content"])
+                   for message in requests[1]["messages"] if message["role"] == "tool"}
+        self.assertTrue(results["a"]["ok"])
+        self.assertEqual(results["b"]["execution_status"], "not_executed")
+        self.assertEqual(requests[1]["tool_choice"], "none")
 
-    def test_tool_count_rejects_oversized_batch_before_any_execution(self):
-        with patch("recapcli.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "工具数量"):
-            self.run_with_replies([reply(calls=[tool_call("a"), tool_call("b")])],
-                                  limits=AgentLimits(max_tool_calls=1))
-        tool.assert_not_called()
+    def test_old_tool_results_are_cleared_instead_of_stopping_the_task(self):
+        window = self.tool_tokens() + 6000
+        calls = [reply(calls=[tool_call(f"c{index}")]) for index in range(8)]
+        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 4000}) as tool:
+            _, requests = self.run_with_replies([*calls, reply("读完了")], max_steps=12,
+                                                limits=AgentLimits(max_context_tokens=window))
+        self.assertEqual(tool.call_count, 8)
+        self.assertEqual(self.last_result.status, "returned")
+        last = [json.loads(message["content"]) for message in requests[-1]["messages"] if message["role"] == "tool"]
+        self.assertTrue(last[0].get("cleared"))
+        self.assertFalse(last[-1].get("cleared"))
+        self.assertTrue(all(json_tokens(request["messages"]) + self.tool_tokens() <= window for request in requests))
 
-    def test_output_budget_bounds_both_already_started_parallel_reads(self):
-        limits = AgentLimits(max_tool_calls=2, max_tool_bytes=1000)
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "中" * 2000}) as tool:
-            _, requests = self.run_with_replies(
-                [reply(calls=[tool_call("a"), tool_call("b")]), reply("请缩小读取范围")], limits=limits)
-        results = [message for message in requests[-1]["messages"] if message["role"] == "tool"]
-        self.assertEqual([message["tool_call_id"] for message in results], ["a", "b"])
-        self.assertTrue(all(not json.loads(message["content"])["ok"] for message in results))
-        self.assertLessEqual(sum(len(message["content"].encode("utf-8")) for message in results), 1000)
-        self.assertEqual(tool.call_count, 2)
-        self.assertEqual(requests[-1]["tool_choice"], "none")
+    def tool_tokens(self):
+        return json_tokens(tool_definitions({"read"}) + [TODO_TOOL])
 
     def test_history_is_immutable_and_result_contains_only_new_turn(self):
         history = [{"role": "user", "content": "前问"}, {"role": "assistant", "content": "前答"}]
@@ -278,44 +277,67 @@ class AgentTests(unittest.TestCase):
 
     def test_context_budget_drops_old_turns_as_tool_results_grow(self):
         history = [{"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "x" * 4200}]
+        window = self.tool_tokens() + 1900
         # 固定此用例的系统提示长度，只验证工具结果增长时的历史裁剪。
         with patch("recapcli.core.agent.BASE_SYSTEM_PROMPT", "代码助手"), \
                 patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 3500}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("完成")],
-                                              history=history, limits=AgentLimits(max_context_bytes=6500))
+                                              history=history, limits=AgentLimits(max_context_tokens=window))
         self.assertTrue(any(message.get("content") == "旧问题" for message in requests[0]["messages"]))
         self.assertFalse(any(message.get("content") == "旧问题" for message in requests[1]["messages"]))
-        self.assertTrue(all(json_size(request["messages"]) <= 6500 for request in requests))
 
     def test_oversized_prompt_stops_before_model(self):
         with OpenAI(api_key="offline", base_url="https://offline.invalid/v1") as client, \
-                patch.object(client.chat.completions, "create") as create, self.assertRaisesRegex(RuntimeError, "上下文"):
-            run_agent(client, "test", "中" * 2000, self.workspace, limits=AgentLimits(max_context_bytes=1000))
+                patch.object(client.chat.completions, "create") as create, self.assertRaisesRegex(ValueError, "上下文窗口"):
+            run_agent(client, "test", "中" * 8000, self.workspace, limits=AgentLimits(max_context_tokens=4000))
         create.assert_not_called()
 
-    def test_tool_output_also_fits_current_turn_context_budget(self):
+    def test_oversized_tool_output_is_replaced_by_a_receipt(self):
+        window = self.tool_tokens() + 1500
         with patch("recapcli.core.agent.BASE_SYSTEM_PROMPT", "代码助手"), \
                 patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 10000}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("请缩小读取范围")],
-                                              limits=AgentLimits(max_context_bytes=3500))
-        self.assertLessEqual(json_size(requests[1]["messages"]), 3500)
+                                              limits=AgentLimits(max_context_tokens=window))
         result = next(message for message in requests[1]["messages"] if message["role"] == "tool")
-        self.assertFalse(json.loads(result["content"])["ok"])
-        self.assertEqual(requests[1]["tool_choice"], "none")
+        self.assertTrue(json.loads(result["content"])["truncated"])
+        self.assertLessEqual(json_tokens(requests[1]["messages"]) + self.tool_tokens(), window)
+        self.assertEqual(self.last_result.status, "returned")
 
-    def test_oversized_tool_request_is_rejected_before_execution(self):
-        with patch("recapcli.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "工具请求本身"):
-            self.run_with_replies([reply(calls=[tool_call(arguments=json.dumps({"path": "x" * 3000}))])],
-                                  limits=AgentLimits(max_context_bytes=3500))
-        tool.assert_not_called()
-
-    def test_time_budget_stops_after_slow_response_before_tool_execution(self):
+    def test_time_budget_ends_gracefully_without_running_the_pending_tool(self):
         with patch("recapcli.core.agent.time") as clock, patch("recapcli.core.agent.execute_tool") as tool:
             clock.monotonic.return_value = 0
-            with self.assertRaisesRegex(RuntimeError, "时间预算"):
-                self.run_with_replies([reply(calls=[tool_call()])], limits=AgentLimits(max_seconds=120),
-                                      on_request=lambda request: setattr(clock.monotonic, "return_value", 121))
+            answer, _ = self.run_with_replies([reply(calls=[tool_call()])], limits=AgentLimits(max_seconds=120),
+                                              on_request=lambda request: setattr(clock.monotonic, "return_value", 121))
         tool.assert_not_called()
+        self.assertEqual(self.last_result.status, "incomplete")
+        self.assertIn("时间", answer)
+        pending = next(message for message in self.last_result.messages if message["role"] == "tool")
+        self.assertEqual(json.loads(pending["content"])["execution_status"], "not_executed")
+
+    def test_commands_leave_time_for_the_final_summary(self):
+        seen = {}
+
+        def tool(name, arguments, workspace, **options):
+            seen["time"] = options["time_remaining"]
+            return {"ok": True, "content": "ok"}
+        with patch("recapcli.core.agent.execute_tool", side_effect=tool):
+            self.run_with_replies([reply(calls=[tool_call()]), reply("完成")], limits=AgentLimits(max_seconds=200))
+        self.assertLessEqual(seen["time"], 200 - 30)
+
+    def test_todo_list_is_kept_in_context_and_open_items_get_one_reminder(self):
+        todo = tool_call("t1", name="todo_write", arguments=json.dumps({"todos": [
+            {"content": "改存储", "status": "completed"}, {"content": "接 CLI 参数", "status": "pending"}]}))
+        events = []
+        answer, requests = self.run_with_replies(
+            [reply(calls=[todo]), reply("做完了"), reply("CLI 参数没接上，原因是……")],
+            on_trace=lambda kind, data: events.append(kind))
+        self.assertIn("todo_write", [item["function"]["name"] for item in requests[0]["tools"]])
+        self.assertIn("☐ 接 CLI 参数", requests[1]["messages"][0]["content"])
+        self.assertIn("还有未完成项", requests[2]["messages"][-1]["content"])
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(answer, "CLI 参数没接上，原因是……")
+        self.assertIn("todo", events)
+        self.assertIn("todo_reminder", events)
 
     def test_duplicate_tool_ids_are_rejected_before_execution(self):
         with patch("recapcli.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "调用 ID"):

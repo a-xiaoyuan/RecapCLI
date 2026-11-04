@@ -7,11 +7,11 @@ from .context import json_size
 
 
 class TurnRecovery:
-    def __init__(self, max_tool_bytes):
+    def __init__(self, max_result_bytes):
         self.messages = []
         self.pending = {}
         self.has_operations = False
-        self.remaining_bytes = max_tool_bytes
+        self.remaining_bytes = max_result_bytes
         self.team_facts = {}
 
     def observe(self, kind, data):

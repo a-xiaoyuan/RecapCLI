@@ -1,4 +1,4 @@
-"""浅色终端：响应布局、只读启动、以及接到现有 Agent 的对话。"""
+"""跟随终端配色的布局、只读启动、以及接到现有 Agent 的对话。"""
 
 import importlib.util
 import io
@@ -21,7 +21,7 @@ from recapcli.tui import state as shell_state
 from recapcli.tui.driver import ShellDriver, ShellOptions
 from recapcli.tui.launch import dispatch, shell_options
 from recapcli.tui.state import ShellState, load_shell_state
-from recapcli.tui.theme import PALETTE, dot, render_line
+from recapcli.tui.theme import PALETTE, render_line
 
 HAS_TEXTUAL = importlib.util.find_spec("textual") is not None
 
@@ -101,34 +101,19 @@ def texts(recording, kind=None):
 
 
 class PaletteTests(unittest.TestCase):
-    def test_light_palette_drops_unused_keys(self):
-        self.assertEqual(PALETTE["base"], "#f3f0eb")
-        self.assertEqual(PALETTE["text"], "#3c3834")
-        self.assertEqual(PALETTE["accent"], "#d4652a")
-        self.assertNotIn("yellow", PALETTE)
-        self.assertNotIn("user_background", PALETTE)
+    def test_palette_follows_the_terminal_with_a_single_accent(self):
+        self.assertEqual(PALETTE["text"], "default")
+        self.assertTrue(PALETTE["accent"].startswith("#"))
+        fixed = [value for value in PALETTE.values() if value.startswith("#")]
+        self.assertEqual(fixed, [PALETTE["accent"]])
+        css = (Path(__file__).resolve().parents[2] / "recapcli" / "tui" / "recap.tcss").read_text(encoding="utf-8")
+        hexes = set(__import__("re").findall(r"#[0-9a-fA-F]{6}", css))
+        self.assertEqual(hexes, {PALETTE["accent"]})
 
-    def test_removed_presenter_and_rule_helpers_stay_gone(self):
-        import recapcli.core.project_rules as rules
-        from recapcli.tui.driver import Presenter
-        self.assertFalse(hasattr(rules, "load_project_rules"))
-        self.assertTrue(hasattr(rules, "load_rule_layers"))
-        self.assertFalse(hasattr(Presenter, "clear_transcript"))
-        self.assertTrue(hasattr(Presenter, "push_cancel"))
-        if HAS_TEXTUAL:
-            from recapcli.tui.widgets import ToolProgress
-            self.assertEqual(ToolProgress.INDEX_TOOLS, {"search_code_index", "search_symbols"})
-            self.assertNotIn("search_text", ToolProgress.INDEX_TOOLS)
-
-    def test_terminal_accents_and_local_config_status(self):
-        self.assertEqual(colors(dot(True)), [PALETTE["online"]])
-        self.assertNotIn(PALETTE["online"], colors(dot(False)) + colors(dot()))
-
-    def test_tool_success_is_not_green_and_failure_is_error(self):
+    def test_tool_success_is_quiet_and_failure_is_error(self):
         success = render_line("[结果] 成功", "event")
         failure = render_line("[结果] 失败：文件不存在", "event")
-        painted = colors(success) + colors(failure) + [str(success.style), str(failure.style)]
-        self.assertNotIn(PALETTE["online"], painted)
+        self.assertEqual(str(success.style), PALETTE["muted"])
         self.assertEqual(str(failure.style), PALETTE["error"])
         self.assertIn("[b]hello[/b]", render_line("[b]hello[/b]", "user").plain)
 
@@ -387,64 +372,40 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
         from recapcli.tui.app import RecapShell
         return RecapShell(state or self._state(), **options)
 
-    async def test_terminal_layout_gives_conversation_full_width(self):
+    async def test_terminal_layout_is_quiet_and_full_width(self):
         app = self._app(self._state(profiles=MISSING))
         async with app.run_test(size=(144, 40)) as pilot:
             await pilot.pause()
-            for selector in ("#welcome", "#conversation", "#composer", "#send", "#status-line", "#key-hints"):
+            for selector in ("#welcome", "#conversation", "#composer", "#status-line", "#key-hints"):
                 self.assertTrue(app.query_one(selector).display)
-            self.assertEqual(app.query_one("#stage").region.x, 0)
-            self.assertEqual(app.query_one("#stage").region.width, 144)
-            history = app.query_one("#history")
-            footer = app.query_one("#footer")
-            self.assertEqual(history.region.width, 107)
-            self.assertEqual(history.region.x, 2)
-            self.assertEqual(footer.region.x, history.region.x)
-            self.assertEqual(footer.region.width, history.region.width)
-            self.assertEqual(app.query_one("#composer").region.width, 107)
-            self.assertTrue(app.query_one("#task-inspector").display)
+            history, footer = app.query_one("#history"), app.query_one("#footer")
+            self.assertEqual(footer.region.x + 2, history.region.x)
+            self.assertGreater(app.query_one("#composer").region.width, 130)
             self.assertEqual(app.query_one("#prompt").size.height, 1)
-            self.assertFalse(app.query("#rail, .rail-button, #inspector"))
-            self.assertFalse(app.query(".bubble, #pills, #toolbar"))
-            self.assertFalse(app.query("#stream-cursor"))
-            welcome = app.query_one("#welcome")
+            # 不铺底色：背景是终端自己的颜色。
             from recapcli.tui.app import TERMINAL_THEME
-            screen_bg = app.screen.styles.background
-            self.assertEqual(screen_bg.a, 1)
-            self.assertEqual(screen_bg.hex6.lower(), PALETTE["base"])
-            self.assertFalse(TERMINAL_THEME.dark)
-            self.assertEqual(welcome.region.width, 86)
-            self.assertEqual(welcome.styles.border_bottom[0], "round")
-            self.assertEqual(welcome.region.y, app.query_one("#conversation").region.y + 1)
+            self.assertTrue(TERMINAL_THEME.ansi)
+            self.assertEqual(app.screen.styles.background.ansi, -1)  # ansi_default
+            welcome = app.query_one("#welcome")
+            self.assertEqual(welcome.region.height, 3)
+            self.assertIn("RecapCLI", str(app.query_one("#welcome-title").render()))
+            self.assertIn("模型未配置", str(app.query_one("#welcome-agent").render()))
             self.assertGreaterEqual(app.query(".turn").first().region.y, welcome.region.bottom)
-            self.assertLessEqual(welcome.region.right, 144)
-            self.assertFalse(app.query("#model-header, #welcome-purpose, #welcome-example"))
-            welcome_text = str(app.query_one("#welcome-message").render())
-            self.assertIn("欢迎回来", welcome_text)
-            self.assertNotIn("Welcome back", welcome_text)
-            self.assertNotIn("Your codebase companion", welcome_text)
-            self.assertIn("Tips", str(app.query_one("#welcome-tips-title").render()))
-            self.assertIn("/help", str(app.query_one("#welcome-tips-body").render()))
-            self.assertIn("▀", str(app.query_one("#welcome-mark").render()))
-            self.assertFalse(app.query("#welcome-environment, #welcome-cwd, #welcome-branch, #welcome-model, #welcome-mascot, #rail"))
             self.assertFalse(app.query_one("#command-menu").display)
             self.assertIn("/config", str(app.query_one("#key-hints").render()))
             self.assertIs(app.focused, app.query_one("#prompt"))
             self.assertEqual(list(self.workspace.iterdir()), [])
 
-    async def test_narrow_terminal_retains_version_input_and_focus(self):
+    async def test_narrow_terminal_keeps_input_and_focus(self):
         app = self._app(self._state(profiles=MISSING))
         async with app.run_test(size=(80, 28)) as pilot:
             await pilot.pause()
-            self.assertFalse(app.query("#inspector"))
-            self.assertFalse(app.query_one("#task-inspector").display)
             await pilot.resize_terminal(60, 24)
             await pilot.pause()
-            for selector in ("#welcome", "#composer", "#prompt", "#send", "#key-hints"):
+            for selector in ("#welcome", "#composer", "#prompt", "#key-hints"):
                 widget = app.query_one(selector)
                 self.assertTrue(widget.display)
                 self.assertLessEqual(widget.region.right, 60)
-            self.assertEqual(app.query_one("#history").region.x, app.query_one("#footer").region.x)
             prompt = app.query_one("#prompt")
             prompt.load_text("第一行\n第二行")
             await pilot.pause()
@@ -454,11 +415,6 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             await pilot.resize_terminal(44, 24)
             await pilot.pause()
             self.assertEqual(app.query_one("#welcome-subtitle").region.height, 1)
-            self.assertTrue(app.query_one("#welcome-mark").display)
-            self.assertTrue(app.query_one("#welcome-tips").display)
-            self.assertFalse(app.query_one("#welcome-tips-title").display)
-            self.assertIn("欢迎回来", str(app.query_one("#welcome-message").render()))
-            self.assertFalse(app.query("#welcome-guide, #welcome-workspace-block, #welcome-environment"))
             self.assertLessEqual(app.query_one("#welcome").region.right, 44)
 
     async def test_restored_profile_and_override_remain_available_in_details(self):
@@ -500,7 +456,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 widget = app.query(".assistant-turn").last()
                 strips = widget.render_lines(Region(0, 0, widget.region.width, widget.region.height))
                 rendered = "".join("".join(strip.text for strip in strips).split())
-                self.assertIn("◈核心能力", rendered)
+                self.assertIn("核心能力", rendered)
                 self.assertNotIn("-----", rendered)
                 for phrase in expected:
                     self.assertIn(phrase, rendered, f"终端宽度 {width}")
@@ -521,9 +477,9 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             app.finish_answer("验证完成")
             await pilot.pause()
             self.assertIn("120", usage_text(app._task_status))
-            self.assertIn("120", str(app.query_one("#task-inspector").render()))
-            self.assertIn("120 tokens", rendered_text(app._turn_answer_widget).splitlines()[0])
-            self.assertIn("2.5s", rendered_text(app._turn_answer_widget).splitlines()[0])
+            # 用量附在回答末尾的灰色一行。
+            self.assertIn("120 tokens", rendered_text(app._turn_answer_widget).strip().splitlines()[-1])
+            self.assertIn("2.5s", rendered_text(app._turn_answer_widget).strip().splitlines()[-1])
             self.assertFalse(app.query_one("#status-row").display)
             await pilot.press("ctrl+g")
             self.assertIn("README.md", str(app.screen.query_one("#status-body").render()))
@@ -597,7 +553,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
 
             def metadata(self):
                 return {"profile": "default", "protocol": "chat_completions", "model": self.model,
-                        "context_bytes": 262144, "capabilities": {"tools": True, "images": False, "streaming": False}}
+                        "context_tokens": 128000, "capabilities": {"tools": True, "images": False, "streaming": False}}
 
         config = Config("offline-test-key", "test-model", "https://offline.invalid/v1")
         app = self._app(self._state())
@@ -742,7 +698,7 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 await wait_for(pilot, lambda: not app._busy and app.driver.client is not None)
                 self.assertEqual(load_config().model, "my-test-model")
                 self.assertEqual(load_config().api_key, "fake-ui-key")
-                self.assertIn("my-test-model", str(app.query_one("#key-hints").render()))
+                self.assertIn("my-test-model", str(app.query_one("#welcome-agent").render()))
                 self.assertIn("# keep this comment", models_file.read_text(encoding="utf-8"))
                 self.assertNotIn("fake-ui-key", models_file.read_text(encoding="utf-8") + transcript(app) + str(list_model_profiles()))
                 await pilot.press("f2")
@@ -770,23 +726,35 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(144, 40)) as pilot:
                 await pilot.pause()
                 self.assertIn("界面演示", str(app.query_one("#welcome-agent").render()))
-                self.assertIn("欢迎回来", str(app.query_one("#welcome-message").render()))
                 self.assertNotIn("demo-model", str(app.query_one("#welcome").render()))
-                self.assertIn("demo-model", str(app.query_one("#key-hints").render()))
-                self.assertEqual(len(app.query(".turn")), 3)
-                self.assertTrue(app.query_one("#stream-cursor").display)
-                self.assertTrue(app.query_one("#welcome").display)
-                self.assertFalse(app.query("#welcome-mascot"))
-                user = app.query(".user-turn").first()
-                assistant = app.query(".assistant-turn").first()
-                self.assertEqual(user.kind, "user")
-                self.assertEqual(assistant.kind, "assistant")
+                self.assertEqual(len(app.query(".user-turn")), 1)
+                self.assertEqual(len(app.query(".assistant-turn")), 1)
+                self.assertEqual(len(app.query(".todo-turn")), 1)
                 await pilot.press(*"hi", "enter")
                 await pilot.pause()
                 self.assertIn("未发送给模型", transcript(app))
                 self.assertTrue(app.query_one("#welcome").display)
-                self.assertFalse(app.query("#rail"))
         turn.assert_not_called()
+
+    async def test_todo_events_update_one_panel_per_turn(self):
+        app = self._app(self._state())
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._lock()
+            app.event_update("[待办]\n☐ 改存储\n☐ 接 CLI")
+            app.event_update("[待办]\n☑ 改存储\n◐ 接 CLI")
+            await pilot.pause()
+            panels = list(app.query(".todo-turn"))
+            self.assertEqual(len(panels), 1)
+            text = rendered_text(panels[0])
+            self.assertIn("1/2", text)
+            self.assertIn("接 CLI", text)
+            app._unlock()
+            app._lock()
+            app.event_update("[待办]\n☐ 下一轮")
+            await pilot.pause()
+            self.assertEqual(len(app.query(".todo-turn")), 2)
+            app._unlock()
 
 
 class EntryTests(unittest.TestCase):

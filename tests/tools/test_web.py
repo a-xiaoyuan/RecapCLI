@@ -368,8 +368,7 @@ class NetworkTests(unittest.TestCase):
         self.assertNotIn("Authorization", request.kwargs["headers"])
 
         tavily_payload = {"results": [{"title": "T", "url": "https://example.org/a", "content": "S"}]}
-        for values in ({"TAVILY_API_KEY": "t", "RECAP_WEB_PROVIDER": "tavily", "BRAVE_API_KEY": "b"},
-                       {"TAVILY_API_KEY": "t", "REVO_WEB_PROVIDER": "tavily", "BRAVE_API_KEY": "b"}):
+        for values in ({"TAVILY_API_KEY": "t", "RECAP_WEB_PROVIDER": "tavily", "BRAVE_API_KEY": "b"},):
             with self.subTest(values=values), \
                     patch("recapcli.tools.web.load_values", return_value=values), \
                     self.transport(Response(json.dumps(tavily_payload).encode(), content_type="application/json")) as (connections, _, _):
@@ -380,10 +379,7 @@ class NetworkTests(unittest.TestCase):
 
         for values, expected in (({}, "BRAVE_API_KEY"),
                                  ({"RECAP_WEB_PROVIDER": "tavily", "BRAVE_API_KEY": "x"}, "TAVILY_API_KEY"),
-                                 ({"REVO_WEB_PROVIDER": "tavily", "BRAVE_API_KEY": "x"}, "TAVILY_API_KEY"),
                                  ({"RECAP_WEB_PROVIDER": "invalid"}, "RECAP_WEB_PROVIDER"),
-                                 ({"REVO_WEB_PROVIDER": "invalid"}, "REVO_WEB_PROVIDER"),
-                                 ({"RECAP_WEB_PROVIDER": "brave", "REVO_WEB_PROVIDER": "tavily", "BRAVE_API_KEY": "x"}, "不一致"),
                                  ({"BRAVE_API_KEY": "bad key"}, "BRAVE_API_KEY 无效")):
             with self.subTest(values=values), patch("recapcli.tools.web.load_values", return_value=values), \
                     patch.object(web, "_request") as request:

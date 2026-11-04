@@ -18,7 +18,7 @@ from .filesystem import ToolError, _relative, _resolve
 
 MAX_EDIT_BYTES = 1024 * 1024
 MAX_DIFF_BYTES = 8192
-PROTECTED_DIR_NAMES = {".git", ".recapcli", ".revocli", ".archer"}
+PROTECTED_DIR_NAMES = {".git", ".recapcli"}
 
 
 def _target(workspace, path):

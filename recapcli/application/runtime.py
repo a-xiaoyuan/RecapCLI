@@ -51,7 +51,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
     limits = limits or AgentLimits()
     model_config = client.metadata() if isinstance(client, ModelClient) else None
     if model_config is not None:
-        limits = replace(limits, max_context_bytes=min(limits.max_context_bytes, model_config["context_bytes"]))
+        limits = replace(limits, max_context_tokens=min(limits.max_context_tokens, model_config["context_tokens"]))
     capabilities = tuple(sorted(capabilities))
     tasks = TaskStore(workspace)
     if compact_only:
@@ -66,7 +66,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         "model_config": model_config,
     })
     started = time.monotonic()
-    recovery = TurnRecovery(limits.max_tool_bytes)
+    recovery = TurnRecovery(limits.context_bytes // 2)
 
     def trace(kind, data):
         recovery.observe(kind, data)
@@ -88,7 +88,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
         memory_ids = []
         memory_sources = []
         if memory_enabled and not compact_only:
-            memory = store.memory_context(limit=min(3000, limits.max_context_bytes // 12), query=prompt)
+            memory = store.memory_context(limit=min(3000, limits.context_bytes // 12), query=prompt)
             memory_text = memory.text
             memory_ids = list(memory.selected_ids)
             memory_sources = list(memory.sources)

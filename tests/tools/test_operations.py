@@ -119,7 +119,7 @@ class OperationTests(unittest.TestCase):
         self.assertFalse(self.call("find_files", pattern="../*", path="..")["ok"])
 
     def test_find_files_respects_scan_budget_and_skipped_directories(self):
-        for name in (".recapcli", ".revocli", ".archer"):
+        for name in (".recapcli", ".git"):
             hidden = self.workspace / name
             hidden.mkdir()
             (hidden / "private.py").touch()
@@ -128,7 +128,7 @@ class OperationTests(unittest.TestCase):
         with patch("recapcli.tools.filesystem.ScanBudget", return_value=ScanBudget(max_entries=3)):
             result = self.call("find_files", pattern="*.py")
         self.assertTrue(result["truncated"])
-        for name in (".recapcli", ".revocli", ".archer"):
+        for name in (".recapcli", ".git"):
             self.assertNotIn(f"{name}/private.py", result["files"])
         self.assertLessEqual(len(result["files"]), 3)
 
@@ -253,8 +253,7 @@ class OperationTests(unittest.TestCase):
         credentials.write_text("offline-key", encoding="utf-8")
         with patch("recapcli.tools.filesystem.ENV_FILE", credentials):
             for path in ("../outside.py", ".git/config", ".GIT/config",
-                         ".recapcli/memory.json", ".RECAPCLI/memory.json",
-                         ".revocli/memory.json", ".REVOCLI/memory.json", ".env"):
+                         ".recapcli/memory.json", ".RECAPCLI/memory.json", ".env"):
                 with self.subTest(path=path):
                     self.assertFalse(self.call("edit_file", path=path, old_text="", new_text="changed")["ok"])
         self.assertEqual(credentials.read_text(encoding="utf-8"), "offline-key")

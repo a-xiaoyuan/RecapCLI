@@ -7,22 +7,15 @@ import uuid
 
 
 DATA_DIRECTORY = ".recapcli"
-LEGACY_DATA_DIRECTORIES = (".revocli", ".archer")
 
 
 def data_root(workspace):
-    """新工作区使用 .recapcli；已有 .revocli 或 .archer 原位沿用，拒绝静默拆成多份。"""
+    """工作区运行数据目录 .recapcli；不能是链接或指向工作区之外。"""
     workspace = Path(workspace).resolve()
-    candidates = [workspace / DATA_DIRECTORY, *(workspace / name for name in LEGACY_DATA_DIRECTORIES)]
-    for candidate in candidates:
-        if (candidate.is_symlink() or candidate.is_junction()
-                or not candidate.resolve().is_relative_to(workspace)):
-            raise ValueError("运行数据目录不能是链接或位于工作区之外")
-    existing = [candidate for candidate in candidates if candidate.exists()]
-    if len(existing) > 1:
-        names = "、".join(path.name for path in existing)
-        raise ValueError(f"同时存在 {names} 数据目录，请先核对并合并或移走多余的一份；未自动覆盖")
-    return existing[0] if existing else candidates[0]
+    root = workspace / DATA_DIRECTORY
+    if root.is_symlink() or root.is_junction() or not root.resolve().is_relative_to(workspace):
+        raise ValueError("运行数据目录不能是链接或位于工作区之外")
+    return root
 
 
 def write_json(path, data):

@@ -154,10 +154,9 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 answers = list(app.query(".assistant-turn"))
                 self.assertEqual(len(answers), 2)
-                self.assertIn("100 tokens", rendered_text(answers[0]).splitlines()[0])
-                self.assertIn("200 tokens", rendered_text(answers[1]).splitlines()[0])
+                self.assertIn("100 tokens", rendered_text(answers[0]))
+                self.assertIn("200 tokens", rendered_text(answers[1]))
                 self.assertFalse(app.query_one("#status-row").display)
-                self.assertLess(app.query(".user-turn").first().region.width, 20)
                 for progress in app.query(".progress-turn"):
                     self.assertEqual(len(progress.rows), 1)
                     self.assertEqual(progress.rows[0]["kind"], "request")

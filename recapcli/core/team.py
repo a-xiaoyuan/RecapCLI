@@ -55,8 +55,8 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
         )
 
     def context():
-        cap = limits.max_context_bytes // (4 * max(1, len(reports)))
-        fact_cap = limits.max_context_bytes // (4 * max(1, len(facts)))
+        cap = limits.context_bytes // (4 * max(1, len(reports)))
+        fact_cap = limits.context_bytes // (4 * max(1, len(facts)))
         return json.dumps({"reports": [
             {**report, "answer": report["answer"].encode("utf-8")[:cap].decode("utf-8", "ignore")}
             for report in reports], "tool_facts": [
@@ -162,6 +162,7 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
         final = invoke("team_summary", "基于下列事实回答原始任务，明确修改、验证、失败与剩余事项，禁止调用工具。"
                        + "\n" + header + "\n" + context(), 1, reserve=0)
         answer = header + "\n\n" + final.answer
+        approved = approved and final.status == "returned"
     except (AgentCancelled, TraceError):
         raise
     except (APIError, OSError, ValueError, RuntimeError):

@@ -1,17 +1,23 @@
-"""同一任务的线程安全预算与协作取消；不把字节预算当作 token/费用预算。"""
+"""同一任务的线程安全预算与协作取消。
+
+预算耗尽不是故障：调用方据此转入最后一次不带工具的汇总请求，而不是抛错丢掉已完成的工作。
+"""
 
 import json
 from threading import Event, RLock
 import time
 
-from .context import json_size
 
-
-OUTPUT_LIMIT_RESULT = {"ok": False, "error": "本轮工具输出预算不足，请缩小范围后重试。"}
+SKIPPED_RESULT = {"ok": False, "execution_status": "not_executed",
+                  "error": "本轮预算即将用完，该调用未执行；请基于已有结果收尾。"}
 
 
 class AgentCancelled(KeyboardInterrupt):
     """沿用入口的取消终态，不能当作普通子代理失败吞掉。"""
+
+
+class BudgetExhausted(RuntimeError):
+    """请求次数、工具次数、时间或上下文用完；Agent 会转入收尾而不是失败。"""
 
 
 class AgentBudget:
@@ -21,58 +27,56 @@ class AgentBudget:
         self.cancel_event = cancel_event if cancel_event is not None else Event()
         self.clock = clock
         self.deadline = clock() + limits.max_seconds
+        # 给最后一次汇总请求留出时间；命令和普通请求都不能吃掉这段时间。
+        self.finish_reserve = min(60.0, limits.max_seconds * 0.15)
         self.lock = RLock()
         self.requests = 0
         self.tool_calls = 0
-        self.tool_results = 0
         self.output_bytes = 0
-        self.output_exhausted = False
 
     def remaining_time(self):
         if self.cancel_event.is_set():
             raise AgentCancelled("任务已取消，停止后续模型请求和工具调度")
         remaining = self.deadline - self.clock()
         if remaining <= 0:
-            raise RuntimeError("本轮执行时间预算已耗尽")
+            raise BudgetExhausted("本轮执行时间预算已耗尽")
         return remaining
+
+    def working_time(self):
+        """普通请求与工具可用的时间：总剩余减去收尾预留。"""
+        return self.remaining_time() - self.finish_reserve
+
+    def time_low(self):
+        return self.working_time() <= 1
 
     def request(self, reserve=0):
         with self.lock:
             self.remaining_time()
             if self.requests >= self.max_requests - reserve:
-                raise RuntimeError("共享模型请求预算已耗尽")
+                raise BudgetExhausted("共享模型请求预算已耗尽")
             self.requests += 1
             return self.requests
 
     def should_summarize(self, reserve=0):
         with self.lock:
             return (self.requests >= self.max_requests - reserve - 1
-                    or self.tool_calls >= self.limits.max_tool_calls or self.output_exhausted)
+                    or self.tool_calls >= self.limits.max_tool_calls or self.time_low())
 
     def reserve_tools(self, count):
+        """返回本批可执行的调用数；超出部分由调用方标记为未执行。"""
         with self.lock:
             self.remaining_time()
-            if count > self.limits.max_tool_calls - self.tool_calls:
-                raise RuntimeError("模型请求的工具数量超过本轮剩余预算，未执行这批调用")
-            self.tool_calls += count
+            allowed = max(0, min(count, self.limits.max_tool_calls - self.tool_calls))
+            self.tool_calls += allowed
+            return allowed
 
-    def encode_result(self, result, fits_context):
-        """全局预留未返回调用的错误正文；大结果与上下文溢出共用停止规则。"""
+    def encode_result(self, result):
         with self.lock:
-            reserve = (self.limits.max_tool_calls - self.tool_results - 1) * json_size(OUTPUT_LIMIT_RESULT)
-            if json_size(result) > self.limits.max_tool_bytes - self.output_bytes - reserve:
-                result = OUTPUT_LIMIT_RESULT
-                self.output_exhausted = True
             content = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-            if not fits_context(content):
-                result = OUTPUT_LIMIT_RESULT
-                content = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-                self.output_exhausted = True
-            self.tool_results += 1
             self.output_bytes += len(content.encode("utf-8"))
-            return result, content
+            return content
 
     def snapshot(self):
         with self.lock:
             return {"model_requests": self.requests, "tool_calls": self.tool_calls,
-                    "tool_bytes": self.output_bytes, "output_exhausted": self.output_exhausted}
+                    "tool_bytes": self.output_bytes}

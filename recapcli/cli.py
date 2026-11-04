@@ -15,7 +15,7 @@ from .core.agent import AgentLimits, DEFAULT_STEPS
 from .storage.session import SessionStore
 from .storage.tasks import TaskStore
 from .tools.approval import InteractiveApprover, approve_all, fail_closed
-from .ui.terminal_art import print_banner, _title
+from .ui.terminal import print_banner, title
 from .ui.terminal_ui import TerminalUI
 
 
@@ -106,7 +106,7 @@ def build_parser():
         epilog="终端壳需要可选依赖 textual（uv sync --extra tui）。--demo 只演示界面，不请求模型。无 textual 时使用 python -m recapcli.cli。",
     )
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
-    parser.add_argument("--version", action="version", version=_title())
+    parser.add_argument("--version", action="version", version=title())
     parser.add_argument("--demo", action="store_true", help="离线界面演示，不请求模型")
     parser.add_argument("--profile", metavar="名称", help="选择 models.toml 中的模型配置；恢复会话时默认沿用上次配置")
     parser.add_argument("--models", nargs="?", const="*", metavar="筛选词", help="紧凑列出模型配置，可按名称或模型筛选；不请求接口")
@@ -114,15 +114,13 @@ def build_parser():
     parser.add_argument("--add-dir", type=Path, action="append", default=[], help="额外授权的目录，可重复指定；也可在首次访问时确认")
     parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
                         help="执行模式：react 直接执行；plan 按依赖计划执行；multi 默认只读分析，开放写入/命令后启用执行团队")
-    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 32，plan/multi 默认 48")
+    parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 50，plan/multi 默认 60")
     parser.add_argument("--plan-steps", type=int, default=AgentLimits.max_plan_steps, help="计划步骤上限，默认 12")
     parser.add_argument("--plan-replans", type=int, default=AgentLimits.max_replans, help="重规划上限，默认 2")
-    parser.add_argument("--max-tool-calls", type=int, default=AgentLimits.max_tool_calls, help="每轮工具调用数量上限，默认 64")
-    parser.add_argument("--max-tool-bytes", type=int, default=256 * 1024, help="每轮工具结果正文的 UTF-8 字节上限")
-    parser.add_argument("--context-bytes", type=int, default=256 * 1024, help="模型消息的 UTF-8 JSON 大小上限")
-    parser.add_argument("--context-tokens", type=int, default=0, help="模型上下文 token 估算上限；0 表示只使用字节上限")
-    parser.add_argument("--max-seconds", type=float, default=AgentLimits.max_seconds, help="每轮执行时间预算，默认 900 秒；可显式调整")
-    parser.add_argument("--request-timeout", type=float, default=30.0, help="单次模型请求超时，秒；同时受剩余任务时间限制")
+    parser.add_argument("--max-tool-calls", type=int, default=AgentLimits.max_tool_calls, help="每轮工具调用数量上限，默认 100")
+    parser.add_argument("--context-tokens", type=int, help="模型上下文窗口（token），默认取模型配置的 context_tokens（128000）")
+    parser.add_argument("--max-seconds", type=float, default=AgentLimits.max_seconds, help="每轮执行时间预算，默认 1800 秒；最后约 60 秒留给收尾汇总")
+    parser.add_argument("--request-timeout", type=float, default=AgentLimits.request_timeout, help="单次模型请求超时，默认 120 秒；同时受剩余任务时间限制")
     parser.add_argument("--max-retries", type=int, default=2, help="暂时性模型请求错误的重试上限，默认 2；计入 --max-steps")
     sessions = parser.add_mutually_exclusive_group()
     sessions.add_argument("--session", metavar="ID", help="加载指定会话 ID 后继续")
@@ -149,9 +147,8 @@ def build_parser():
                         help="跳过逐次提问并批准本进程内的写入和命令；执行前仍复核参数与文件指纹，变化则作废")
     parser.add_argument("--approval-timeout", type=float, default=120,
                         help="交互审批等待秒数，默认 120，最大 3600")
-    parser.add_argument("--preview", action="store_true", help="预览 Recap 字标与示例对话配色，不请求模型")
     parser.add_argument("--banner", choices=["auto", "color", "plain", "off"], default="auto",
-                        help="行式启动面板：auto、color、plain 或 off；显式指定非 auto 时使用行式 CLI")
+                        help="行式启动标题：auto、color、plain 或 off；显式指定非 auto 时使用行式 CLI")
     parser.add_argument("--color", choices=["auto", "always", "never"], default="auto",
                         help="行式对话配色；显式指定非 auto 时使用行式 CLI")
     return parser
@@ -183,7 +180,7 @@ def print_mcp_tools(args, ui) -> int:
 def _dispatch_view_flags(parser, args):
     """只读查看旗标。命中时返回退出码，否则返回界面、横幅和能力。"""
     if args.demo:
-        if args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.preview or args.mcp_tools:
+        if args.prompt is not None or args.models or args.tasks or args.task or args.compact or args.json or args.mcp_tools:
             parser.error("--demo 只启动界面演示，不能同时提问或查看任务")
         from .tui.launch import launch_shell
         return launch_shell(args, demo=True)
@@ -204,13 +201,9 @@ def _dispatch_view_flags(parser, args):
         banner_mode = "color" if args.color == "always" else "plain"
     if args.mcp_tools:
         if (args.prompt is not None or args.models or args.session or args.continue_ or args.compact
-                or args.task or args.tasks or args.json or args.preview):
+                or args.task or args.tasks or args.json):
             parser.error("--mcp-tools 不能与提问、会话或其他查看命令同时使用")
         return print_mcp_tools(args, ui)
-    if args.preview:
-        print_banner(workspace=args.workspace, preview=True, mode=banner_mode)
-        ui.preview()
-        return 0
     if args.models:
         if args.prompt is not None or args.session or args.continue_ or args.compact or args.task or args.tasks or args.json:
             parser.error("--models 不能与提问、会话或任务查看参数同时使用")
@@ -277,9 +270,8 @@ def main(argv=None) -> int:
     if args.mode == "multi" and args.max_steps < 3 and not args.compact:
         parser.error("Multi 至少需要 3 次模型请求预算")
     try:
-        limits = AgentLimits(max_context_bytes=args.context_bytes, max_context_tokens=args.context_tokens,
-                             max_tool_calls=args.max_tool_calls,
-                             max_tool_bytes=args.max_tool_bytes, max_seconds=args.max_seconds,
+        limits = AgentLimits(max_context_tokens=args.context_tokens or AgentLimits.max_context_tokens,
+                             max_tool_calls=args.max_tool_calls, max_seconds=args.max_seconds,
                              request_timeout=args.request_timeout, max_retries=args.max_retries,
                              max_plan_steps=args.plan_steps, max_replans=args.plan_replans)
     except ValueError as error:

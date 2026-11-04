@@ -7,7 +7,7 @@ model = "your-compatible-model-id"
 base_url = "https://your-provider.example/v1"
 api_key_env = "BACKUP_API_KEY"
 tools = true
-context_bytes = 262144
+context_tokens = 128000
 streaming = true
 images = false
 
@@ -16,7 +16,7 @@ protocol = "responses"
 model = "your-responses-model-id"
 api_key_env = "OPENAI_API_KEY"
 tools = true
-context_bytes = 262144
+context_tokens = 128000
 streaming = true
 images = false
 
@@ -27,4 +27,4 @@ model = "your-vision-model-id"
 api_key_env = "OPENAI_API_KEY"
 images = true
 streaming = true
-context_bytes = 262144
+context_tokens = 128000

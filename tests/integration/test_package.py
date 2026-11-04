@@ -17,20 +17,18 @@ PROJECT_ROOT = next(path for path in Path(__file__).resolve().parents if (path /
 
 
 class PackageTests(unittest.TestCase):
-    def test_module_preview_finds_version_without_loading_model_config(self):
+    def test_module_version_flag_finds_version_without_loading_model_config(self):
         with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
             version = tomllib.load(file)["project"]["version"]
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as directory, contextlib.chdir(directory), \
                 patch("recapcli.cli.load_config") as config, patch("recapcli.cli.OpenAI") as client, \
-                patch.object(sys, "argv", ["recapcli", "--preview", "--banner", "plain", "--color", "never"]), \
+                patch.object(sys, "argv", ["recapcli", "--version"]), \
                 contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as error:
             runpy.run_module("recapcli", run_name="__main__")
         self.assertEqual(error.exception.code, 0)
         text = output.getvalue()
-        self.assertIn(f"RecapCLI  v{version}", text)
-        self.assertIn("终端里的代码阅读搭档", text)
-        self.assertNotIn("小幽灵", text)
+        self.assertIn(f"RecapCLI v{version}", text)
         config.assert_not_called()
         client.assert_not_called()
 

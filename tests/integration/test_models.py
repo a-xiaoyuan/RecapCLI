@@ -37,7 +37,7 @@ model = "reasoning-model"
 protocol = "responses"
 base_url = "https://responses.invalid/v1"
 api_key_env = "REASONING_KEY"
-context_bytes = 32768
+context_tokens = 8000
 images = true
 streaming = false
 
@@ -164,7 +164,7 @@ class ModelConfigTests(ModelTestCase):
         config = load_config()
         self.assertEqual((config.profile, config.model, config.protocol),
                          ("reasoning", "reasoning-model", "responses"))
-        self.assertEqual(config.context_bytes, 32768)
+        self.assertEqual(config.context_tokens, 8000)
         self.assertTrue(config.images)
         self.assertFalse(config.streaming)
         profiles = {item["name"]: item for item in list_model_profiles()}
@@ -180,8 +180,8 @@ class ModelConfigTests(ModelTestCase):
                    '[models.bad]\nmodel = "x"\nprotocol = []',
                    '[models.bad]\nmodel = "x"\nprotocol = {}',
                    '[models.bad]\nmodel = "x"\ntools = "true"',
-                   '[models.bad]\nmodel = "x"\ncontext_bytes = true',
-                   '[models.bad]\nmodel = "x"\ncontext_bytes = 0',
+                   '[models.bad]\nmodel = "x"\ncontext_tokens = true',
+                   '[models.bad]\nmodel = "x"\ncontext_tokens = 0',
                    '[models.bad]\nmodel = "x"\nbase_url = "https://user:pass@host.invalid"',
                    '[models.bad]\nmodel = "x"\nbase_url = "https://host.invalid/?key=hidden"',
                    '[models.bad]\nmodel = "x"\napi_key_env = "NOT A NAME"']
@@ -280,10 +280,10 @@ class ModelCLITests(ModelTestCase):
             self.run_turn(client)
         self.assertEqual(self.requests, [])
         self.assertEqual(self.task()["status"], "failed")
-        with self.runtime("reasoning") as client, self.assertRaisesRegex(RuntimeError, "上下文"):
-            self.run_turn(client, "x" * 40000, limits=AgentLimits(max_context_bytes=100000))
+        with self.runtime("reasoning") as client, self.assertRaisesRegex(ValueError, "上下文窗口"):
+            self.run_turn(client, "x" * 40000, limits=AgentLimits(max_context_tokens=100000))
         self.assertEqual(self.requests, [])
-        self.assertEqual(self.task()["metadata"]["limits"]["max_context_bytes"], 32768)
+        self.assertEqual(self.task()["metadata"]["limits"]["max_context_tokens"], 8000)
 
     def test_switch_reuses_clients_and_model_mismatch_never_sends_state(self):
         clients = []

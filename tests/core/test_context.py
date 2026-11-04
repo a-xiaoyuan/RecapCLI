@@ -1,6 +1,6 @@
 import unittest
 
-from recapcli.core.context import estimate_tokens, json_size, json_tokens, select_history
+from recapcli.core.context import TokenMeter, estimate_tokens, json_tokens, select_history
 
 
 class ContextTests(unittest.TestCase):
@@ -15,13 +15,25 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(select_history(first + second, max_messages=5), second)
         self.assertEqual(select_history(first + second, max_messages=3), [])
 
-    def test_byte_budget_counts_utf8_and_does_not_mutate_source(self):
+    def test_token_budget_and_selection_does_not_mutate_source(self):
         messages = [{"role": "user", "content": "中" * 100}, {"role": "assistant", "content": "答"}]
-        self.assertEqual(select_history(messages, max_bytes=200), [])
-        selected = select_history(messages, max_bytes=1000)
-        self.assertLessEqual(json_size(selected), 1000)
+        self.assertEqual(select_history(messages, max_tokens=50), [])
+        selected = select_history(messages, max_tokens=1000)
+        self.assertEqual(len(selected), 2)
         selected[0]["content"] = "改动"
         self.assertEqual(messages[0]["content"], "中" * 100)
+
+    def test_meter_calibrates_with_reported_prompt_tokens(self):
+        meter = TokenMeter()
+        messages = [{"role": "user", "content": "a" * 20000}]
+        estimate = json_tokens(messages)
+        meter.observe(estimate, {"prompt_tokens": int(estimate * 1.5)})
+        self.assertAlmostEqual(meter.ratio, 1.5, places=2)
+        self.assertGreater(meter.count(messages), estimate)
+        meter.observe(100, {"prompt_tokens": 1000})  # 太短的请求不参与校准
+        self.assertAlmostEqual(meter.ratio, 1.5, places=2)
+        meter.observe(estimate, {"prompt_tokens": estimate * 10})
+        self.assertEqual(meter.ratio, TokenMeter.MAX_RATIO)
 
     def test_incomplete_latest_turn_is_not_sent_as_history(self):
         messages = [{"role": "user", "content": "问"}, {"role": "assistant", "content": "答"},

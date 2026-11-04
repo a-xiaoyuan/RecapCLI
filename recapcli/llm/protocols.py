@@ -197,24 +197,25 @@ def _responses_completion(response, model, origin):
     })
 
 
-def _check_context(messages, context_bytes):
-    if context_bytes is not None:
-        size = len(json.dumps(messages, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-        if size > context_bytes:
-            raise ValueError("转换后的模型消息超过上下文 JSON 字节预算，未发送请求")
+def _check_context(messages, context_tokens):
+    """最后一道防线：Agent 已按校准后的 token 控制大小，这里只拦截明显超出窗口的请求。"""
+    if context_tokens is not None:
+        from ..core.context import estimate_tokens
+        if estimate_tokens(messages) > context_tokens * 1.25:
+            raise ValueError("转换后的模型消息明显超过上下文窗口，未发送请求")
 
 
-def complete(client, protocol, *, model, messages, tools=None, tools_allowed=True, timeout=30, origin="", context_bytes=None,
+def complete(client, protocol, *, model, messages, tools=None, tools_allowed=True, timeout=30, origin="", context_tokens=None,
              workspace=None, on_delta=None, check=None):
     """执行一次模型请求；错误由调用方记录，不探测、不重试或切换。"""
     # 文本预算包含附件描述；图片编码另受 images.py 的单图/请求大小限制。
     if any(message.get("attachments") for message in messages):
-        _check_context(messages, context_bytes)
+        _check_context(messages, context_tokens)
         messages = wire_messages(messages, workspace)
-        context_bytes = None
+        context_tokens = None
     if protocol == "chat_completions":
         converted = _chat_messages(messages)
-        _check_context(converted, context_bytes)
+        _check_context(converted, context_tokens)
         options = {} if tools_allowed else {"tool_choice": "none"}
         if tools:
             options["tools"] = deepcopy(tools)
@@ -238,7 +239,7 @@ def complete(client, protocol, *, model, messages, tools=None, tools_allowed=Tru
     if response_tools:
         options["tools"] = response_tools
     converted = _responses_input(messages, origin)
-    _check_context(converted, context_bytes)
+    _check_context(converted, context_tokens)
     if on_delta is not None:
         response = responses_stream(client, model=model, messages=converted, options=options, timeout=timeout,
                                     on_delta=on_delta, check=check)

@@ -18,7 +18,7 @@ MAX_SEARCH_RESULTS = 50
 MAX_TREE_ENTRIES = 300
 MAX_LINE_LENGTH = 300
 SKIP_DIRS = {
-    ".git", ".venv", "venv", "__pycache__", ".recapcli", ".revocli", ".archer", ".idea", ".vscode",
+    ".git", ".venv", "venv", "__pycache__", ".recapcli", ".idea", ".vscode",
     "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
 

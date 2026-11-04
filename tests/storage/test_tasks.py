@@ -23,6 +23,9 @@ from recapcli.core.agent import AgentLimits
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore, _process_identity, project_version
 from recapcli.ui.terminal_ui import TerminalUI
+from recapcli.core.context import json_tokens
+from recapcli.core.todos import TODO_TOOL
+from recapcli.tools import tool_definitions
 
 
 def reply(text=None, *, name=None, arguments=None, call_id="call", usage=None):
@@ -297,15 +300,18 @@ class TaskRuntimeTests(unittest.TestCase):
         self.assertEqual(self.task()["status"], "failed")
 
     def test_model_context_truncation_does_not_truncate_the_recorded_tool_fact(self):
-        self.source.write_text("x" * 1000, encoding="utf-8")
+        text = "\n".join("中" * 40 for _ in range(150))
+        self.source.write_text(text, encoding="utf-8")
+        window = json_tokens(tool_definitions({"read"}) + [TODO_TOOL]) + 2500
         self.run_replies([reply(name="read_file", arguments={"path": "app.py"}), reply("结果超过预算")],
-                         limits=AgentLimits(max_tool_calls=1, max_tool_bytes=256))
+                         limits=AgentLimits(max_context_tokens=window))
         task = self.task()
         fact = next(event["data"]["result"] for event in task["events"] if event["kind"] == "tool_result")
-        self.assertEqual(fact["content"], "x" * 1000)
+        self.assertEqual(fact["content"], text)
+        # 模型只看到收据和缩小范围的提示，任务记录里仍是完整原文。
         tool_message = next(message for message in self.requests[1]["messages"] if message["role"] == "tool")
-        self.assertFalse(json.loads(tool_message["content"])["ok"])
-        self.assertEqual(task["status"], "incomplete")
+        self.assertTrue(json.loads(tool_message["content"])["truncated"])
+        self.assertEqual(task["status"], "returned")
 
     def test_model_review_is_separate_from_acceptance_and_blocked_is_a_terminal_state(self):
         for status, expected in (("completed", "returned"), ("blocked", "blocked")):

@@ -33,6 +33,7 @@ CONFIG_DIR = _default_config_dir()
 ENV_FILE = CONFIG_DIR / ".env"
 MODELS_FILE = CONFIG_DIR / "models.toml"
 PROTOCOLS = {"chat_completions", "responses"}
+DEFAULT_CONTEXT_TOKENS = 128_000
 
 
 class ConfigError(ValueError):
@@ -41,14 +42,14 @@ class ConfigError(ValueError):
 
 class Config:
     def __init__(self, api_key, model, base_url=None, *, profile="default", protocol="chat_completions",
-                 tools=True, context_bytes=256 * 1024, images=False, streaming=False):
+                 tools=True, context_tokens=DEFAULT_CONTEXT_TOKENS, images=False, streaming=False):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
         self.profile = profile
         self.protocol = protocol
         self.tools = tools
-        self.context_bytes = context_bytes
+        self.context_tokens = context_tokens
         self.images = images
         self.streaming = streaming
 
@@ -78,6 +79,11 @@ def _model_profiles():
         "images": _boolean(values, "OPENAI_IMAGES", False),
         "streaming": _boolean(values, "OPENAI_STREAMING", True),
     }}
+    if (values.get("OPENAI_CONTEXT_TOKENS") or "").strip():
+        try:
+            profiles["default"]["context_tokens"] = int(values["OPENAI_CONTEXT_TOKENS"])
+        except ValueError as error:
+            raise ConfigError("OPENAI_CONTEXT_TOKENS 必须是正整数") from error
     document = {}
     if MODELS_FILE.is_file():
         try:
@@ -97,7 +103,9 @@ def _validate_profiles(profiles, default):
     for name, spec in profiles.items():
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) or not isinstance(spec, dict):
             raise ConfigError("模型配置名只能使用 1–64 个英文字母、数字、下划线或连字符")
-        allowed = {"model", "protocol", "base_url", "api_key_env", "tools", "context_bytes", "images", "streaming"}
+        # context_bytes 是旧版按 JSON 字节计的字段，仍可读取但已不使用。
+        allowed = {"model", "protocol", "base_url", "api_key_env", "tools", "context_tokens", "context_bytes",
+                   "images", "streaming"}
         if set(spec) - allowed:
             raise ConfigError(f"模型配置 {name} 包含不支持的字段；密钥请通过 api_key_env 引用环境变量")
         if not isinstance(spec.get("model"), str) or (name != "default" and not spec["model"].strip()):
@@ -111,9 +119,9 @@ def _validate_profiles(profiles, default):
         for capability in ("tools", "images", "streaming"):
             if capability in spec and not isinstance(spec[capability], bool):
                 raise ConfigError(f"模型配置 {name} 的 {capability} 必须是布尔值")
-        size = spec.get("context_bytes", 256 * 1024)
-        if isinstance(size, bool) or not isinstance(size, int) or size < 1:
-            raise ConfigError(f"模型配置 {name} 的 context_bytes 必须是正整数（UTF-8 JSON 字节）")
+        size = spec.get("context_tokens", DEFAULT_CONTEXT_TOKENS)
+        if isinstance(size, bool) or not isinstance(size, int) or size < 1000:
+            raise ConfigError(f"模型配置 {name} 的 context_tokens 必须是不小于 1000 的整数（模型上下文窗口）")
         base_url = spec.get("base_url")
         if base_url is not None:
             if not isinstance(base_url, str):
@@ -137,7 +145,7 @@ def list_model_profiles():
              "default": name == default, "configured": bool(spec["model"].strip() and
                  (values.get(spec.get("api_key_env", "OPENAI_API_KEY")) or "").strip()),
              "tools": spec.get("tools", True), "images": spec.get("images", False),
-             "streaming": spec.get("streaming", True), "context_bytes": spec.get("context_bytes", 256 * 1024),
+             "streaming": spec.get("streaming", True), "context_tokens": spec.get("context_tokens", DEFAULT_CONTEXT_TOKENS),
              "base_url": spec.get("base_url") or "", "api_key_env": spec.get("api_key_env", "OPENAI_API_KEY"),
              "key_source": "环境变量" if os.environ.get(spec.get("api_key_env", "OPENAI_API_KEY")) else ".env"}
             for name, spec in profiles.items()]
@@ -189,5 +197,5 @@ def load_config(profile=None):
         raise ConfigError(f"模型配置 {name} 缺少 {spec.get('api_key_env', 'OPENAI_API_KEY')}；请在 RecapCLI .env 或环境变量中设置")
     return Config(api_key=api_key, model=spec["model"].strip(), base_url=spec.get("base_url"), profile=name,
                   protocol=spec.get("protocol", "chat_completions"), tools=spec.get("tools", True),
-                  context_bytes=spec.get("context_bytes", 256 * 1024), images=spec.get("images", False),
+                  context_tokens=spec.get("context_tokens", DEFAULT_CONTEXT_TOKENS), images=spec.get("images", False),
                   streaming=spec.get("streaming", True))

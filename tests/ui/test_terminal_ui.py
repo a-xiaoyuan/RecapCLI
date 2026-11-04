@@ -3,15 +3,20 @@ import io
 import os
 import re
 import tempfile
+import unicodedata
 import unittest
 from unittest.mock import patch
 
 from recapcli.cli import build_parser, main
-from recapcli.ui.terminal_art import cell_width, print_banner, wordmark_text
+from recapcli.ui.terminal import print_banner
 from recapcli.ui.terminal_ui import TerminalUI
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def cell_width(text):
+    return sum(2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1 for char in text)
 ANSWER = '### 示例\n\n**重点**是 `name`。\n\n```python\nvalue = "hello"\nprint(value)\n```'
 
 
@@ -26,14 +31,14 @@ class TerminalUITests(unittest.TestCase):
         TerminalUI(output, color="always").answer(ANSWER)
         text = output.getvalue()
         plain = ANSI.sub("", text)
-        self.assertIn("RecapCLI>", plain)
+        self.assertIn("●", plain)
         self.assertIn('value = "hello"', plain)
         self.assertNotIn("###", plain)
         self.assertNotIn("```", plain)
         self.assertNotIn("**重点**", plain)
-        colors = set(re.findall(r"38;2;\d+;\d+;\d+", text))
-        self.assertGreaterEqual(len(colors), 4)
-        self.assertNotIn("48;2;39;40;34", text)
+        self.assertIn("\x1b[1m", text)  # 标题与重点加粗
+        # 跟随终端底色：不铺任何背景色块（代码高亮主题除外）。
+        self.assertNotIn("48;2;244;230;216", text)
 
     def test_plain_mode_preserves_markdown_without_escape_codes(self):
         for color, env in [("never", {}), ("auto", {"NO_COLOR": "1"}), ("auto", {})]:
@@ -50,17 +55,17 @@ class TerminalUITests(unittest.TestCase):
             ui.user("你好")
             ui.answer("你好")
         self.assertIn("\x1b", output.getvalue())
-        self.assertIn("你>", ANSI.sub("", output.getvalue()))
-        self.assertIn("RecapCLI>", ANSI.sub("", output.getvalue()))
+        self.assertIn("› 你好", ANSI.sub("", output.getvalue()))
+        self.assertIn("●", ANSI.sub("", output.getvalue()))
 
     def test_tool_success_and_failure_have_distinct_styles_and_labels(self):
-        styles = []
-        for event in ["[模型] 第 1 次请求", "[工具] read_file", "[结果] 成功", "[结果] 失败：文件不存在"]:
+        styles = {}
+        for event in ["[工具] read_file", "[结果] 成功", "[结果] 失败：文件不存在", "[待办]\n☐ 接 CLI"]:
             output = io.StringIO()
             TerminalUI(output, color="always").event(event)
             self.assertIn(event, ANSI.sub("", output.getvalue()))
-            styles.append(re.search(r"38;2;\d+;\d+;\d+", output.getvalue()).group())
-        self.assertEqual(len(set(styles)), 4)
+            styles[event] = re.search(r"\x1b\[[0-9;]*m", output.getvalue()).group()
+        self.assertEqual(len(set(styles.values())), 4)
 
     def test_errors_only_write_to_stderr(self):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -107,30 +112,21 @@ class TerminalUITests(unittest.TestCase):
                 with contextlib.redirect_stdout(output), tempfile.TemporaryDirectory() as workspace:
                     self.assertEqual(main(["你好", "--workspace", workspace, "--banner", "off", "--color", "always"]), 0)
         text = output.getvalue()
-        self.assertIn("你> 你好", ANSI.sub("", text))
+        self.assertIn("› 你好", ANSI.sub("", text))
         self.assertIn("[工具] read_file", ANSI.sub("", text))
-        self.assertIn("RecapCLI>", ANSI.sub("", text))
-        self.assertGreaterEqual(len(set(re.findall(r"38;2;\d+;\d+;\d+", text))), 5)
-        self.assertNotIn("48;2;39;40;34", text)
+        self.assertIn("●", ANSI.sub("", text))
 
-    def test_preview_help_and_banner_use_the_wordmark(self):
-        help_text = build_parser().format_help()
-        self.assertIn("字标", help_text)
-        self.assertNotIn("小幽灵", help_text)
-        mark = wordmark_text(max_width=40)
-        self.assertNotIn("\x1b", mark.plain)
-        self.assertIn("▀", mark.plain)
+    def test_banner_is_two_quiet_lines_and_can_be_turned_off(self):
         output = io.StringIO()
-        with patch("recapcli.ui.terminal_art.shutil.get_terminal_size", return_value=os.terminal_size((96, 32))):
-            print_banner(output, workspace="/tmp/recap-preview", preview=True, mode="color")
-        text = output.getvalue()
-        plain = ANSI.sub("", text)
-        self.assertIn("RecapCLI", plain)
-        self.assertIn("终端里的代码阅读搭档", plain)
-        self.assertIn("从手头的代码读起，改动留有记录。", plain)
-        self.assertNotIn("小幽灵", plain)
-        self.assertIn("▀", plain)
-
+        print_banner(output, workspace="/tmp/recap-banner", mode="color")
+        plain = ANSI.sub("", output.getvalue())
+        self.assertTrue(plain.startswith("◆ RecapCLI"))
+        self.assertIn("recap-banner", plain)
+        self.assertLessEqual(len(plain.strip().splitlines()), 2)
+        output = io.StringIO()
+        print_banner(output, workspace="/tmp", mode="off")
+        self.assertEqual(output.getvalue(), "")
+        self.assertNotIn("--preview", build_parser().format_help())
 
 if __name__ == "__main__":
     unittest.main()

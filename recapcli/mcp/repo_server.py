@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from ..tools.registry import TOOL_REGISTRY, execute_tool
-from ..ui.terminal_art import project_version
+from ..ui.terminal import project_version
 
 DEFAULT_PROTOCOL = "2025-06-18"
 SERVER_NAME = "recapcli-repo"

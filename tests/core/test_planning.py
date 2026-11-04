@@ -269,37 +269,17 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(sum(message["role"] == "tool" for message in result.messages), 2)
         self.assertEqual(len(self.requests), 6)
 
-    def test_output_budget_is_shared_with_planning(self):
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 2000}) as execute:
-            result = self.run_plan([document(steps=["读取文件"]), call(), reply("输出受限")],
-                                   limits=AgentLimits(max_tool_calls=2, max_tool_bytes=300))
-        self.assertEqual(execute.call_count, 1)
-        self.assertIn("未完成", result.answer)
-        tool_result = next(message for message in result.messages if message["role"] == "tool")
-        self.assertFalse(json.loads(tool_result["content"])["ok"])
-
-    def test_output_bytes_accumulate_across_completed_steps(self):
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 450}) as execute:
-            result = self.run_plan([
-                document(steps=["读取第一部分", "读取第二部分"]), call(), reply("读完第一部分"), completed(),
-                call(call_id="second"), reply("输出预算耗尽"),
-            ], limits=AgentLimits(max_tool_calls=3, max_tool_bytes=900))
-        self.assertEqual(execute.call_count, 2)
-        self.assertIn("1/2", result.answer)
-        results = [json.loads(message["content"]) for message in result.messages if message["role"] == "tool"]
-        self.assertEqual([item["ok"] for item in results], [True, False])
-        self.assertEqual(len(self.requests), 6)
-
     def test_time_budget_does_not_restart_after_planning(self):
         with patch("recapcli.core.agent.time.monotonic", return_value=0) as clock:
             def expire(number):
                 if number == 3:
                     clock.return_value = 121
 
-            with self.assertRaisesRegex(RuntimeError, "时间预算"):
-                self.run_plan([document(steps=["分析问题"]), reply("说明"), completed()], on_request=expire,
-                              limits=AgentLimits(max_seconds=120))
+            result = self.run_plan([document(steps=["分析问题"]), reply("说明"), completed()], on_request=expire,
+                                   limits=AgentLimits(max_seconds=120))
+        # 时间用完后不再请求模型，用已有事实收尾。
         self.assertEqual(len(self.requests), 3)
+        self.assertEqual(result.status, "incomplete")
 
     def test_plan_mode_default_budget_supports_more_than_eight_requests(self):
         replies = [document(steps=[f"回答第 {number} 个问题" for number in range(5)])]
