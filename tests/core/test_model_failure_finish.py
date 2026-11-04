@@ -1,12 +1,16 @@
 """工具已执行后，上下文超限和输出截断转入收尾；其他模型错误仍按失败处理。"""
 
+from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import httpx2
 from openai import AuthenticationError, BadRequestError, OpenAI
 
 from recapcli.core.agent import run_agent
+from recapcli.tools.retrieval import _connect
 
 
 def completion(message, finish_reason):
@@ -92,6 +96,22 @@ class ModelFailureFinishTests(unittest.TestCase):
     def test_length_before_any_tool_stays_an_error(self):
         with self.assertRaisesRegex(RuntimeError, "模型响应未完整结束：length"):
             self.run_turn(text("写到一半", "length"))
+
+    def test_repository_map_database_error_does_not_stop_the_turn(self):
+        failure = sqlite3.OperationalError("unable to open database file")
+        with patch("recapcli.tools.code_context.repository_map", side_effect=failure):
+            result = self.run_turn(text("你好"))
+        self.assertEqual(result.status, "returned")
+        context = next(data for kind, data in self.traces if kind == "repository_context")
+        self.assertEqual(context["error"], "OperationalError")
+
+    def test_retrieval_index_keeps_temporary_data_in_memory(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            connection = _connect(Path(workspace).resolve())
+            try:
+                self.assertEqual(connection.execute("PRAGMA temp_store").fetchone()[0], 2)
+            finally:
+                connection.close()
 
     def test_content_filter_after_tools_stays_an_error(self):
         with self.assertRaisesRegex(RuntimeError, "模型响应未完整结束：content_filter"):

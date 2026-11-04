@@ -24,7 +24,7 @@ from .driver import Presenter, ShellDriver, ShellOptions
 from .state import ShellState
 from .status import TaskStatus
 from .theme import PALETTE
-from .widgets import ApprovalMenu, CommandMenu, ConversationView, GlyphButton, PromptInput, StatusScreen
+from .widgets import ApprovalMenu, CommandMenu, ConversationView, GlyphButton, GradientLogo, PromptInput, StatusScreen
 from .settings import ModelConfigScreen, ModelPickerScreen
 from ..base.version import project_version
 from ..ui.terminal_ui import clean_output
@@ -65,6 +65,12 @@ DEMO_REPLY = (
     "> 编辑与命令执行由启动选项控制，需要时仍会请求审批。\n\n"
     "*界面演示：以上为示例内容，未调用工具或模型。*"
 )
+LOGO = """██████╗ ███████╗ ██████╗ █████╗ ██████╗
+██╔══██╗██╔════╝██╔════╝██╔══██╗██╔══██╗
+██████╔╝█████╗  ██║     ███████║██████╔╝
+██╔══██╗██╔══╝  ██║     ██╔══██║██╔═══╝
+██║  ██║███████╗╚██████╗██║  ██║██║
+╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝"""
 MISSING_CONFIG = "还没有可用的模型配置。按 F3 填写模型、接口地址和 API Key；F2 可选择已有配置。"
 
 
@@ -98,7 +104,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
         super().__init__(ansi_color=True)
         self.console.push_theme(RichTheme({
             **{f"markdown.h{level}": "bold" for level in range(1, 7)},
-            "markdown.code": PALETTE["accent"],
+            "markdown.code": "bold #ddb6f2 on #26233a",
             "markdown.block_quote": PALETTE["muted"],
             "markdown.item.bullet": PALETTE["muted"],
             "markdown.item.number": PALETTE["muted"],
@@ -115,6 +121,8 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
         self._approval = False
         self._approval_draft = ""
         self._approval_since = 0.0
+        self._status_phase = 0.0
+        self._status_message = ""
         self._mention_files = None
         self._mention_loaded = 0.0
         self._cancel_requested = False
@@ -155,41 +163,55 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
         return next((p for p in self._profiles if p.get("default")), self._profiles[0] if self._profiles else {})
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="stage"):
-            with ConversationView(id="conversation"):
-                with Vertical(id="history"):
-                    with Vertical(id="welcome"):
-                        yield Static(self._welcome_title(), id="welcome-title", markup=False)
-                        yield Static(self._workspace_caption(), id="welcome-subtitle", markup=False)
-                        yield Static("", id="welcome-agent", markup=False)
-                    yield Vertical(id="transcript")
-            with Vertical(id="footer"):
-                yield CommandMenu(id="command-menu")
-                yield ApprovalMenu(id="approval-menu")
-                yield Static("", id="command-help", markup=False)
-                yield Static("", id="command-hint", markup=False)
-                with Horizontal(id="status-row"):
-                    yield Static("", id="status-line", markup=False)
-                    yield GlyphButton("↓ 回到底部", "latest", "回到底部并恢复自动跟随（Ctrl+End）", id="jump-latest")
-                with Horizontal(id="composer"):
-                    yield Static("›", id="input-prefix", markup=False)
-                    placeholder = "界面演示，不发送请求" if self.demo else "输入问题，/ 查看命令…"
-                    yield PromptInput(placeholder=placeholder, id="prompt")
-                yield Static("", id="key-hints", markup=False)
+        with Horizontal(id="shell"):
+            with Vertical(id="stage"):
+                with ConversationView(id="conversation"):
+                    with Vertical(id="history"):
+                        with Vertical(id="welcome"):
+                            with Horizontal(id="welcome-columns"):
+                                with Vertical(id="welcome-left"):
+                                    yield Static("欢迎回来", id="welcome-title", markup=False)
+                                    yield GradientLogo(LOGO, id="welcome-logo")
+                                    yield Static("", id="welcome-agent", markup=False)
+                                    yield Static(self._workspace_caption(), id="welcome-subtitle", markup=False)
+                                with Vertical(id="welcome-right"):
+                                    yield Static(self._welcome_tips(), id="welcome-tips", markup=False)
+                        yield Vertical(id="transcript")
+                with Vertical(id="footer"):
+                    yield CommandMenu(id="command-menu")
+                    yield ApprovalMenu(id="approval-menu")
+                    yield Static("", id="command-help", markup=False)
+                    yield Static("", id="command-hint", markup=False)
+                    with Horizontal(id="status-row"):
+                        yield Static("", id="status-line", markup=False)
+                        yield GlyphButton("↓ 回到底部", "latest", "回到底部并恢复自动跟随（Ctrl+End）", id="jump-latest")
+                    with Horizontal(id="composer"):
+                        yield Static("RecapCLI ❯", id="input-prefix", markup=False)
+                        placeholder = "界面演示，不发送请求" if self.demo else "输入问题，/ 查看命令…"
+                        yield PromptInput(placeholder=placeholder, id="prompt")
+                        yield Static("↵", id="input-enter", markup=False)
+                    yield Static("", id="key-hints", markup=False)
+            yield Static("", id="task-inspector", markup=False)
 
-    def _welcome_title(self):
-        title = Text(no_wrap=True, overflow="ellipsis")
-        title.append("◆ ", style=PALETTE["accent"])
-        title.append("RecapCLI", style="bold")
-        title.append("  " + version_label(), style=PALETTE["muted"])
-        return title
+    def _welcome_tips(self):
+        text = Text()
+        for title, lines in (("开始使用", ("直接说你想做什么，比如“修复登录报错”", "@ 引用文件 · / 查看命令 · F2 切换模型")),
+                             ("当前项目", (f"已保存 {len(self.state.sessions)} 个会话", "/tasks 查看任务记录"))):
+            if text:
+                text.append("\n\n")
+            text.append(title, style="bold " + PALETTE["accent"])
+            for line in lines:
+                text.append("\n" + line)
+        return text
 
     async def on_mount(self):
+        self.query_one("#welcome").border_title = "RecapCLI " + version_label()
         self.ui_thread = threading.get_ident()
         self.register_theme(TERMINAL_THEME)
         self.theme = "recap-terminal"
         self._apply_width(self.size.width)
         self.set_interval(1, self._tick_status)
+        self.set_interval(0.1, self._flow_status)
         if self.demo:
             await self._append(DEMO_PROMPT, "user")
             for name in ("read_file · tui/launch.py", "read_file · tui/driver.py", "search_symbols · core/agent.py"):
@@ -228,6 +250,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
         self._apply_width(event.size.width)
 
     def _apply_width(self, width):
+        self.query_one("#task-inspector").display = width >= 100
         if self.screen_stack:
             self.screen_stack[0].set_class(width < 72, "-narrow")
         self.call_after_refresh(self._refresh_hints)

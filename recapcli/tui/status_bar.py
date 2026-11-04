@@ -8,7 +8,7 @@ from ..application.changes import change_report, commands_summary, files_summary
 from ..core.project_rules import project_rules_description
 from ..ui.terminal_ui import clean_output
 from .status import TaskStatus, task_text, usage_text
-from .theme import PALETTE
+from .theme import PALETTE, gradient_text, progress_bar
 from .widgets import StatusScreen
 
 
@@ -57,6 +57,13 @@ class StatusBarMixin:
         if self._busy:
             self._refresh_status()
 
+    def _flow_status(self):
+        """工作中让状态文字流光；空闲时不做任何刷新。"""
+        if (self._busy and not self._approval and not self._cancel_requested and self._status_message
+                and self.query("#status-line")):
+            self._status_phase = (self._status_phase + 0.03) % 1.0
+            self.query_one("#status-line", Static).update(gradient_text(self._status_message, self._status_phase, 40))
+
     def set_activity(self, activity):
         self._activity = clean_output(activity)
         self._refresh_status()
@@ -79,6 +86,9 @@ class StatusBarMixin:
         color = PALETTE["error"] if self._task_status.status == "failed" and not self._busy else PALETTE["accent"]
         self.query_one("#status-line", Static).update(Text(label, style=color, no_wrap=True, overflow="ellipsis"))
         self._status_message = label
+        composer = self.query_one("#composer")
+        composer.set_class(self._busy and not self._approval, "-busy")
+        composer.set_class(self._approval, "-approval")
         self._refresh_navigation()
         mode = " / ".join({"read": "读取", "write": "编辑", "exec": "命令", "web": "网页"}[item]
                           for item in self.options.capabilities)
@@ -91,9 +101,39 @@ class StatusBarMixin:
             agent.append(clean_output(self._display_model or self._selected_profile().get("model") or "当前模型"))
         agent.append(" · " + self.options.mode + " · " + mode)
         self.query_one("#welcome-agent", Static).update(agent)
+        self._model_label = agent.plain.split(" · ")[0]
+        self._refresh_inspector(mode)
         self._refresh_hints()
         if isinstance(self.screen, StatusScreen) and self.screen.query("#status-body"):
             self.screen.query_one("#status-body", Static).update(self._status_details())
+
+    def _refresh_inspector(self, mode):
+        if not self.query("#task-inspector"):  # 退出时界面可能已经卸载。
+            return
+        task = self._task_status
+        files = list(task.modified_files)
+        file_text = "\n".join(files[:6]) if files else "暂无本轮编辑"
+        if len(files) > 6:
+            file_text += f"\n还有 {len(files) - 6} 个 · Ctrl+G 查看"
+        requests = task.requests
+        if self._progress_widget is not None:
+            requests = max(requests, sum(row["kind"] == "request" for row in self._progress_widget.rows))
+        body = Text()
+        for title, content in (
+            ("本轮任务", task_text(task, busy=self._busy, approval=self._approval)),
+            ("执行模式", self.options.mode + " · " + mode),
+            ("模型请求", f"{requests} / {self.options.max_steps} 次" if task.task_id or requests else "尚未开始"),
+            ("Token 用量", usage_text(task) if task.task_id else "尚无任务用量"),
+            ("本轮编辑", file_text),
+        ):
+            body.append(title + "\n", style="bold " + PALETTE["accent"])
+            body.append(clean_output(content) + "\n", style=PALETTE["muted"])
+            if title == "模型请求":
+                body.append_text(progress_bar(requests, self.options.max_steps, 24))
+                body.append("\n")
+            body.append("\n")
+        body.append("Ctrl+G 查看完整详情", style=PALETTE["faint"])
+        self.query_one("#task-inspector", Static).update(body)
 
     def _refresh_hints(self):
         if not self.query("#key-hints"):
@@ -109,6 +149,6 @@ class StatusBarMixin:
         elif self.size.width < 72:
             hint = "enter 发送 · /help" if self._model_ready else "/config 设置 · /help"
         else:
-            hint = ("enter 发送 · shift+enter 换行 · /help 命令 · ctrl+g 详情" if self._model_ready
+            hint = (f"{self._model_label} · enter 发送 · shift+enter 换行 · /help 命令" if self._model_ready
                     else "/config 设置模型 · /help 命令")
         self.query_one("#key-hints", Static).update(Text(hint, style=PALETTE["muted"], no_wrap=True, overflow="ellipsis"))

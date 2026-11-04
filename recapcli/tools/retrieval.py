@@ -47,6 +47,8 @@ def _connect(workspace):
         if candidate.is_symlink() or candidate.is_junction() or not candidate.resolve().is_relative_to(workspace):
             raise ToolError("索引文件不能是链接或位于工作区之外")
     connection = sqlite3.connect(path, timeout=5)
+    # 系统临时目录不可写时，SQLite 的语句日志不能落到磁盘。
+    connection.execute("PRAGMA temp_store=MEMORY")
     try:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version not in (0, 1, 2, SCHEMA_VERSION):

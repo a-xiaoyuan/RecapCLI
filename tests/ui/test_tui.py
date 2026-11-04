@@ -101,14 +101,12 @@ def texts(recording, kind=None):
 
 
 class PaletteTests(unittest.TestCase):
-    def test_palette_follows_the_terminal_with_a_single_accent(self):
+    def test_palette_follows_the_terminal_and_css_stays_in_sync(self):
         self.assertEqual(PALETTE["text"], "default")
         self.assertTrue(PALETTE["accent"].startswith("#"))
-        fixed = [value for value in PALETTE.values() if value.startswith("#")]
-        self.assertEqual(fixed, [PALETTE["accent"]])
         css = (Path(__file__).resolve().parents[2] / "recapcli" / "tui" / "recap.tcss").read_text(encoding="utf-8")
         hexes = set(__import__("re").findall(r"#[0-9a-fA-F]{6}", css))
-        self.assertEqual(hexes, {PALETTE["accent"]})
+        self.assertLessEqual(hexes, set(PALETTE.values()))
 
     def test_tool_success_is_quiet_and_failure_is_error(self):
         success = render_line("[结果] 成功", "event")
@@ -380,15 +378,16 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.query_one(selector).display)
             history, footer = app.query_one("#history"), app.query_one("#footer")
             self.assertEqual(footer.region.x + 2, history.region.x)
-            self.assertGreater(app.query_one("#composer").region.width, 130)
+            self.assertGreater(app.query_one("#composer").region.width, 100)
+            self.assertTrue(app.query_one("#task-inspector").display)
             self.assertEqual(app.query_one("#prompt").size.height, 1)
             # 不铺底色：背景是终端自己的颜色。
             from recapcli.tui.app import TERMINAL_THEME
             self.assertTrue(TERMINAL_THEME.ansi)
             self.assertEqual(app.screen.styles.background.ansi, -1)  # ansi_default
             welcome = app.query_one("#welcome")
-            self.assertEqual(welcome.region.height, 3)
-            self.assertIn("RecapCLI", str(app.query_one("#welcome-title").render()))
+            self.assertIn("RecapCLI", welcome.border_title)
+            self.assertIn("欢迎回来", str(app.query_one("#welcome-title").render()))
             self.assertIn("模型未配置", str(app.query_one("#welcome-agent").render()))
             self.assertGreaterEqual(app.query(".turn").first().region.y, welcome.region.bottom)
             self.assertFalse(app.query_one("#command-menu").display)
@@ -477,9 +476,9 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             app.finish_answer("验证完成")
             await pilot.pause()
             self.assertIn("120", usage_text(app._task_status))
-            # 用量附在回答末尾的灰色一行。
-            self.assertIn("120 tokens", rendered_text(app._turn_answer_widget).strip().splitlines()[-1])
-            self.assertIn("2.5s", rendered_text(app._turn_answer_widget).strip().splitlines()[-1])
+            # 用量显示在回答标题行。
+            self.assertIn("120 tokens", rendered_text(app._turn_answer_widget).strip().splitlines()[0])
+            self.assertIn("2.5s", rendered_text(app._turn_answer_widget).strip().splitlines()[0])
             self.assertFalse(app.query_one("#status-row").display)
             await pilot.press("ctrl+g")
             self.assertIn("README.md", str(app.screen.query_one("#status-body").render()))

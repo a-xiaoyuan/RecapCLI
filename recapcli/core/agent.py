@@ -3,6 +3,7 @@
 from dataclasses import dataclass, replace
 import json
 from pathlib import Path
+import sqlite3
 import time
 import sys
 
@@ -136,7 +137,8 @@ def _prepare_turn_context(client, model, prompt, workspace, max_steps, limits, c
                 memory_text += ("\n\n当前仓库结构资料（部分地图，不能据此断言其他文件不存在）：\n"
                                 + structure["map"] + "\n验证命令候选（核对后再执行）："
                                 + json.dumps(structure["verification_candidates"], ensure_ascii=False))
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, sqlite3.Error) as error:
+            # 仓库地图只是辅助资料，索引失败不能挡住用户的问题。
             structure = {"error": type(error).__name__, "files": [], "truncated": True}
     system_text = build_system_prompt(memory_text, _rule_layers_text(rule_layers)) + runtime
     if role:

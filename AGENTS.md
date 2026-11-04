@@ -37,6 +37,6 @@
 - 启动参数的校验放在 `application/options.py`，CLI 和 TUI 共用。
 - 依赖只能指向下层：`base`、`llm`、`tools`、`core`、`storage`、`application`、`ui`、`tui`；由 `tests/core/test_layers.py` 检查。
 - 不新增第三方依赖；确有必要时先说明理由。
-- 界面配色只用 `theme.py` 的 `PALETTE` 和 `recap.tcss` 里的 ANSI 颜色名，唯一的固定色是强调色。
+- 界面配色只用 `theme.py` 的 `PALETTE`，并与 `recap.tcss` 保持同步；背景跟随终端，不铺底色。
 - 测试用 `unittest` 和 `httpx2.MockTransport` 模拟模型，不发真实网络请求。
 - 不要修改 `.recapcli/`、`.env`、`models.toml`。

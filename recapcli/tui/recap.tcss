@@ -1,98 +1,112 @@
-/* 跟随终端：背景与正文用 ansi_default，次要信息用 ansi_bright_black，强调色 #e07b39（与 theme.py 同步）。 */
+/* 背景与正文跟随终端，次要信息 #a6adc8，强调色 #cba6f7（与 theme.py 同步）。 */
 Screen { background: ansi_default; color: ansi_default; }
+#shell { width: 1fr; height: 100%; background: ansi_default; }
 #stage { width: 1fr; height: 100%; background: ansi_default; }
+#task-inspector { width: 34; height: 100%; padding: 1 2; border-left: solid #6c7086; background: ansi_default; }
 #conversation { width: 1fr; height: 1fr; padding: 1 2 0 2; scrollbar-size-vertical: 1; scrollbar-gutter: stable;
-                scrollbar-color: ansi_bright_black; scrollbar-color-hover: ansi_bright_black; scrollbar-color-active: #e07b39;
+                scrollbar-color: #a6adc8; scrollbar-color-hover: #a6adc8; scrollbar-color-active: #cba6f7;
                 scrollbar-background: ansi_default; scrollbar-background-hover: ansi_default; scrollbar-background-active: ansi_default;
                 background: ansi_default; }
 #history { width: 100%; height: auto; min-height: 100%; background: ansi_default; }
 #transcript { width: 1fr; height: auto; background: ansi_default; }
 
-/* 欢迎区：三行文字，没有边框和字标。 */
-#welcome { width: 100%; height: auto; margin-bottom: 1; background: ansi_default; }
-#welcome-title, #welcome-subtitle, #welcome-agent { height: 1; }
-#welcome-subtitle, #welcome-agent { padding-left: 2; color: ansi_bright_black; }
+/* 欢迎卡片：标题嵌在边框上，左边是字标和环境，右边是上手提示；窄屏只留左边。 */
+#welcome { width: 100%; height: auto; margin-bottom: 1; padding: 0 1; border: round #cba6f7; border-title-color: #cba6f7;
+           border-title-style: bold; background: ansi_default; }
+#welcome-columns { width: 100%; height: auto; }
+#welcome-left { width: 46; height: auto; }
+#welcome-right { width: 1fr; height: auto; padding-left: 2; border-left: solid #6c7086; }
+.-narrow #welcome-right { display: none; }
+.-narrow #welcome-left { width: 1fr; }
+#welcome-title, #welcome-logo, #welcome-subtitle, #welcome-agent { width: 100%; height: auto; text-align: center; }
+#welcome-title { margin-top: 1; text-style: bold; }
+#welcome-logo { margin: 1 0; }
+#welcome-subtitle, #welcome-agent { color: #a6adc8; }
+#welcome-tips { height: auto; color: #a6adc8; }
 
 .turn { height: auto; margin-bottom: 1; background: ansi_default; }
-.user-turn { color: ansi_default; }
+.user-turn { color: ansi_default; background: #2a2740; padding: 0 1; }
 .assistant-turn { width: 100%; }
 .progress-turn, .todo-turn { padding-left: 2; }
-.info-turn, .event-turn { color: ansi_bright_black; padding-left: 2; }
+.info-turn, .event-turn { color: #a6adc8; padding-left: 2; }
 .error-turn { color: ansi_red; padding-left: 2; }
-.approval-turn { padding-left: 2; }
+.approval-turn { margin-left: 2; padding: 0 1; border: round #fab387; }
 
 /* 输入区：一条灰色圆角框；忙碌状态与按键提示在框外一行。 */
 #footer { width: 1fr; height: auto; padding: 0 2 0 2; background: ansi_default; }
 #status-row { width: 1fr; height: 1; margin: 0; }
-#status-line { width: 1fr; height: 1; color: #e07b39; }
-#jump-latest { width: auto; height: 1; padding-left: 2; color: ansi_bright_black; }
-#jump-latest:hover, #jump-latest:focus { color: #e07b39; }
-#composer { width: 1fr; height: auto; min-height: 3; border: round ansi_bright_black; background: ansi_default; padding: 0 1; }
-#composer:focus-within { border: round ansi_bright_black; }
-#input-prefix { width: 2; height: 1; color: #e07b39; text-style: bold; }
+#status-line { width: 1fr; height: 1; color: #cba6f7; }
+#jump-latest { width: auto; height: 1; padding-left: 2; color: #a6adc8; }
+#jump-latest:hover, #jump-latest:focus { color: #cba6f7; }
+#composer { width: 1fr; height: auto; min-height: 3; border: round #cba6f7; background: ansi_default; padding: 0 1; }
+#composer:focus-within { border: round #cba6f7; }
+#composer.-busy, #composer.-busy:focus-within { border: round #89b4fa; }
+#composer.-approval, #composer.-approval:focus-within { border: round #fab387; }
+#input-prefix { width: 11; height: 1; color: #cba6f7; text-style: bold; }
+#input-enter { width: 2; height: 1; color: #a6adc8; content-align: right middle; }
 #prompt { width: 1fr; height: 1; min-height: 1; border: none; padding: 0; background: ansi_default; color: ansi_default;
           scrollbar-size-vertical: 1; scrollbar-size-horizontal: 0; }
 #prompt:focus { border: none; background: ansi_default; }
-#prompt > .text-area--placeholder { color: ansi_bright_black; }
-#prompt > .text-area--suggestion { color: ansi_bright_black; }
-#prompt > .text-area--cursor { background: #e07b39; color: ansi_black; }
-#prompt > .text-area--selection { background: #e07b39 30%; }
-#key-hints { width: 1fr; height: 1; margin: 0 0 1 2; color: ansi_bright_black; }
+#prompt > .text-area--placeholder { color: #a6adc8; }
+#prompt > .text-area--suggestion { color: #a6adc8; }
+#prompt > .text-area--cursor { background: ansi_default; color: ansi_default; text-style: reverse; }
+#prompt > .text-area--selection { background: #cba6f7 30%; }
+#key-hints { width: 1fr; height: 1; margin: 0 0 1 0; color: #a6adc8; }
 #command-menu { display: none; width: 1fr; height: auto; max-height: 7; margin: 0 0 1 0; border: none; padding: 0 1;
                 background: ansi_default; scrollbar-size-vertical: 1; }
 #command-menu > .option-list--option { padding: 0; }
 #command-menu > .option-list--option-highlighted { background: ansi_default; color: ansi_default; text-style: bold reverse; }
 #approval-menu { display: none; width: 1fr; height: auto; margin: 0 0 1 0; border: none; padding: 0 1; background: ansi_default; }
 #approval-menu > .option-list--option { padding: 0; }
-#approval-menu > .option-list--option-highlighted { background: ansi_default; color: #e07b39; text-style: bold; }
-#command-help { display: none; width: 1fr; height: auto; max-height: 7; margin: 0; padding: 0 1; color: ansi_bright_black; }
-#command-hint { display: none; width: 1fr; height: 1; margin: 0; padding: 0 1; color: ansi_bright_black; }
+#approval-menu > .option-list--option-highlighted { background: ansi_default; color: #cba6f7; text-style: bold; }
+#command-help { display: none; width: 1fr; height: auto; max-height: 7; margin: 0; padding: 0 1; color: #a6adc8; }
+#command-hint { display: none; width: 1fr; height: 1; margin: 0; padding: 0 1; color: #a6adc8; }
 
 /* 详情弹窗 */
 StatusScreen { align: center middle; background: ansi_default; }
-#status-dialog { width: 76; max-width: 94%; height: 80%; max-height: 34; border: round ansi_bright_black; padding: 1 2; background: ansi_default; }
+#status-dialog { width: 76; max-width: 94%; height: 80%; max-height: 34; border: round #a6adc8; padding: 1 2; background: ansi_default; }
 #status-heading { height: 2; }
 #status-title { width: 1fr; height: 1; text-style: bold; }
 #close-status, #close-status:hover, #close-status:focus { width: auto; min-width: 10; height: 1; min-height: 1; border: none; padding: 0 1;
-               background: ansi_default; color: ansi_bright_black; text-style: none; background-tint: transparent; }
-#close-status:focus { color: #e07b39; }
+               background: ansi_default; color: #a6adc8; text-style: none; background-tint: transparent; }
+#close-status:focus { color: #cba6f7; }
 #status-scroll { height: 1fr; scrollbar-size-vertical: 1; }
 #status-body { height: auto; }
 
 /* 设置弹窗：固定列宽上限，字段内部滚动，操作按钮使用单行。 */
 ModelPickerScreen, ModelConfigScreen { align: center middle; background: ansi_default; }
-.settings-dialog { width: 68; max-width: 92%; height: 24; max-height: 90%; border: round ansi_bright_black; padding: 1 2;
-                   background: ansi_default; scrollbar-color: ansi_bright_black; scrollbar-background: ansi_default; }
+.settings-dialog { width: 68; max-width: 92%; height: 24; max-height: 90%; border: round #a6adc8; padding: 1 2;
+                   background: ansi_default; scrollbar-color: #a6adc8; scrollbar-background: ansi_default; }
 ModelPickerScreen .settings-dialog { height: auto; }
 .dialog-title { height: 1; margin-bottom: 0; text-style: bold; }
-.dialog-note { height: auto; margin-top: 1; margin-bottom: 0; color: ansi_bright_black; }
+.dialog-note { height: auto; margin-top: 1; margin-bottom: 0; color: #a6adc8; }
 .dialog-scroll { height: 1fr; padding-right: 1; scrollbar-size-vertical: 1; }
-.section-title { height: 1; margin-top: 1; color: #e07b39; text-style: bold; }
-.settings-dialog Label { height: 1; margin-top: 1; color: ansi_bright_black; }
+.section-title { height: 1; margin-top: 1; color: #cba6f7; text-style: bold; }
+.settings-dialog Label { height: 1; margin-top: 1; color: #a6adc8; }
 .field-row { height: 2; }
-.settings-dialog .field-label { width: 10; height: 1; margin-top: 0; color: ansi_bright_black; content-align: left middle; }
+.settings-dialog .field-label { width: 10; height: 1; margin-top: 0; color: #a6adc8; content-align: left middle; }
 .settings-dialog .field-input { width: 1fr; height: 1; margin: 0; padding: 0 1; border: none; background: ansi_default; color: ansi_default; text-style: underline; }
 .settings-dialog .field-input:focus { border: none; background: ansi_default; text-style: bold underline; }
-.settings-dialog Input, .settings-dialog Select { height: 3; margin: 0; background: ansi_default; color: ansi_default; border: round ansi_bright_black; }
+.settings-dialog Input, .settings-dialog Select { height: 3; margin: 0; background: ansi_default; color: ansi_default; border: round #a6adc8; }
 .settings-dialog Input { padding: 0 1; }
-.settings-dialog Input > .input--placeholder { color: ansi_bright_black; }
-.settings-dialog Input:focus, .settings-dialog Select:focus { border: round #e07b39; background: ansi_default; color: ansi_default; }
+.settings-dialog Input > .input--placeholder { color: #a6adc8; }
+.settings-dialog Input:focus, .settings-dialog Select:focus { border: round #cba6f7; background: ansi_default; color: ansi_default; }
 .settings-dialog Select.field-input { height: 1; border: none; background: ansi_default; }
 .settings-dialog Select.field-input SelectCurrent { height: 1; padding: 0 1; border: none; background: ansi_default; color: ansi_default; }
-.settings-dialog SelectCurrent .arrow { color: ansi_bright_black; }
+.settings-dialog SelectCurrent .arrow { color: #a6adc8; }
 .settings-dialog Checkbox { height: auto; margin-top: 1; padding: 0; border: none; background: ansi_default; color: ansi_default; }
 .settings-dialog Collapsible { padding: 0; margin-top: 1; border: none; background: ansi_default; }
-.settings-dialog CollapsibleTitle { background: ansi_default; color: ansi_bright_black; padding: 0 1; }
+.settings-dialog CollapsibleTitle { background: ansi_default; color: #a6adc8; padding: 0 1; }
 .settings-dialog CollapsibleTitle:hover { color: ansi_default; background: ansi_default; }
-.dialog-actions { height: 2; min-height: 2; margin-top: 1; border-top: solid ansi_bright_black; align-horizontal: right; }
+.dialog-actions { height: 2; min-height: 2; margin-top: 1; border-top: solid #a6adc8; align-horizontal: right; }
 .dialog-actions Button { min-width: 10; height: 1; min-height: 1; margin-left: 1; margin-right: 0; padding: 0 1; border: none;
-                         background: ansi_default; color: ansi_bright_black; }
+                         background: ansi_default; color: #a6adc8; }
 .dialog-actions Button:hover, .dialog-actions Button:focus { color: ansi_default; background: ansi_default; text-style: bold; }
-.dialog-actions Button.-primary { background: ansi_default; color: #e07b39; text-style: bold; }
+.dialog-actions Button.-primary { background: ansi_default; color: #cba6f7; text-style: bold; }
 .dialog-actions Button.-primary:hover, .dialog-actions Button.-primary:focus { background: ansi_default; text-style: bold reverse; }
 #model-filter { margin-bottom: 1; }
 #model-options { height: auto; min-height: 1; max-height: 7; margin: 0; scrollbar-size-vertical: 1; background: ansi_default; border: none; }
 #model-options > .option-list--option { padding: 0 1; color: ansi_default; }
 #model-options > .option-list--option-highlighted { background: ansi_default; color: ansi_default; text-style: bold reverse; }
-#model-count { height: 1; margin-top: 1; color: ansi_bright_black; }
+#model-count { height: 1; margin-top: 1; color: #a6adc8; }
 #config-error { height: auto; max-height: 3; color: ansi_red; }

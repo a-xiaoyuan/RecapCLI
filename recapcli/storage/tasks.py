@@ -143,6 +143,7 @@ class TaskStore:
         try:
             connection = sqlite3.connect(self.path.as_uri() + f"?mode={mode}", uri=True, timeout=5)
             connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA temp_store=MEMORY")
             connection.execute("PRAGMA foreign_keys=ON")
             with connection:
                 yield connection

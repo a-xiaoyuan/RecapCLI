@@ -12,7 +12,7 @@ from textual.widgets import Button, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ..ui.terminal_ui import clean_output
-from .theme import PALETTE, render_answer, render_line
+from .theme import PALETTE, gradient_text, progress_bar, render_answer, render_line
 
 
 class GlyphButton(Static):
@@ -57,7 +57,7 @@ class ConversationLine(Static):
         if self.kind == "assistant":
             rendered = render_answer(shown, self.task_status)
         elif self.kind == "user":
-            rendered = Text.assemble(("› ", "bold " + PALETTE["accent"]), (shown, "bold"), overflow="fold")
+            rendered = Text.assemble(("❯ ", "bold " + PALETTE["accent"]), shown, overflow="fold")
         else:
             rendered = render_line(shown, self.kind)
         self.update(rendered)
@@ -204,16 +204,28 @@ class ApprovalMenu(OptionList):
     def __init__(self, **kwargs):
         super().__init__(markup=False, **kwargs)
         self.values = []
+        self.labels = []
         self.display = False
+
+    def _prompt(self, index):
+        marker = "❯ " if index == self.highlighted else "  "
+        return Text(f"{marker}{index + 1}. {self.labels[index]}", no_wrap=True, overflow="ellipsis")
 
     def show_choices(self, choices):
         self.values = [value for value, _ in choices]
+        self.labels = [label for _, label in choices]
         self.clear_options()
-        for index, (_, label) in enumerate(choices, 1):
-            self.add_option(Option(Text(f"{index}. {label}", no_wrap=True, overflow="ellipsis")))
+        self.highlighted = None
+        for index in range(len(choices)):
+            self.add_option(Option(self._prompt(index)))
         self.styles.height = len(choices)
         self.display = True
         self.highlighted = 0
+
+    def on_option_list_option_highlighted(self, event):
+        event.stop()
+        for index in range(len(self.labels)):
+            self.replace_option_prompt_at_index(index, self._prompt(index))
 
 
 class ToolProgress(Static):
@@ -222,6 +234,11 @@ class ToolProgress(Static):
     FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     INDEX_TOOLS = {"search_code_index", "search_symbols"}
     MAX_VISIBLE_TOOLS = 8
+    VERBS = {"read_file": "读取", "list_directory": "目录", "find_files": "查找", "search_text": "搜索",
+             "search_symbols": "符号", "search_code_index": "检索", "repository_map": "地图",
+             "find_references": "引用", "edit_file": "编辑", "edit_files": "批量编辑", "undo_edit": "撤销",
+             "restore_file": "恢复", "run_command": "运行", "command_status": "查看命令", "command_input": "输入",
+             "stop_command": "停止", "web_search": "网页搜索", "read_url": "读取网页"}
     PROBLEMS = {"failed", "warning", "unknown", "skipped"}
 
     def __init__(self):
@@ -285,10 +302,12 @@ class ToolProgress(Static):
         running = any(row["state"] == "running" for row in self.rows)
         if self._timer is not None:
             self._timer.resume() if running else self._timer.pause()
+        tools = [row for row in self.rows if row["kind"] == "tool"]
+        # 没用工具的一轮不需要过程信息，回答本身就够了。
+        self.display = bool(tools) or running
         if not self.rows:
             self.update("")
             return
-        tools = [row for row in self.rows if row["kind"] == "tool"]
         requests = sum(row["kind"] == "request" for row in self.rows)
         reads = sum(row["label"].split(" ", 1)[0] in {"read_file", "find_files", "list_directory"} for row in tools)
         searches = sum(row["label"].split(" ", 1)[0] in self.INDEX_TOOLS for row in tools)
@@ -312,11 +331,10 @@ class ToolProgress(Static):
                 text.append(request["role"] + " · ", style=PALETTE["muted"])
             text.append(request["label"] + "\n")
         if running:
-            text.append("  ⎿ " + " · ".join(parts), style=PALETTE["muted"])
+            text.append("  └ " + " · ".join(parts), style=PALETTE["muted"])
         else:
             elapsed = time.monotonic() - self._started
-            text.append("✓ ", style=PALETTE["online"])
-            text.append(" · ".join(parts) + f" · {elapsed:.1f}s", style=PALETTE["muted"])
+            text.append("  └ " + " · ".join(parts) + f" · {elapsed:.1f}s", style=PALETTE["muted"])
         self.update(text)
 
     def _tool_line(self, text, row):
@@ -326,13 +344,43 @@ class ToolProgress(Static):
         text.append(glyph + " ", style=color)
         if row["role"]:
             text.append(row["role"] + " · ", style=PALETTE["muted"])
-        text.append(row["label"])
+        name, _, target = row["label"].partition(" · ")
+        text.append(self.VERBS.get(name, name))
+        if target:
+            text.append("  " + target, style=PALETTE["muted"])
         if row["duration"] is not None and row["duration"] >= 1:
             text.append(f" · {row['duration']:.1f}s", style=PALETTE["muted"])
         if row["detail"]:
-            text.append("\n  ⎿ ", style=PALETTE["muted"])
+            text.append("\n  └ ", style=PALETTE["muted"])
             text.append(row["detail"], style=PALETTE["muted"] if state == "done" else color)
         text.append("\n")
+
+
+class GradientLogo(Static):
+    """渐变字标：启动时流动一小段，然后静止，不占用后续刷新。"""
+
+    FRAMES = 36
+
+    def __init__(self, art, **kwargs):
+        super().__init__("", markup=False, **kwargs)
+        lines = art.split("\n")
+        width = max(len(line) for line in lines)
+        self.art = "\n".join(line.ljust(width) for line in lines)
+        self._frame = 0
+        self._timer = None
+
+    def on_mount(self):
+        self._draw()
+        self._timer = self.set_interval(0.07, self._advance)
+
+    def _draw(self):
+        self.update(gradient_text(self.art, self._frame / self.FRAMES))
+
+    def _advance(self):
+        self._frame += 1
+        self._draw()
+        if self._frame >= self.FRAMES:
+            self._timer.stop()
 
 
 class TodoPanel(Static):
@@ -347,7 +395,9 @@ class TodoPanel(Static):
         lines = [line for line in body.splitlines() if line.strip()]
         done = sum(line.startswith("☑") for line in lines)
         text = Text()
-        text.append("待办", style="bold")
+        text.append("待办", style="bold " + PALETTE["accent"])
+        text.append("  ")
+        text.append_text(progress_bar(done, len(lines), 10))
         text.append(f"  {done}/{len(lines)}", style=PALETTE["muted"])
         for line in lines:
             mark, _, content = line.partition(" ")
@@ -356,7 +406,7 @@ class TodoPanel(Static):
                 text.append("☑ " + content, style=PALETTE["muted"] + " strike")
             elif mark == "◐":
                 text.append("◐ ", style=PALETTE["accent"])
-                text.append(content, style="bold")
+                text.append(content)
             else:
                 text.append("☐ " + content)
         self.update(text)

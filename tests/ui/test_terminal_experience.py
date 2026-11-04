@@ -31,7 +31,8 @@ COMMAND_SUMMARY = "\n".join([
 class RenderingTests(unittest.TestCase):
     def test_edit_approval_shows_diff_and_hides_fingerprints(self):
         shown = render_approval(EDIT_SUMMARY).plain
-        self.assertIn("需要批准 · edit_file", shown)
+        self.assertIn("需要批准  edit_file", shown)
+        self.assertIn("a.py  +1 -1", shown)
         self.assertIn("-x\n+y", shown)
         for hidden in ("deadbeef", "secret-place", "--- a/a.py", "请输入"):
             self.assertNotIn(hidden, shown)
@@ -45,8 +46,8 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("请审批", render_approval("请审批").plain)
 
     def test_events_drop_internal_tags(self):
-        self.assertEqual(render_line("[操作] 已修改 a.py", "event").plain, "⎿ 已修改 a.py")
-        self.assertEqual(render_line("[差异]\n--- a\n+++ b\n-x\n+y", "event").plain, "-x\n+y")
+        self.assertEqual(render_line("[操作] 已修改 a.py", "event").plain, "└ 已修改 a.py")
+        self.assertEqual(render_line("[差异]\n--- a/a.py\n+++ b/a.py\n-x\n+y", "event").plain, "└ a.py  +1 -1\n-x\n+y")
         self.assertEqual(render_line("[命令输出]\nok", "event").plain, "ok")
 
 
