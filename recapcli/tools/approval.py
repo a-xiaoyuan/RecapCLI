@@ -27,6 +27,7 @@ EXPIRED = "expired"
 CANCELLED = "cancelled"
 INVALIDATED = "invalidated"
 NEEDS_APPROVAL = "needs_approval"
+ALWAYS = "always"  # 交互答复，不是审批结果：批准本次并记住同类操作。
 
 _APPROVER_OUTCOMES = {APPROVED, REJECTED, EXPIRED, CANCELLED, NEEDS_APPROVAL}
 _COMMANDS = {
@@ -42,6 +43,8 @@ _COMMANDS = {
     "取消": CANCELLED,
     "/取消": CANCELLED,
     "/批准": APPROVED,
+    "always": ALWAYS,
+    "/always": ALWAYS,
 }
 _REASONS = {
     APPROVED: "已批准",
@@ -431,16 +434,30 @@ def _read_line_thread(timeout):
     return box.get("line", "")
 
 
-class InteractiveApprover:
-    """交互批准。只认 approve / reject / cancel（及对应中文和斜杠命令）。"""
+def session_rule(request):
+    """本会话可记住的范围：编辑按类别，命令只认完全相同的参数，其他操作每次都问。"""
+    if request.tool in {"edit_file", "edit_files"}:
+        return "edit", "文件编辑"
+    canonical = _canonical(request.params)
+    if request.tool == "run_command" and canonical is not None:
+        return "run_command:" + canonical, "这条完全相同的命令"
+    return None, ""
 
-    def __init__(self, ui, timeout=120, reader=None):
+
+class InteractiveApprover:
+    """交互批准。只认 approve / always / reject / cancel（及对应中文和斜杠命令）。
+
+    allowed 是本会话记住的规则；命中时跳过提问，authorize_action 仍会复核参数和文件指纹。
+    """
+
+    def __init__(self, ui, timeout=120, reader=None, allowed=None):
         if (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout)
                 or not 0 < timeout <= 3600):
             raise ValueError("审批等待时间必须是大于 0 且不超过 3600 的秒数")
         self.ui = ui
         self.timeout = float(timeout)
         self.reader = reader or read_line_with_timeout
+        self.allowed = set() if allowed is None else allowed
 
     def _limit(self, request):
         limit = self.timeout
@@ -451,7 +468,11 @@ class InteractiveApprover:
 
     def __call__(self, request):
         _typed.clear()
-        self.ui.show_approval(request.summary)
+        rule, label = session_rule(request)
+        if rule in self.allowed:
+            self.ui.info(f"[审批] 本会话已允许{label}（{request.tool}）")
+            return APPROVED
+        self.ui.show_approval(request.summary + (f"\n输入 always 可在本会话允许{label}。" if rule else ""))
         limit = self._limit(request)
         self.ui.info(f"等待上限 {limit:g} 秒。请输入 approve、reject 或 cancel。")
         if limit <= 0:
@@ -479,6 +500,12 @@ class InteractiveApprover:
                     time.sleep(slice_wait - elapsed)
                 continue
             outcome = interpret_approval_line(line)
+            if outcome == ALWAYS and rule is None:
+                self.ui.info("这类操作不能在本会话允许，请输入 approve、reject 或 cancel。")
+                continue
+            if outcome == ALWAYS:
+                self.allowed.add(rule)
+                return APPROVED
             if outcome == APPROVED:
                 return APPROVED
             if outcome == REJECTED:

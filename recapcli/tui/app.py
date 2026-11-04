@@ -4,6 +4,7 @@ import asyncio
 import os
 from pathlib import Path
 import queue
+import re
 import threading
 import time
 
@@ -17,14 +18,15 @@ from textual.theme import Theme
 from textual.widgets import OptionList, Static, TextArea
 
 from .driver import Presenter, ShellDriver, ShellOptions
-from .state import ShellState
+from .state import ShellState, workspace_files
 from .status import TaskStatus, task_text, usage_text
 from .theme import PALETTE, render_answer, render_line
-from .widgets import CommandMenu, ConversationView, PromptInput, StatusScreen, TodoPanel, ToolProgress
+from .widgets import ApprovalMenu, CommandMenu, ConversationView, PromptInput, StatusScreen, TodoPanel, ToolProgress
 from .settings import ModelConfigScreen, ModelPickerScreen
 from ..ui.terminal import project_version
 from ..ui.terminal_ui import clean_output
 from ..config import ConfigError, list_model_profiles
+from ..tools.approval import interpret_approval_line
 from ..application.help import command_items, help_text
 from ..core.project_rules import project_rules_description
 from ..application.changes import change_report, git_summary, files_summary, commands_summary
@@ -63,6 +65,9 @@ DEMO_REPLY = (
     "> 编辑与命令执行由启动选项控制，需要时仍会请求审批。\n\n"
     "*界面演示：以上为示例内容，未调用工具或模型。*"
 )
+APPROVAL_GUARD_SECONDS = 0.4  # 菜单刚弹出时用户可能还在打字，这段时间的按键不算决定。
+MENTION_FILES_TTL = 30
+MENTION_LIMIT = 20
 MISSING_CONFIG = "还没有可用的模型配置。按 F3 填写模型、接口地址和 API Key；F2 可选择已有配置。"
 
 
@@ -218,6 +223,9 @@ class RecapShell(App):
         self._activity = ""
         self._approval = False
         self._approval_draft = ""
+        self._approval_since = 0.0
+        self._mention_files = None
+        self._mention_loaded = 0.0
         self._cancel_requested = False
         self._has_new_content = False
         self._response_widget = None
@@ -266,6 +274,7 @@ class RecapShell(App):
                     yield Vertical(id="transcript")
             with Vertical(id="footer"):
                 yield CommandMenu(id="command-menu")
+                yield ApprovalMenu(id="approval-menu")
                 yield Static("", id="command-help", markup=False)
                 yield Static("", id="command-hint", markup=False)
                 with Horizontal(id="status-row"):
@@ -557,7 +566,7 @@ class RecapShell(App):
         if self._cancel_requested:
             hint = "正在停止 · 草稿保留 · ctrl+q 退出"
         elif self._approval:
-            hint = "输入 approve / reject / cancel · esc 停止本轮"
+            hint = "↑↓ 选择 · enter 确认 · 数字键直选 · esc 停止本轮"
         elif self._busy:
             hint = "esc 停止 · 可先写下一条 · ctrl+g 详情"
         elif self.demo:
@@ -597,10 +606,78 @@ class RecapShell(App):
         value = event.text_area.text
         if value == self._command_anchor:
             return
-        if self._busy or self._approval or value == self._command_dismissed or not value.startswith("/") or any(char.isspace() for char in value):
+        mention = None if self._approval or value == self._command_dismissed else self._mention_query(event.text_area)
+        if mention is not None:
+            self._show_mentions(mention)
+        elif self._busy or self._approval or value == self._command_dismissed or not value.startswith("/") or any(char.isspace() for char in value):
             self._hide_commands()
         else:
             self._show_commands("all", value)
+
+    def dismiss_command_menu(self, value):
+        """程序写入输入框的内容（如历史记录）不触发命令列表。"""
+        self._command_dismissed = value
+        self._hide_commands()
+
+    def _mention_query(self, prompt):
+        row, column = prompt.cursor_location
+        match = re.search(r"(?:^|\s)@([^\s@]*)$", prompt.document.get_line(row)[:column])
+        if match is None or match.group(1).startswith("image:"):
+            return None
+        return match.group(1)
+
+    def _mention_candidates(self, query):
+        now = time.monotonic()
+        if self._mention_files is None or now - self._mention_loaded > MENTION_FILES_TTL:
+            self._mention_files = workspace_files(self.state.workspace)
+            self._mention_loaded = now
+        needle = query.casefold()
+        found = [path for path in self._mention_files if needle in path.casefold()]
+        found.sort(key=lambda path: (not path.rsplit("/", 1)[-1].casefold().startswith(needle), len(path), path))
+        return found[:MENTION_LIMIT]
+
+    def _show_mentions(self, query):
+        prompt = self.query_one("#prompt", PromptInput)
+        self._command_anchor = prompt.text
+        menu = self.query_one("#command-menu", CommandMenu)
+        menu.show_commands([("@" + path, "", "", "file") for path in self._mention_candidates(query)],
+                           max(3, min(7, self.size.height // 3)))
+        hint = self.query_one("#command-hint", Static)
+        hint.display = menu.display
+        hint.update("↑↓ 选择 · Tab / Enter 插入路径 · Esc 收起")
+        prompt.suggestion = ""
+
+    def _insert_mention(self, name):
+        prompt = self.query_one("#prompt", PromptInput)
+        row, column = prompt.cursor_location
+        start = prompt.document.get_line(row)[:column].rfind("@")
+        self._hide_commands()
+        prompt.replace(name + " ", (row, start), (row, column))
+        prompt.focus()
+
+    def approval_key(self, event):
+        menu = self.query_one("#approval-menu", ApprovalMenu)
+        if not self._approval or not menu.display or self.query_one("#prompt", PromptInput).text:
+            return False
+        if event.key == "up":
+            menu.action_cursor_up()
+            return True
+        if event.key == "down":
+            menu.action_cursor_down()
+            return True
+        if event.key == "enter":
+            index = menu.highlighted
+        elif event.key.isdigit() and 1 <= int(event.key) <= len(menu.values):
+            index = int(event.key) - 1
+        else:
+            return False
+        if time.monotonic() - self._approval_since >= APPROVAL_GUARD_SECONDS:
+            self._choose_approval(index)
+        return True
+
+    def _choose_approval(self, index):
+        self.approval_queue.put(self.query_one("#approval-menu", ApprovalMenu).values[index])
+        self.end_approval()
 
     def command_menu_key(self, event):
         menu = self.query_one("#command-menu", CommandMenu)
@@ -623,8 +700,11 @@ class RecapShell(App):
         if menu.highlighted is None:
             return
         name, arguments, _, _ = menu.commands[menu.highlighted]
+        if name.startswith("@"):
+            self._insert_mention(name)
+            return
         prompt = self.query_one("#prompt", PromptInput)
-        required = bool(arguments and not (arguments.startswith("[") and arguments.endswith("]")))
+        required =bool(arguments and not (arguments.startswith("[") and arguments.endswith("]")))
         if insert_only or required:
             value = name + (" " if arguments else "")
             self._command_dismissed = value
@@ -644,17 +724,25 @@ class RecapShell(App):
         if event.option_list.id == "command-menu":
             event.stop()
             self._choose_command()
+        elif event.option_list.id == "approval-menu":
+            event.stop()
+            self._choose_approval(event.option_index)
 
     def begin_approval(self, message):
         self._hide_commands()
         if len(self.screen_stack) > 1:
             self.pop_screen()
-        self.append_line(message, "event")
+        self.append_line(message, "approval")
         self._approval = True
+        self._approval_since = time.monotonic()
         prompt = self.query_one("#prompt", PromptInput)
         self._approval_draft = prompt.text
         prompt.load_text("")
-        prompt.placeholder = "approve、reject 或 cancel"
+        prompt.placeholder = "也可输入 approve、reject 或 cancel"
+        remember = re.search(r"^输入 always 可在本会话允许(.+)。$", message, re.MULTILINE)
+        self.query_one("#approval-menu", ApprovalMenu).show_choices(
+            [("approve", "批准")] + ([("always", f"批准，本会话允许{remember.group(1)}")] if remember else [])
+            + [("reject", "拒绝")])
         prompt.focus()
         self._refresh_status()
 
@@ -662,6 +750,7 @@ class RecapShell(App):
         if self._approval:
             self.query_one("#prompt", PromptInput).load_text(self._approval_draft)
             self._approval_draft = ""
+        self.query_one("#approval-menu", ApprovalMenu).display = False
         self._approval = False
         if self._busy:
             self.query_one("#prompt", PromptInput).placeholder = "可先写下一条问题，Esc 停止本轮…"
@@ -728,6 +817,8 @@ class RecapShell(App):
         if self._approval:
             if value:
                 self.approval_queue.put(value)
+                if interpret_approval_line(value) is not None:
+                    self.end_approval()
             return
         if self._busy:
             if value:
@@ -766,6 +857,8 @@ class RecapShell(App):
             if value:
                 self.notify("本轮仍在处理，Esc 停止后可发送；草稿已保留。")
             return
+        if not self._approval:
+            prompt.remember(value)
         prompt.load_text("")
         self._submit_value(value)
         if len(self.screen_stack) == 1:

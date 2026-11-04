@@ -45,7 +45,8 @@ COMMANDS = (
 COMMON = {"/model", "/config", "/new", "/open", "/tasks", "/diff", "/copy", "/mcp", "/help", "/exit"}
 GROUPS = {"common": "常用", "models": "模型", "sessions": "会话", "tasks": "任务与审批", "memory": "记忆", "keys": "快捷键"}
 KEYS = """Enter 发送 · Shift+Enter / Ctrl+J 换行
-↑↓ 选择命令 · Tab 补全 · Esc 收起列表
+↑↓ 选择命令或翻阅已发送内容 · Tab 补全 · Esc 收起列表
+@ 补全项目文件路径 · 审批时 ↑↓ 选择、Enter 确认、数字键直选
 Esc 停止本轮 · Ctrl+Q 保存退出（忙时等待在途操作返回）
 Ctrl+G 任务详情与用量 · Ctrl+L 清屏
 Ctrl+A 全选输入；输入为空时全选对话 · Ctrl+C 复制

@@ -5,11 +5,13 @@
 """
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import subprocess
 
 from ..config import ConfigError, list_model_profiles
 from ..storage.files import data_root
+from ..tools.filesystem import sensitive_path
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,27 @@ class ShellState:
         """本地模型与密钥配置齐全；不代表接口已经探测可用。"""
         profile = self.active_profile
         return bool(profile and profile.get("configured"))
+
+
+def workspace_files(workspace, limit=5000):
+    """@ 补全的候选：优先 git 列出的文件（遵守 .gitignore），不列凭据路径。"""
+    workspace = Path(workspace)
+    try:
+        result = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", str(workspace),
+                                 "ls-files", "-co", "--exclude-standard"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                stdin=subprocess.DEVNULL, timeout=2, check=False)
+        paths = result.stdout.splitlines() if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        paths = None
+    if paths is None:
+        paths = []
+        for root, directories, files in os.walk(workspace):
+            directories[:] = [name for name in directories if not name.startswith(".")]
+            paths.extend((Path(root) / name).relative_to(workspace).as_posix() for name in files)
+            if len(paths) >= limit:
+                break
+    return [path for path in paths[:limit] if not sensitive_path(path)]
 
 
 def _sessions(workspace):

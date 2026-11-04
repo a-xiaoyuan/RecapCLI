@@ -308,11 +308,43 @@ class LineReaderTests(unittest.TestCase):
 
     def test_late_console_approval_is_accepted_and_expired_text_does_not_leak(self):
         ui = types.SimpleNamespace(show_approval=lambda text: None, info=lambda text: None)
-        request = types.SimpleNamespace(summary="", time_remaining=None, check=None)
+        request = types.SimpleNamespace(tool="edit_file", params={}, summary="", time_remaining=None, check=None)
         with patch.dict(sys.modules, {"msvcrt": self.console("x")}):
             self.assertEqual(InteractiveApprover(ui, timeout=0.05, reader=_read_console_line)(request), EXPIRED)
         with patch.dict(sys.modules, {"msvcrt": self.console(*"approve\r")}):
             self.assertEqual(InteractiveApprover(ui, timeout=5, reader=_read_console_line)(request), APPROVED)
+
+
+class SessionRuleTests(unittest.TestCase):
+    def setUp(self):
+        self.shown = []
+        self.ui = types.SimpleNamespace(show_approval=self.shown.append, info=lambda text: None)
+        self.allowed = set()
+
+    def ask(self, tool, params, *answers):
+        replies = iter(answers)
+        approver = InteractiveApprover(self.ui, timeout=5, reader=lambda remaining: next(replies), allowed=self.allowed)
+        request = types.SimpleNamespace(tool=tool, params=params, summary="摘要", time_remaining=None, check=None)
+        return approver(request)
+
+    def test_edit_rule_covers_later_edits_without_asking(self):
+        self.assertEqual(self.ask("edit_file", {"path": "a.py"}, "always"), APPROVED)
+        self.assertIn("输入 always 可在本会话允许文件编辑", self.shown[0])
+        self.assertEqual(self.ask("edit_files", {"edits": []}), APPROVED)
+        self.assertEqual(len(self.shown), 1)
+
+    def test_command_rule_only_matches_identical_parameters(self):
+        command = {"argv": ["python", "-m", "unittest"], "cwd": "."}
+        self.assertEqual(self.ask("run_command", command, "always"), APPROVED)
+        self.assertEqual(self.ask("run_command", dict(command)), APPROVED)
+        other = {"argv": ["python", "-c", "print(1)"], "cwd": "."}
+        self.assertEqual(self.ask("run_command", other, "reject"), "rejected")
+        self.assertEqual(len(self.shown), 2)
+
+    def test_other_tools_cannot_be_remembered(self):
+        self.assertEqual(self.ask("stop_command", {"record_id": "x"}, "always", "approve"), APPROVED)
+        self.assertNotIn("always", self.shown[0])
+        self.assertFalse(self.allowed)
 
 
 class ApprovalFlowTests(unittest.TestCase):

@@ -25,9 +25,43 @@ class PromptInput(TextArea):
     def __init__(self, **kwargs):
         super().__init__(soft_wrap=True, tab_behavior="focus", compact=True,
                          highlight_cursor_line=False, **kwargs)
+        self.sent = []
+        self._recall_index = None
+        self._recall_draft = ""
+
+    def remember(self, value):
+        if value.strip() and (not self.sent or self.sent[-1] != value):
+            self.sent.append(value)
+        self._recall_index = None
+
+    def recall(self, step):
+        """step 为 -1 向前翻历史；翻过最新一条时恢复未发送的草稿。"""
+        if self._recall_index is None:
+            if step > 0 or not self.sent:
+                return False
+            self._recall_draft = self.text
+            index = len(self.sent) - 1
+        else:
+            index = self._recall_index + step
+        if index < 0:
+            return True
+        self._recall_index = index if index < len(self.sent) else None
+        value = self._recall_draft if self._recall_index is None else self.sent[index]
+        self.app.dismiss_command_menu(value)
+        self.load_text(value)
+        self.move_cursor(self.document.end)
+        return True
+
+    def _history_key(self, event):
+        if event.key == "up" and self.cursor_location[0] == 0:
+            return self.recall(-1)
+        if (event.key == "down" and self._recall_index is not None
+                and self.cursor_location[0] == self.document.line_count - 1):
+            return self.recall(1)
+        return False
 
     async def _on_key(self, event: events.Key):
-        if self.app.command_menu_key(event):
+        if self.app.approval_key(event) or self.app.command_menu_key(event) or self._history_key(event):
             event.stop()
             event.prevent_default()
         elif event.key == "enter":
@@ -104,11 +138,33 @@ class CommandMenu(OptionList):
             self.highlighted = 0
 
 
+class ApprovalMenu(OptionList):
+    """审批选项；与输入共用焦点，所以用户仍可手动输入 approve / reject / cancel。"""
+
+    can_focus = False
+
+    def __init__(self, **kwargs):
+        super().__init__(markup=False, **kwargs)
+        self.values = []
+        self.display = False
+
+    def show_choices(self, choices):
+        self.values = [value for value, _ in choices]
+        self.clear_options()
+        for index, (_, label) in enumerate(choices, 1):
+            self.add_option(Option(Text(f"{index}. {label}", no_wrap=True, overflow="ellipsis")))
+        self.styles.height = len(choices)
+        self.display = True
+        self.highlighted = 0
+
+
 class ToolProgress(Static):
-    """同一轮的模型请求与工具调用：运行中显示当前一项，结束后收成一行摘要；失败与未知单列。"""
+    """同一轮的工具调用逐行列出，太长时只留最近几条和有问题的；末行是当前动作或摘要。"""
 
     FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     INDEX_TOOLS = {"search_code_index", "search_symbols"}
+    MAX_VISIBLE_TOOLS = 8
+    PROBLEMS = {"failed", "warning", "unknown", "skipped"}
 
     def __init__(self):
         super().__init__("", classes="turn progress-turn", markup=False)
@@ -184,29 +240,41 @@ class ToolProgress(Static):
         if searches:
             parts.append(f"搜索 {searches}")
         text = Text(no_wrap=False)
-        active = next((row for row in reversed(self.rows) if row["state"] == "running"), None)
-        if active is not None:
+        recent = len(tools) - self.MAX_VISIBLE_TOOLS
+        shown = [row for index, row in enumerate(tools) if index >= recent or row["state"] in self.PROBLEMS]
+        if len(shown) < len(tools):
+            text.append(f"… 还有 {len(tools) - len(shown)} 次工具调用，Ctrl+G 查看任务详情\n", style=PALETTE["muted"])
+        for row in shown:
+            self._tool_line(text, row)
+        request = next((row for row in reversed(self.rows)
+                        if row["kind"] == "request" and row["state"] == "running"), None)
+        if request is not None:
             text.append(self.FRAMES[self._frame] + " ", style=PALETTE["accent"])
-            if active["role"]:
-                text.append(active["role"] + " · ", style=PALETTE["muted"])
-            text.append(active["label"] + "\n")
+            if request["role"]:
+                text.append(request["role"] + " · ", style=PALETTE["muted"])
+            text.append(request["label"] + "\n")
+        if running:
             text.append("  ⎿ " + " · ".join(parts), style=PALETTE["muted"])
         else:
             elapsed = time.monotonic() - self._started
             text.append("✓ ", style=PALETTE["online"])
             text.append(" · ".join(parts) + f" · {elapsed:.1f}s", style=PALETTE["muted"])
-        for row in self.rows:
-            if row["state"] not in {"failed", "warning", "unknown", "skipped"}:
-                continue
-            color = PALETTE["error"] if row["state"] == "failed" else PALETTE["warning"]
-            text.append("\n  ⎿ ", style=PALETTE["muted"])
-            text.append("✗ " if row["state"] == "failed" else "! ", style=color)
-            if row["role"]:
-                text.append(row["role"] + " · ", style=PALETTE["muted"])
-            text.append(row["label"])
-            if row["detail"]:
-                text.append(" · " + row["detail"], style=color)
         self.update(text)
+
+    def _tool_line(self, text, row):
+        state = row["state"]
+        color = {"running": PALETTE["accent"], "done": PALETTE["online"], "failed": PALETTE["error"]}.get(state, PALETTE["warning"])
+        glyph = {"running": self.FRAMES[self._frame], "done": "●", "failed": "✗"}.get(state, "!")
+        text.append(glyph + " ", style=color)
+        if row["role"]:
+            text.append(row["role"] + " · ", style=PALETTE["muted"])
+        text.append(row["label"])
+        if row["duration"] is not None and row["duration"] >= 1:
+            text.append(f" · {row['duration']:.1f}s", style=PALETTE["muted"])
+        if row["detail"]:
+            text.append("\n  ⎿ ", style=PALETTE["muted"])
+            text.append(row["detail"], style=PALETTE["muted"] if state == "done" else color)
+        text.append("\n")
 
 
 class TodoPanel(Static):

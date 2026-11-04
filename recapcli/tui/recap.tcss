@@ -19,6 +19,7 @@ Screen { background: ansi_default; color: ansi_default; }
 .progress-turn, .todo-turn { padding-left: 2; }
 .info-turn, .event-turn { color: ansi_bright_black; padding-left: 2; }
 .error-turn { color: ansi_red; padding-left: 2; }
+.approval-turn { padding-left: 2; }
 
 /* 输入区：一条灰色圆角框；忙碌状态与按键提示在框外一行。 */
 #footer { width: 1fr; height: auto; padding: 0 2 0 2; background: ansi_default; }
@@ -41,6 +42,9 @@ Screen { background: ansi_default; color: ansi_default; }
                 background: ansi_default; scrollbar-size-vertical: 1; }
 #command-menu > .option-list--option { padding: 0; }
 #command-menu > .option-list--option-highlighted { background: ansi_default; color: ansi_default; text-style: bold reverse; }
+#approval-menu { display: none; width: 1fr; height: auto; margin: 0 0 1 0; border: none; padding: 0 1; background: ansi_default; }
+#approval-menu > .option-list--option { padding: 0; }
+#approval-menu > .option-list--option-highlighted { background: ansi_default; color: #e07b39; text-style: bold; }
 #command-help { display: none; width: 1fr; height: auto; max-height: 7; margin: 0; padding: 0 1; color: ansi_bright_black; }
 #command-hint { display: none; width: 1fr; height: 1; margin: 0; padding: 0 1; color: ansi_bright_black; }
 

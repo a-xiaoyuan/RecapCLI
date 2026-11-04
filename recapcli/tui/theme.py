@@ -4,6 +4,8 @@
 次要信息用 ANSI 灰，只保留一个强调色。
 """
 
+import json
+
 from rich.markdown import BlockQuote, Heading, Markdown
 from rich.segment import Segment
 from rich.style import Style
@@ -84,8 +86,49 @@ def render_answer(content, task=None):
     return BulletAnswer(body, _metrics(task))
 
 
+def _diff_body(lines):
+    return "\n".join(line for line in lines if not line.startswith(("--- ", "+++ ")))
+
+
+def _style_diff(text):
+    text.highlight_regex(r"(?m)^\+(?!\+).*$", PALETTE["online"])
+    text.highlight_regex(r"(?m)^-(?!-).*$", PALETTE["error"])
+    text.highlight_regex(r"(?m)^@@.*$", PALETTE["accent"])
+
+
+def render_approval(content):
+    """只留做决定需要的内容：操作和差异。工作区、文件指纹保留在任务记录里。"""
+    lines = clean_output(content).split("\n")
+    fields = {line.split("：", 1)[0]: line.split("：", 1)[1] for line in lines if "：" in line}
+    if "工具" not in fields:
+        return render_line(content, "event")
+    text = Text("● ", style=PALETTE["accent"])
+    text.append("需要批准", style="bold")
+    text.append(" · " + fields["工具"], style=PALETTE["muted"])
+    start = lines.index("差异提示：") + 1 if "差异提示：" in lines else len(lines)
+    end = next((index for index, line in enumerate(lines) if line.startswith("请输入 approve")), len(lines))
+    command = None
+    try:
+        params = json.loads(fields.get("参数", ""))
+        command = params.get("argv") if isinstance(params, dict) else None
+    except ValueError:
+        params = None
+    if isinstance(command, list):
+        cwd = params.get("cwd", ".")
+        text.append("\n$ " + " ".join(str(item) for item in command) + ("" if cwd == "." else f"  （{cwd}）"))
+    elif start >= end:
+        text.append("\n" + fields.get("参数", ""), style=PALETTE["muted"])
+    if start < end and not isinstance(command, list):
+        body = Text("\n" + _diff_body(lines[start:end]), style=PALETTE["muted"])
+        _style_diff(body)
+        text.append_text(body)
+    return text
+
+
 def render_line(content, kind):
     """纯文字行；用户输入和模型输出都先移除终端控制字符。"""
+    if kind == "approval":
+        return render_approval(content)
     text_value = clean_output(content)
     if kind == "user":
         text = Text("› ", style="bold " + PALETTE["accent"])
@@ -97,11 +140,14 @@ def render_line(content, kind):
         text = Text(text_value, style=PALETTE["error"])
     elif kind == "event":
         head = text_value.split("\n", 1)[0]
-        text = Text(text_value, style=PALETTE["error"] if "失败" in head else PALETTE["muted"])
         if text_value.startswith("[差异]\n"):
-            text.highlight_regex(r"(?m)^\+(?!\+).*$", PALETTE["online"])
-            text.highlight_regex(r"(?m)^-(?!-).*$", PALETTE["error"])
-            text.highlight_regex(r"(?m)^@@.*$", PALETTE["accent"])
+            text = Text(_diff_body(text_value.split("\n")[1:]), style=PALETTE["muted"])
+            _style_diff(text)
+        elif text_value.startswith("[操作] "):
+            text = Text("⎿ " + text_value.removeprefix("[操作] "), style=PALETTE["muted"])
+        else:
+            text = Text(text_value.removeprefix("[命令输出]\n"),
+                        style=PALETTE["error"] if "失败" in head else PALETTE["muted"])
     else:
         text = Text(text_value, style=PALETTE["muted"])
     return text

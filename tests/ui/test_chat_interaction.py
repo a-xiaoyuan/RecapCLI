@@ -115,8 +115,8 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
             shown = rendered_text(app._progress_widget)
             self.assertIn("模型请求 1 次", shown)
             self.assertIn("工具 3 次", shown)
-            self.assertNotIn("README.md", shown)
-            self.assertNotIn("pyproject.toml", shown)
+            self.assertIn("README.md", shown)
+            self.assertIn("pyproject.toml", shown)
             app._unlock()
 
     async def test_tool_progress_distinguishes_success_failure_and_unknown_outcomes(self):

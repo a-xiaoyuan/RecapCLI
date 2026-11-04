@@ -112,6 +112,7 @@ class ShellDriver:
         self.client = None
         self.model = None
         self.quitting = False
+        self.session_rules = set()  # 用户选择“本会话允许”的审批规则，换会话时清空。
         self.cancel_event = threading.Event()
         self.mcp_manager = None
 
@@ -321,6 +322,7 @@ class ShellDriver:
             return
         self.session = updated
         if updated.get("id") != before:
+            self.session_rules.clear()
             self.presenter.replace_transcript(())
             self.presenter.info(f"已开始新会话：{updated['id']}")
 
@@ -340,6 +342,7 @@ class ShellDriver:
             self.presenter.error(f"未能恢复会话：{error}")
             return
         self.session = loaded
+        self.session_rules.clear()
         if loaded.get("model"):
             self.model = loaded["model"]
             self.presenter.model_changed(loaded["model"], self.ready)
@@ -418,7 +421,8 @@ class ShellDriver:
 
     def _approver(self):
         return approve_all if self.options.yes else InteractiveApprover(
-            self.presenter, timeout=self.options.approval_timeout, reader=self.presenter.read_approval)
+            self.presenter, timeout=self.options.approval_timeout, reader=self.presenter.read_approval,
+            allowed=self.session_rules)
 
     def _require_client(self, *, sending, profile=None):
         if self.client is not None:
