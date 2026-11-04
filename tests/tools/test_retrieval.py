@@ -75,7 +75,7 @@ class RetrievalTests(unittest.TestCase):
                 self.assertIn(name, self.read_match(result["matches"][0]))
 
     def test_external_index_keeps_scope_and_cached_results_separate(self):
-        from recapcli.core.access import PathAccess
+        from recapcli.base.access import PathAccess
         (self.workspace / "local.py").write_text("# shared marker\ndef local(): pass\n", encoding="utf-8")
         with tempfile.TemporaryDirectory() as other:
             target = Path(other) / "App.java"

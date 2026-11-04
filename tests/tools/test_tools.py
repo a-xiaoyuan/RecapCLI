@@ -46,7 +46,7 @@ class ToolBoundaryTests(unittest.TestCase):
             self.assertNotEqual(path.resolve(), credentials)
             return real_open(path, *args, **kwargs)
 
-        with patch("recapcli.tools.filesystem.ENV_FILE", credentials), patch.object(Path, "open", new=guarded_open):
+        with patch("recapcli.base.paths.ENV_FILE", credentials), patch.object(Path, "open", new=guarded_open):
             self.assertFalse(self.call("read_file", path=".env")["ok"])
             self.assertFalse(self.call("search_text", query="OPENAI_API_KEY", path=".env")["ok"])
             result = self.call("search_text", query="OPENAI_API_KEY")

@@ -3,11 +3,9 @@
 from contextlib import contextmanager
 import os
 import sys
-import tomllib
-from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 
-from ..config import PROJECT_ROOT
+from ..base.version import project_version
 
 ACCENT = "\033[38;2;217;119;87m"
 MUTED = "\033[90m"
@@ -16,18 +14,6 @@ RESET = "\033[0m"
 
 def _clean(text):
     return "".join(char if char.isprintable() else "?" for char in str(text))
-
-
-def project_version():
-    try:
-        return distribution_version("recapcli")
-    except PackageNotFoundError:
-        pass
-    try:
-        with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
-            return str(tomllib.load(file)["project"]["version"])
-    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
-        return None
 
 
 def title():

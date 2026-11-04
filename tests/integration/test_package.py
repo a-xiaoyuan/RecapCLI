@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from recapcli.config import load_config
-from recapcli.tools import filesystem
+from recapcli.base import paths as filesystem
 
 
 PROJECT_ROOT = next(path for path in Path(__file__).resolve().parents if (path / "pyproject.toml").is_file())

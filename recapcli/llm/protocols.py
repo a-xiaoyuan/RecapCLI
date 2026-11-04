@@ -5,6 +5,7 @@ import json
 
 from openai.types.chat import ChatCompletion
 
+from ..base.tokens import estimate_tokens
 from .images import wire_messages
 from .streaming import chat_stream, responses_stream
 
@@ -200,7 +201,6 @@ def _responses_completion(response, model, origin):
 def _check_context(messages, context_tokens):
     """最后一道防线：Agent 已按校准后的 token 控制大小，这里只拦截明显超出窗口的请求。"""
     if context_tokens is not None:
-        from ..core.context import estimate_tokens
         if estimate_tokens(messages) > context_tokens * 1.25:
             raise ValueError("转换后的模型消息明显超过上下文窗口，未发送请求")
 

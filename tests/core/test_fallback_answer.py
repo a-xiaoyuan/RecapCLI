@@ -8,7 +8,8 @@ import unittest
 import httpx2
 from openai import OpenAI
 
-from recapcli.core.agent import _edited_paths, run_agent
+from recapcli.core.agent import run_agent
+from recapcli.core.results import edited_paths as _edited_paths
 from recapcli.tools.approval import approve_all, fail_closed
 
 

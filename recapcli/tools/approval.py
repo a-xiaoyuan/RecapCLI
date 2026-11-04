@@ -16,8 +16,8 @@ import sys
 import threading
 import time
 
-from ..storage.files import data_root
-from ..core.access import AccessDenied
+from ..base.files import data_root
+from ..base.access import AccessDenied, register_directory_authorizer
 from .editing import _hash, _plan_edit, _plan_edits, _read_bytes, _target, _undo_records
 from .filesystem import ToolError, _relative
 
@@ -350,6 +350,16 @@ def authorize_action(tool, workspace, params, *, approver, on_approval=None, tim
         return None
     return {"ok": False, "status": outcome, "approval": outcome, "error": f"{reason}（{tool}）",
             "tool": tool, "fingerprints": fresh_fp if outcome == INVALIDATED else original_fp}
+
+
+def _authorize_directory(workspace, directory, approver, on_approval, time_remaining):
+    return authorize_action("access_directory", workspace, {
+        "directory": str(directory),
+        "scope": "授权本次运行访问此目录及子目录；写入和命令仍需对应能力及审批",
+    }, approver=approver or fail_closed, on_approval=on_approval, time_remaining=time_remaining)
+
+
+register_directory_authorizer(_authorize_directory)
 
 
 def read_line_with_timeout(timeout, stream=None):

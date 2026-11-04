@@ -6,8 +6,8 @@ from pathlib import Path
 import sqlite3
 import time
 
-from ..storage.files import state_directory
-from ..core.access import access_root
+from ..base.files import state_directory
+from ..base.access import access_root
 from .symbols import extract_symbols, extract_references, LANGUAGES, KINDS
 from .filesystem import (MAX_FILE_BYTES, MAX_SEARCH_FILE_BYTES, ScanBudget, ScanLimit,
                                ToolError, _checked_target, _relative, _resolve, _walk_files, file_reference)

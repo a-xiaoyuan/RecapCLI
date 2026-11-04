@@ -186,7 +186,7 @@ class AgentTests(unittest.TestCase):
             barrier.wait(timeout=2)
             return {"ok": True, "content": "并行结果"}
 
-        with patch("recapcli.core.agent.execute_tool", side_effect=fake):
+        with patch("recapcli.core.tool_batch.execute_tool", side_effect=fake):
             answer, requests = self.run_with_replies([
                 reply(calls=[tool_call("first", path="a.txt"), tool_call("second", path="b.txt")]),
                 reply("完成"),
@@ -220,7 +220,7 @@ class AgentTests(unittest.TestCase):
     def test_last_request_reserves_answer_and_does_not_execute_more_tools(self):
         for options in ({"max_steps": 2}, {"limits": AgentLimits(max_tool_calls=1)}):
             with self.subTest(options=options), \
-                    patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
+                    patch("recapcli.core.tool_batch.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
                 _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("根据文件总结")], **options)
             self.assertEqual(requests[-1]["tool_choice"], "none")
             self.assertNotIn("tools", requests[-1])
@@ -229,20 +229,20 @@ class AgentTests(unittest.TestCase):
 
     def test_tool_call_on_the_last_request_ends_with_an_honest_summary(self):
         # 服务忽略 tool_choice=none 时既不执行工具，也不把整轮当作失败。
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
+        with patch("recapcli.core.tool_batch.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
             answer, requests = self.run_with_replies([reply(calls=[tool_call()])] * 2, max_steps=2)
         self.assertEqual(tool.call_count, 1)
         self.assertEqual(len(requests), 2)
         self.assertEqual(self.last_result.status, "incomplete")
         self.assertIn("停止", answer)
         self.assertEqual(self.last_result.messages[-1]["role"], "assistant")
-        with patch("recapcli.core.agent.execute_tool") as tool:
+        with patch("recapcli.core.tool_batch.execute_tool") as tool:
             self.run_with_replies([reply(calls=[tool_call()])], max_steps=1)
         tool.assert_not_called()
         self.assertEqual(self.last_result.status, "incomplete")
 
     def test_tool_count_runs_what_fits_and_marks_the_rest_not_executed(self):
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
+        with patch("recapcli.core.tool_batch.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
             _, requests = self.run_with_replies([reply(calls=[tool_call("a"), tool_call("b")]), reply("只读到一个")],
                                                 limits=AgentLimits(max_tool_calls=1))
         self.assertEqual(tool.call_count, 1)
@@ -255,7 +255,7 @@ class AgentTests(unittest.TestCase):
     def test_old_tool_results_are_cleared_instead_of_stopping_the_task(self):
         window = self.tool_tokens() + 6000
         calls = [reply(calls=[tool_call(f"c{index}")]) for index in range(8)]
-        with patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 4000}) as tool:
+        with patch("recapcli.core.tool_batch.execute_tool", return_value={"ok": True, "content": "y" * 4000}) as tool:
             _, requests = self.run_with_replies([*calls, reply("读完了")], max_steps=12,
                                                 limits=AgentLimits(max_context_tokens=window))
         self.assertEqual(tool.call_count, 8)
@@ -280,7 +280,7 @@ class AgentTests(unittest.TestCase):
         window = self.tool_tokens() + 1900
         # 固定此用例的系统提示长度，只验证工具结果增长时的历史裁剪。
         with patch("recapcli.core.agent.BASE_SYSTEM_PROMPT", "代码助手"), \
-                patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "y" * 3500}):
+                patch("recapcli.core.tool_batch.execute_tool", return_value={"ok": True, "content": "y" * 3500}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("完成")],
                                               history=history, limits=AgentLimits(max_context_tokens=window))
         self.assertTrue(any(message.get("content") == "旧问题" for message in requests[0]["messages"]))
@@ -295,7 +295,7 @@ class AgentTests(unittest.TestCase):
     def test_oversized_tool_output_is_replaced_by_a_receipt(self):
         window = self.tool_tokens() + 1500
         with patch("recapcli.core.agent.BASE_SYSTEM_PROMPT", "代码助手"), \
-                patch("recapcli.core.agent.execute_tool", return_value={"ok": True, "content": "x" * 10000}):
+                patch("recapcli.core.tool_batch.execute_tool", return_value={"ok": True, "content": "x" * 10000}):
             _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("请缩小读取范围")],
                                               limits=AgentLimits(max_context_tokens=window))
         result = next(message for message in requests[1]["messages"] if message["role"] == "tool")
@@ -304,7 +304,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.last_result.status, "returned")
 
     def test_time_budget_ends_gracefully_without_running_the_pending_tool(self):
-        with patch("recapcli.core.agent.time") as clock, patch("recapcli.core.agent.execute_tool") as tool:
+        with patch("recapcli.core.agent.time") as clock, patch("recapcli.core.tool_batch.execute_tool") as tool:
             clock.monotonic.return_value = 0
             answer, _ = self.run_with_replies([reply(calls=[tool_call()])], limits=AgentLimits(max_seconds=120),
                                               on_request=lambda request: setattr(clock.monotonic, "return_value", 121))
@@ -320,7 +320,7 @@ class AgentTests(unittest.TestCase):
         def tool(name, arguments, workspace, **options):
             seen["time"] = options["time_remaining"]
             return {"ok": True, "content": "ok"}
-        with patch("recapcli.core.agent.execute_tool", side_effect=tool):
+        with patch("recapcli.core.tool_batch.execute_tool", side_effect=tool):
             self.run_with_replies([reply(calls=[tool_call()]), reply("完成")], limits=AgentLimits(max_seconds=200))
         self.assertLessEqual(seen["time"], 200 - 30)
 
@@ -340,7 +340,7 @@ class AgentTests(unittest.TestCase):
         self.assertIn("todo_reminder", events)
 
     def test_duplicate_tool_ids_are_rejected_before_execution(self):
-        with patch("recapcli.core.agent.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "调用 ID"):
+        with patch("recapcli.core.tool_batch.execute_tool") as tool, self.assertRaisesRegex(RuntimeError, "调用 ID"):
             self.run_with_replies([reply(calls=[tool_call(), tool_call()])])
         tool.assert_not_called()
 

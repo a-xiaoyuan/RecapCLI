@@ -12,8 +12,8 @@ import stat
 import tempfile
 import uuid
 
-from ..storage.files import data_root, state_directory, write_json
-from ..core.access import local_path
+from ..base.files import data_root, state_directory, write_json
+from ..base.access import local_path
 from .filesystem import ToolError, _relative, _resolve
 
 MAX_EDIT_BYTES = 1024 * 1024

@@ -7,6 +7,13 @@ from threading import RLock
 
 
 _active = ContextVar("recapcli_file_access", default=None)
+_directory_authorizer = None
+
+
+def register_directory_authorizer(authorizer):
+    """由审批层注册外部目录的确认流程，基础层不反向依赖工具层。"""
+    global _directory_authorizer
+    _directory_authorizer = authorizer
 
 
 class AccessDenied(ValueError):
@@ -65,11 +72,7 @@ def authorize_path(workspace, target):
             if policy.contains(target):
                 return
             directory = target if target.is_dir() else target.parent
-            from ..tools.approval import authorize_action, fail_closed
-            denial = authorize_action("access_directory", workspace, {
-                "directory": str(directory),
-                "scope": "授权本次运行访问此目录及子目录；写入和命令仍需对应能力及审批",
-            }, approver=approver or fail_closed, on_approval=on_approval, time_remaining=remaining)
+            denial = _directory_authorizer(workspace, directory, approver, on_approval, remaining)
             if denial is None:
                 policy.add(directory)
                 return

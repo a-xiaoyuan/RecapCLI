@@ -3,25 +3,10 @@
 from copy import deepcopy
 import json
 
+from ..base.tokens import estimate_tokens, json_size, json_tokens  # noqa: F401  (re-exported)
 from ..config import DEFAULT_CONTEXT_TOKENS  # noqa: F401  (re-exported)
 
 MAX_HISTORY_MESSAGES = 80
-
-
-def json_size(value):
-    """UTF-8 JSON 字节数；只用于摘要、报告等次级截断，不作为上下文预算。"""
-    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-
-
-def estimate_tokens(value):
-    """粗估 token：ASCII 约 4 字符/token，非 ASCII 约 1 字符/token。"""
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    ascii_count = sum(ord(char) < 128 for char in text)
-    return max(1, (ascii_count + 3) // 4 + len(text) - ascii_count)
-
-
-def json_tokens(value):
-    return estimate_tokens(value)
 
 
 class TokenMeter:

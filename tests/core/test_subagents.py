@@ -189,7 +189,7 @@ class SubagentTests(unittest.TestCase):
             overlap.wait(timeout=5)
             cancelled.set()
             return reply(calls=[tool()])
-        with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaises(AgentCancelled):
+        with patch("recapcli.core.tool_batch.execute_tool") as execute, self.assertRaises(AgentCancelled):
             self.run_multi(respond, cancel_event=cancelled)
         execute.assert_not_called()
         self.assertEqual(self.counts, {"analysis": 1, "review": 1})
@@ -215,7 +215,7 @@ class SubagentTests(unittest.TestCase):
         def trace(kind, data):
             if kind == "tool_start":
                 raise OSError("offline trace failure")
-        with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaisesRegex(TraceError, "trace failure"):
+        with patch("recapcli.core.tool_batch.execute_tool") as execute, self.assertRaisesRegex(TraceError, "trace failure"):
             run_agent(self.client(self.reading), "test-model", "读取", self.workspace, mode="multi",
                       cancel_event=cancelled, on_event=lambda text: None, on_trace=trace)
         self.assertTrue(cancelled.is_set())
@@ -231,7 +231,7 @@ class SubagentTests(unittest.TestCase):
             overlap.wait(timeout=5)
             clock[0] = 4.0
             return reply(calls=[tool()])
-        with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaisesRegex(RuntimeError, "时间预算"):
+        with patch("recapcli.core.tool_batch.execute_tool") as execute, self.assertRaisesRegex(RuntimeError, "时间预算"):
             self.run_multi(respond, limits=limits, _budget=budget)
         execute.assert_not_called()
         self.assertEqual(budget.requests, 2)
@@ -253,7 +253,7 @@ class SubagentTests(unittest.TestCase):
             raise KeyboardInterrupt()
 
         with patch("recapcli.core.subagents.wait", side_effect=interrupt), \
-                patch("recapcli.core.agent.execute_tool") as execute, self.assertRaises(KeyboardInterrupt):
+                patch("recapcli.core.tool_batch.execute_tool") as execute, self.assertRaises(KeyboardInterrupt):
             self.run_multi(respond, cancel_event=cancelled)
         self.assertTrue(cancelled.is_set())
         execute.assert_not_called()
@@ -316,7 +316,7 @@ class SubagentTests(unittest.TestCase):
     def test_aggregate_cannot_execute_tools_even_if_provider_ignores_tool_choice(self):
         def respond(role, count, data):
             return reply(calls=[tool("edit_file", path="new.py", old_text="", new_text="bad")]) if role == "aggregate" else reply(role)
-        with patch("recapcli.core.agent.execute_tool") as execute:
+        with patch("recapcli.core.tool_batch.execute_tool") as execute:
             result = self.run_multi(respond)
         execute.assert_not_called()
         self.assertEqual(result.status, "incomplete")

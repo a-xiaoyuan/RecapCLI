@@ -11,7 +11,7 @@ from unittest.mock import patch
 from recapcli.tools import execute_tool, tool_definitions
 from recapcli.tools.approval import approve_all
 from recapcli.tools.filesystem import ScanBudget
-from recapcli.storage.files import write_json
+from recapcli.base.files import write_json
 
 
 class OperationTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class OperationTests(unittest.TestCase):
                              approver=lambda request: "rejected" if request.tool == "access_directory" else approve_all(request))
 
     def test_external_directory_is_confirmed_once_and_edits_can_be_undone(self):
-        from recapcli.core.access import PathAccess
+        from recapcli.base.access import PathAccess
         with tempfile.TemporaryDirectory() as other:
             target = Path(other) / "Main.java"
             target.write_text("class Main { int value = 1; }", encoding="utf-8")
@@ -251,7 +251,7 @@ class OperationTests(unittest.TestCase):
     def test_edit_cannot_escape_or_modify_internal_data_or_credentials(self):
         credentials = self.workspace / ".env"
         credentials.write_text("offline-key", encoding="utf-8")
-        with patch("recapcli.tools.filesystem.ENV_FILE", credentials):
+        with patch("recapcli.base.paths.ENV_FILE", credentials):
             for path in ("../outside.py", ".git/config", ".GIT/config",
                          ".recapcli/memory.json", ".RECAPCLI/memory.json", ".env"):
                 with self.subTest(path=path):

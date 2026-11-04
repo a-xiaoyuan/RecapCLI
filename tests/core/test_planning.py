@@ -139,7 +139,7 @@ class PlanningTests(unittest.TestCase):
         for content in invalid:
             with self.subTest(content=content):
                 self.requests = []
-                with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaises(ValueError):
+                with patch("recapcli.core.tool_batch.execute_tool") as execute, self.assertRaises(ValueError):
                     self.run_plan([reply(content)])
                 self.assertEqual(execute.call_count, 0)
 
@@ -185,7 +185,7 @@ class PlanningTests(unittest.TestCase):
         for dependency in ("missing", "a"):
             with self.subTest(dependency=dependency):
                 self.requests = []
-                with self.assertRaisesRegex(ValueError, "依赖"), patch("recapcli.core.agent.execute_tool") as execute:
+                with self.assertRaisesRegex(ValueError, "依赖"), patch("recapcli.core.tool_batch.execute_tool") as execute:
                     self.run_plan([document(steps=[{"id": "a", "description": "读取", "kind": "read", "depends_on": [dependency]}])])
                 execute.assert_not_called()
 
@@ -217,7 +217,7 @@ class PlanningTests(unittest.TestCase):
         for review in invalid:
             with self.subTest(review=review):
                 self.requests = []
-                with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaises(ValueError):
+                with patch("recapcli.core.tool_batch.execute_tool") as execute, self.assertRaises(ValueError):
                     self.run_plan([document(steps=["分析问题", "修改文件"]), reply("说明"), document(**review)])
                 self.assertEqual(execute.call_count, 0)
                 self.assertEqual(len(self.requests), 3)
@@ -232,7 +232,7 @@ class PlanningTests(unittest.TestCase):
         for replies in cases:
             with self.subTest(requests=len(replies)):
                 self.requests = []
-                with patch("recapcli.core.agent.execute_tool") as execute, self.assertRaisesRegex(RuntimeError, "禁止调用工具"):
+                with patch("recapcli.core.tool_batch.execute_tool") as execute, self.assertRaisesRegex(RuntimeError, "禁止调用工具"):
                     self.run_plan(replies, capabilities={"read", "write"})
                 self.assertEqual(execute.call_count, 0)
                 self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(1)\n")

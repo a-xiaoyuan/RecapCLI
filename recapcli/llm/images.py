@@ -10,7 +10,7 @@ import warnings
 
 from PIL import Image, UnidentifiedImageError
 
-from ..storage.files import data_root, state_directory
+from ..base.files import data_root, state_directory
 
 MAX_IMAGES = 4
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
@@ -86,7 +86,7 @@ def prepare_user_message(prompt, workspace):
     payloads = []
     for match in matches:
         reference = next(value for value in match.groups() if value is not None)
-        from ..core.access import local_path
+        from ..base.access import local_path
         target = local_path(reference)
         if not target.is_absolute():
             target = workspace / target
@@ -94,7 +94,7 @@ def prepare_user_message(prompt, workspace):
             if cursor.is_symlink() or cursor.is_junction():
                 raise ValueError("图片路径不能经过链接")
         # 图片不跟随链接；凭据和运行数据不能借助图片输入读取。
-        from ..tools.filesystem import _checked_target, SKIP_DIRS
+        from ..base.paths import SKIP_DIRS, checked_target as _checked_target
         target = _checked_target(workspace, target)
         if any(part in SKIP_DIRS for part in target.parts):
             raise ValueError("不能把凭据或运行数据作为图片附件")

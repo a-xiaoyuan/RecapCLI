@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from .files import state_directory, write_json as _write_json
+from ..base.files import state_directory, write_json as _write_json
 from ..core.compaction import validate_summary
 from ..core.memory import STATUSES, check_sensitive_text, rank_memories, validate_metadata
 
@@ -111,7 +111,7 @@ class SessionStore:
     """一个工作区对应一份会话目录和一份长期记忆。"""
 
     def __init__(self, workspace):
-        from ..core.access import PathAccess
+        from ..base.access import PathAccess
         self.workspace = Path(workspace).resolve()
         self.access = PathAccess(self.workspace)
         self.sessions_dir = state_directory(self.workspace, "sessions")

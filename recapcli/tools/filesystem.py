@@ -8,8 +8,8 @@ import re
 import subprocess
 import time
 
-from ..config import ENV_FILE
-from ..core.access import authorize_path, local_path
+from ..base.access import local_path
+from ..base.paths import SKIP_DIRS, ToolError, checked_target as _checked_target, sensitive_path
 
 MAX_FILE_BYTES = 64 * 1024
 MAX_MODEL_READ_LINES = 160
@@ -17,14 +17,6 @@ MAX_SEARCH_FILE_BYTES = 1024 * 1024
 MAX_SEARCH_RESULTS = 50
 MAX_TREE_ENTRIES = 300
 MAX_LINE_LENGTH = 300
-SKIP_DIRS = {
-    ".git", ".venv", "venv", "__pycache__", ".recapcli", ".idea", ".vscode",
-    "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-}
-
-
-class ToolError(ValueError):
-    """工具参数或执行环境不满足要求。"""
 
 
 class ScanLimit(ToolError):
@@ -68,28 +60,6 @@ class ScanBudget:
         if self.bytes_read + size > self.max_bytes:
             self.stop("达到文件扫描字节上限")
         self.bytes_read += size
-
-
-def _checked_target(workspace, target):
-    """入口路径和遍历得到的子路径使用同一份访问检查。"""
-    target = local_path(target).resolve()
-    if target == ENV_FILE.resolve():
-        raise ToolError("禁止访问 RecapCLI 的本地凭据配置")
-    if sensitive_path(target):
-        raise ToolError("禁止访问敏感凭据文件或目录")
-    authorize_path(workspace, target)
-    return target
-
-
-def sensitive_path(path):
-    """读取、检索、编辑和图片输入共用的凭据路径策略。"""
-    # Windows 的 :$DATA 等备用数据流语法不能绕过基础文件名检查。
-    parts = [part.split(":", 1)[0].rstrip(" .").casefold() for part in Path(path).parts]
-    return any(part in {".ssh", ".aws", ".azure", ".kube", ".netrc", "_netrc", ".npmrc", ".pypirc"}
-               or ((part == ".env" or part.startswith(".env."))
-                   and part not in {".env.example", ".env.sample", ".env.template"})
-               or part.endswith((".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"))
-               for part in parts)
 
 
 def _resolve(workspace, path, *, must_exist=True):

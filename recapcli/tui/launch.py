@@ -1,12 +1,11 @@
 """默认交互入口。有终端时打开 Textual 壳，单次提问仍走命令行。"""
 
-import math
 import sys
 from pathlib import Path
 
+from ..application.options import capabilities_from, check_approval_timeout, limits_from, max_steps_from
 from ..cli import build_parser
 from ..cli import main as cli_main
-from ..core.agent import AgentLimits, DEFAULT_STEPS
 from .driver import ShellOptions
 
 
@@ -17,40 +16,14 @@ def _tty():
 def shell_options(args):
     if args.banner != "auto" or args.color != "auto":
         raise ValueError("--banner/--color 用于行式 CLI：python -m recapcli.cli；TUI 演示请去掉这两个参数")
-    if (isinstance(args.approval_timeout, bool) or not isinstance(args.approval_timeout, (int, float))
-            or not math.isfinite(args.approval_timeout) or not 0 < args.approval_timeout <= 3600):
-        raise ValueError("--approval-timeout 必须是大于 0 且不超过 3600 的秒数")
+    check_approval_timeout(args.approval_timeout)
     workspace = Path(args.workspace)
     if not workspace.is_dir():
         raise ValueError("--workspace 必须是存在的目录")
-    max_steps = args.max_steps
-    if max_steps is None:
-        max_steps = DEFAULT_STEPS[args.mode]
-    if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
-        raise ValueError("--max-steps 必须大于 0")
-    if args.mode == "plan" and max_steps < 4:
-        raise ValueError("计划模式至少需要 4 次模型请求预算")
-    if args.mode == "multi" and max_steps < 3:
-        raise ValueError("Multi 至少需要 3 次模型请求预算")
-    try:
-        limits = AgentLimits(
-            max_context_tokens=args.context_tokens or AgentLimits.max_context_tokens,
-            max_tool_calls=args.max_tool_calls, max_seconds=args.max_seconds,
-            request_timeout=args.request_timeout, max_retries=args.max_retries,
-            max_plan_steps=args.plan_steps, max_replans=args.plan_replans,
-        )
-    except ValueError as error:
-        raise ValueError(str(error)) from error
-    requested = {"read"}
-    if args.allow_web:
-        requested.add("web")
-    if args.allow_write:
-        requested.add("write")
-    if args.allow_exec:
-        requested.add("exec")
-    capabilities = ({"read"} if args.mode == "multi" and not requested & {"write", "exec"} else requested)
+    max_steps = max_steps_from(args)
+    limits = limits_from(args)
     return ShellOptions(
-        workspace=workspace.resolve(), mode=args.mode, capabilities=tuple(sorted(capabilities)),
+        workspace=workspace.resolve(), mode=args.mode, capabilities=tuple(sorted(capabilities_from(args))),
         additional_dirs=tuple(args.add_dir),
         max_steps=max_steps, limits=limits, profile=args.profile, session_id=args.session,
         continue_session=bool(args.continue_), memory=args.memory, auto_compact=args.auto_compact,

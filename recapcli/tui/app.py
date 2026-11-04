@@ -23,7 +23,7 @@ from .status import TaskStatus, task_text, usage_text
 from .theme import PALETTE, render_answer, render_line
 from .widgets import ApprovalMenu, CommandMenu, ConversationView, PromptInput, StatusScreen, TodoPanel, ToolProgress
 from .settings import ModelConfigScreen, ModelPickerScreen
-from ..ui.terminal import project_version
+from ..base.version import project_version
 from ..ui.terminal_ui import clean_output
 from ..config import ConfigError, list_model_profiles
 from ..tools.approval import interpret_approval_line

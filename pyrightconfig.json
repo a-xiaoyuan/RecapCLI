@@ -8,8 +8,6 @@
     ".mypy_cache",
     ".ruff_cache",
     ".recapcli",
-    ".revocli",
-    ".archer",
     "dist",
     "build",
     "*.egg-info",

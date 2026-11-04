@@ -3,7 +3,7 @@
 from copy import deepcopy
 import json
 from pathlib import Path
-from ..core.access import AccessDenied, PathAccess, using_access
+from ..base.access import AccessDenied, PathAccess, using_access
 
 from .approval import authorize_action, fail_closed
 from .commands import run_command, command_status, command_input, stop_command

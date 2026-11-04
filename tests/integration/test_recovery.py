@@ -120,11 +120,11 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.requests[-1]["tool_choice"], "none")
 
     def test_request_timeout_is_configurable_and_bounded_by_task_time(self):
-        with patch("recapcli.core.agent.request_completion", wraps=request_completion) as complete:
+        with patch("recapcli.core.model_call.request_completion", wraps=request_completion) as complete:
             self.turn([reply("done")], limits=AgentLimits(request_timeout=75, max_seconds=120))
         self.assertEqual(complete.call_args.kwargs["timeout"], 75)
         self.requests = []
-        with patch("recapcli.core.agent.request_completion", wraps=request_completion) as complete:
+        with patch("recapcli.core.model_call.request_completion", wraps=request_completion) as complete:
             self.turn([reply("done")], limits=AgentLimits(request_timeout=75, max_seconds=10))
         self.assertLessEqual(complete.call_args.kwargs["timeout"], 10)
 
@@ -158,7 +158,7 @@ class RecoveryTests(unittest.TestCase):
         def interrupted(*args, **kwargs):
             kwargs["on_delta"]("partial text")
             raise APIConnectionError(request=httpx2.Request("POST", "https://offline.invalid"))
-        with patch("recapcli.core.agent.request_completion", side_effect=interrupted) as complete:
+        with patch("recapcli.core.model_call.request_completion", side_effect=interrupted) as complete:
             with self.assertRaises(APIConnectionError):
                 run_agent(client, "offline", "hello", self.workspace, on_event=lambda text: None,
                           on_stream=lambda kind, text: None)

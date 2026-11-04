@@ -11,7 +11,7 @@ import subprocess
 import time
 import uuid
 
-from .files import data_root, state_directory
+from ..base.files import data_root, state_directory
 
 
 SCHEMA_VERSION = 1

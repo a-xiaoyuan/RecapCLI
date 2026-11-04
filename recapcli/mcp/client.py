@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 
+from ..base.version import project_version
 from ..tools.commands import subprocess_environment
 
 
@@ -87,7 +88,7 @@ class StdioMCPClient:
         result = self.request("initialize", {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "recapcli", "version": "0.6.0"},
+            "clientInfo": {"name": "recapcli", "version": project_version() or "unknown"},
         })
         if result.get("protocolVersion") != "2025-06-18":
             raise MCPClientError("MCP 服务未协商到支持的协议版本 2025-06-18")

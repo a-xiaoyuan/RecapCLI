@@ -1,7 +1,6 @@
 """参数解析与行式终端入口；任务和用户命令由 application 共用。"""
 
 import argparse
-import math
 from pathlib import Path
 import sys
 
@@ -9,9 +8,10 @@ from openai import APIError, OpenAI
 
 from .config import ConfigError, load_config
 from .llm.client import ModelClient, api_error_message
+from .application.options import capabilities_from, check_approval_timeout, limits_from, max_steps_from
 from .application.runtime import run_turn, save_session
 from .application.commands import handle_command, show_models, show_tasks
-from .core.agent import AgentLimits, DEFAULT_STEPS
+from .core.agent import AgentLimits
 from .storage.session import SessionStore
 from .storage.tasks import TaskStore
 from .tools.approval import InteractiveApprover, approve_all, fail_closed
@@ -184,17 +184,11 @@ def _dispatch_view_flags(parser, args):
             parser.error("--demo 只启动界面演示，不能同时提问或查看任务")
         from .tui.launch import launch_shell
         return launch_shell(args, demo=True)
-    if (isinstance(args.approval_timeout, bool) or not isinstance(args.approval_timeout, (int, float))
-            or not math.isfinite(args.approval_timeout) or not 0 < args.approval_timeout <= 3600):
-        parser.error("--approval-timeout 必须是大于 0 且不超过 3600 的秒数")
-    requested = {"read"}
-    if args.allow_web:
-        requested.add("web")
-    if args.allow_write:
-        requested.add("write")
-    if args.allow_exec:
-        requested.add("exec")
-    capabilities = ({"read"} if args.mode == "multi" and not requested & {"write", "exec"} else requested)
+    try:
+        check_approval_timeout(args.approval_timeout)
+    except ValueError as error:
+        parser.error(str(error))
+    capabilities = capabilities_from(args)
     ui = TerminalUI(color=args.color)
     banner_mode = args.banner
     if banner_mode == "auto" and args.color != "auto":
@@ -261,19 +255,9 @@ def main(argv=None) -> int:
     ui, banner_mode, capabilities = dispatched
     if args.compact and (args.prompt is not None or not (args.session or args.continue_)):
         parser.error("--compact 需要 --continue 或 --session，且不能同时提问")
-    if args.max_steps is None:
-        args.max_steps = DEFAULT_STEPS[args.mode]
-    if args.max_steps < 1:
-        parser.error("--max-steps 必须大于 0")
-    if args.mode == "plan" and args.max_steps < 4 and not args.compact:
-        parser.error("计划模式至少需要 4 次模型请求预算")
-    if args.mode == "multi" and args.max_steps < 3 and not args.compact:
-        parser.error("Multi 至少需要 3 次模型请求预算")
     try:
-        limits = AgentLimits(max_context_tokens=args.context_tokens or AgentLimits.max_context_tokens,
-                             max_tool_calls=args.max_tool_calls, max_seconds=args.max_seconds,
-                             request_timeout=args.request_timeout, max_retries=args.max_retries,
-                             max_plan_steps=args.plan_steps, max_replans=args.plan_replans)
+        args.max_steps = max_steps_from(args)
+        limits = limits_from(args)
     except ValueError as error:
         parser.error(str(error))
     if not args.workspace.is_dir():
