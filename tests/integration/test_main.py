@@ -579,7 +579,7 @@ class ConversationTests(unittest.TestCase):
         code, requests = self.run_main(
             ["修改", "--workspace", str(self.workspace), "--allow-write", "--yes", "--banner", "off"],
             [reply(calls=[tool_call(name="edit_file", arguments=json.dumps({
-                "path": "app.py", "old_text": "old", "new_text": "new"}))]), reply("unfinished", finish="length")])
+                "path": "app.py", "old_text": "old", "new_text": "new"}))]), reply("unfinished", finish="content_filter")])
         self.assertEqual(code, 1)
         self.assertEqual(path.read_text(encoding="utf-8"), "new")
         self.assertEqual(len(list((self.workspace / ".recapcli/backups").glob("*.json"))), 1)
@@ -805,7 +805,7 @@ class ConversationTests(unittest.TestCase):
         with patch.object(TerminalUI, "read_prompt", side_effect=prompts):
             code, requests = self.run_main(
                 ["--workspace", str(self.workspace), "--banner", "off", "--color", "never"],
-                [reply("第一答"), reply(calls=[tool_call()]), reply("不完整回答", finish="length"), reply("继续回答")],
+                [reply("第一答"), reply(calls=[tool_call()]), reply("不完整回答", finish="content_filter"), reply("继续回答")],
             )
         self.assertEqual(code, 0)
         self.assertEqual(len(requests), 4)

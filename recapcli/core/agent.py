@@ -50,6 +50,8 @@ COMPACT_AT = 0.75          # 当前轮超过窗口的这个比例时，移出较
 KEEP_RECENT_RESULTS = 4    # 最近几条工具结果始终保留原文
 CLEARED_NOTE = "较早的工具结果已移出上下文以节省空间，完整内容保存在任务记录中；如仍需要请重新调用。"
 CLEARED_PREFIX = '{"cleared":true'
+CONTEXT_OVERFLOW_MARKERS = ("context_length", "context length", "context window", "maximum context",
+                            "prompt is too long", "input is too long", "too many tokens", "上下文")
 
 
 def _tool_location(call):
@@ -320,6 +322,17 @@ def _maybe_compact(*, model, summary, history, system_text, turn, limits, mode, 
     return summary, new_summary
 
 
+def _context_overflow(error):
+    if getattr(error, "status_code", None) not in {400, 413}:
+        return False
+    text = f"{getattr(error, 'code', '')} {error.message}".casefold()
+    return any(marker in text for marker in CONTEXT_OVERFLOW_MARKERS)
+
+
+def _has_tool_results(turn):
+    return any(message.get("role") == "tool" for message in turn)
+
+
 def _call_index(turn):
     """tool_call_id → (工具名, 参数摘要)，用于给移出的结果留下可读的占位。"""
     calls = {}
@@ -540,6 +553,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
 
     预算（请求、工具、时间、上下文）用完时不抛错：转入最后一次不带工具的汇总请求，
     连这一步也做不了时用本轮事实生成结束说明，状态为 incomplete。
+    工具已执行后遇到服务端上下文超限或输出截断时同样收尾；其他模型错误仍然抛出。
     """
     workspace, max_steps = _validate_run(prompt, workspace, max_steps, mode, compact_only)
     (limits, budget, capabilities, approver, access_policy, rules, structure, memory_text,
@@ -713,9 +727,17 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
                     return finish_incomplete(str(error))
                 forced_reason = str(error)
                 continue
+            except APIError as error:
+                # 本地估算可能低于服务端 tokenizer；工具已执行时要交代进度，不能只报错。
+                if _context_overflow(error) and _has_tool_results(turn):
+                    return finish_incomplete("服务端报告上下文超限")
+                raise
             if not response.choices:
                 raise RuntimeError("模型没有返回候选消息")
             choice = response.choices[0]
+            if choice.finish_reason == "length" and _has_tool_results(turn):
+                # 被截断的正文和工具参数都不可靠，不写入本轮，也不执行。
+                return finish_incomplete("模型输出达到长度上限")
             if choice.finish_reason not in {"stop", "tool_calls"}:
                 raise RuntimeError(f"模型响应未完整结束：{choice.finish_reason}")
             message = choice.message
