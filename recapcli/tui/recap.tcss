@@ -19,6 +19,7 @@ Screen { background: ansi_default; color: ansi_default; }
 .-narrow #welcome-right { display: none; }
 .-narrow #welcome-left { width: 1fr; }
 #welcome-title, #welcome-logo, #welcome-subtitle, #welcome-agent { width: 100%; height: auto; text-align: center; }
+#welcome-subtitle, #welcome-agent { height: 1; }
 #welcome-title { margin-top: 1; text-style: bold; }
 #welcome-logo { margin: 1 0; }
 #welcome-subtitle, #welcome-agent { color: #a6adc8; }

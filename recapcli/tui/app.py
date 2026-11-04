@@ -251,6 +251,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
 
     def _apply_width(self, width):
         self.query_one("#task-inspector").display = width >= 100
+        self.query_one("#welcome-logo").display = width >= 52
         if self.screen_stack:
             self.screen_stack[0].set_class(width < 72, "-narrow")
         self.call_after_refresh(self._refresh_hints)
