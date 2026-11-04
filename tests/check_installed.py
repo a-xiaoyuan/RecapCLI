@@ -20,7 +20,7 @@ def check_import():
 
     location = Path(recapcli.__file__).resolve()
     assert location.is_relative_to(Path(sysconfig.get_path("purelib")).resolve()), location
-    assert (files("recapcli.tui") / "violet.tcss").is_file()
+    assert (files("recapcli.tui") / "recap.tcss").is_file()
     return location
 
 
