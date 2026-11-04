@@ -54,6 +54,8 @@ _REASONS = {
 _BACKUP_ID = re.compile(r"[0-9a-f]{32}")
 _HINT_LIMIT = 1500
 _DISPLAY_LIMIT = 200
+_typed = []  # Windows 控制台已输入、尚未回车的字符，跨轮询保留。
+_pending_read = None
 
 
 class ApprovalRequest:
@@ -364,26 +366,64 @@ def read_line_with_timeout(timeout, stream=None):
         if line == "":
             raise EOFError
         return line.rstrip("\r\n")
-    return _read_line_thread(timeout)
+    return _read_console_line(timeout) if stream.isatty() else _read_line_thread(timeout)
+
+
+def _read_console_line(timeout):
+    """Windows 控制台不能 select，改为轮询按键；超时不留下占着输入的线程。"""
+    import msvcrt
+    deadline = time.monotonic() + timeout
+    while True:
+        while msvcrt.kbhit():
+            char = msvcrt.getwch()
+            if char in "\x00\xe0":  # 方向键等功能键占两个码，一起丢弃。
+                msvcrt.getwch()
+            elif char == "\x03":
+                raise KeyboardInterrupt
+            elif char == "\x1a":
+                _typed.clear()
+                raise EOFError
+            elif char in "\r\n":
+                msvcrt.putwch("\r")
+                msvcrt.putwch("\n")
+                line = "".join(_typed)
+                _typed.clear()
+                return line
+            elif char == "\b":
+                if _typed:
+                    _typed.pop()
+                    for echo in "\b \b":
+                        msvcrt.putwch(echo)
+            elif char.isprintable():
+                _typed.append(char)
+                msvcrt.putwch(char)
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.02)
 
 
 def _read_line_thread(timeout):
-    # Windows 的 select 不能等待控制台。超时后该线程仍可能占着下一次输入。
-    box = {}
+    # 管道不能轮询。始终只留一个读取线程，超时后下次继续等它，读到的行不会丢。
+    global _pending_read
+    if _pending_read is None:
+        box = {}
 
-    def target():
-        try:
-            box["line"] = input()
-        except EOFError:
-            box["eof"] = True
-        except BaseException as error:
-            box["error"] = error
+        def target():
+            try:
+                box["line"] = input()
+            except EOFError:
+                box["eof"] = True
+            except BaseException as error:
+                box["error"] = error
 
-    thread = threading.Thread(target=target, daemon=True)
-    thread.start()
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        _pending_read = thread, box
+    thread, box = _pending_read
     thread.join(timeout)
     if thread.is_alive():
         return None
+    _pending_read = None
     if "error" in box:
         raise box["error"]
     if box.get("eof"):
@@ -410,6 +450,7 @@ class InteractiveApprover:
         return limit
 
     def __call__(self, request):
+        _typed.clear()
         self.ui.show_approval(request.summary)
         limit = self._limit(request)
         self.ui.info(f"等待上限 {limit:g} 秒。请输入 approve、reject 或 cancel。")

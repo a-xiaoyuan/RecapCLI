@@ -46,6 +46,7 @@ BASE_SYSTEM_PROMPT = """你是 RecapCLI，一个在终端里帮用户读代码�
 DEFAULT_STEPS = {"react": 50, "plan": 60, "multi": 60}
 PARALLEL_READ_TOOLS = frozenset({"read_file", "find_files", "list_directory", "search_text", "read_url", "web_search"})
 MAX_PARALLEL_READS = 4
+EDIT_TOOLS = frozenset({"edit_file", "edit_files", "restore_file", "undo_edit"})
 COMPACT_AT = 0.75          # 当前轮超过窗口的这个比例时，移出较早的工具结果
 KEEP_RECENT_RESULTS = 4    # 最近几条工具结果始终保留原文
 CLEARED_NOTE = "较早的工具结果已移出上下文以节省空间，完整内容保存在任务记录中；如仍需要请重新调用。"
@@ -385,22 +386,20 @@ def _close_turn(turn):
                              "content": json.dumps(SKIPPED_RESULT, ensure_ascii=False)})
 
 
-def _fallback_answer(reason, turn, todos):
+def _edited_paths(name, result):
+    """以工具实际结果为准：被拒绝的编辑不算，批量失败时已写入的文件要算。"""
+    if name not in EDIT_TOOLS:
+        return []
+    return [item["path"] for item in result.get("files") or [result]
+            if item.get("path") and (item.get("changed") or item.get("restored"))]
+
+
+def _fallback_answer(reason, turn, todos, edited):
     """连最后一次汇总请求都发不出去时，用本轮事实拼一个诚实的结束说明。"""
-    calls = _call_index(turn)
-    edited = []
-    for name, arguments in calls.values():
-        if name in {"edit_file", "edit_files", "restore_file"}:
-            try:
-                data = json.loads(arguments) if arguments.endswith("}") else {}
-            except ValueError:
-                data = {}
-            for path in [data.get("path")] + [item.get("path") for item in data.get("edits", []) if isinstance(item, dict)]:
-                if path and path not in edited:
-                    edited.append(path)
-    lines = [f"本轮在给出完整答复前停止：{reason}。", f"已调用 {len(calls)} 次工具。"]
+    lines = [f"本轮在给出完整答复前停止：{reason}。", f"已调用 {len(_call_index(turn))} 次工具。"]
     if edited:
-        lines.append("编辑过的文件：" + "、".join(edited[:10]) + "。")
+        more = f"等 {len(edited)} 个文件" if len(edited) > 10 else ""
+        lines.append("编辑过的文件：" + "、".join(edited[:10]) + more + "。")
     if todos.items:
         lines.append("待办清单：\n" + todos.render())
     lines.append("用 /diff 查看改动、/task 查看完整记录；发送“继续”可以接着完成。")
@@ -409,7 +408,7 @@ def _fallback_answer(reason, turn, todos):
 
 def _execute_tool_batch(message, turn, step, *, role, capabilities, planner, workspace,
                         access_policy, approver, extra_executor, extra_names, budget, todos,
-                        fits_context, meter, trace, on_event, local_tool_calls):
+                        fits_context, meter, trace, on_event, local_tool_calls, edited):
     calls = message.tool_calls
     allowed = budget.reserve_tools(len(calls))
 
@@ -508,6 +507,7 @@ def _execute_tool_batch(message, turn, step, *, role, capabilities, planner, wor
         if not prepared:
             trace("tool_result", action_id=action_id, call_id=call.id, name=call.function.name,
                   result=_fact_result(result))
+        edited.extend(path for path in _edited_paths(call.function.name, result) if path not in edited)
         if result.get("summary") and call.function.name != TODO_TOOL["function"]["name"]:
             on_event(f"[操作] {result['summary']}")
         if planner is not None:
@@ -565,6 +565,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         access_policy=access_policy, on_event=on_event, on_trace=on_trace)
     requests_used = 0
     local_tool_calls = 0
+    edited = []
     format_correction = None
     corrected_phases = set()
     meter = TokenMeter()
@@ -669,7 +670,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         except (BudgetExhausted, APIError, RuntimeError, ValueError) as error:
             trace("final_summary_failed", error_type=type(error).__name__)
         if answer is None:
-            answer = _fallback_answer(reason, turn, todos or TodoList())
+            answer = _fallback_answer(reason, turn, todos or TodoList(), edited)
         turn.append({"role": "assistant", "content": answer})
         trace("message", message=turn[-1])
         return TurnResult(answer, turn, "incomplete", f"{reason}；任务验收未验证", new_summary)
@@ -807,7 +808,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
                 workspace=workspace, access_policy=access_policy, approver=approver,
                 extra_executor=extra_executor, extra_names=extra_names, budget=budget, todos=todos,
                 fits_context=fits_context, meter=meter, trace=trace, on_event=on_event,
-                local_tool_calls=local_tool_calls)
+                local_tool_calls=local_tool_calls, edited=edited)
     except BudgetExhausted as error:
         # 时间在工具执行中途耗尽等情况：已完成的结果都在 turn 里，照常收尾。
         return finish_incomplete(str(error))

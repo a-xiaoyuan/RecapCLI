@@ -4,8 +4,11 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import queue
 import sys
 import tempfile
+import threading
+import types
 import unittest
 from unittest.mock import patch
 
@@ -19,7 +22,11 @@ from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
 from recapcli.tools import execute_tool
 from recapcli.tools.approval import (
+    APPROVED,
+    EXPIRED,
     InteractiveApprover,
+    _read_console_line,
+    _read_line_thread,
     approve_all,
     fail_closed,
     interpret_approval_line,
@@ -258,6 +265,54 @@ class ApprovalGateTests(unittest.TestCase):
     @staticmethod
     def _disk_full(payload):
         raise OSError("offline disk full")
+
+
+class LineReaderTests(unittest.TestCase):
+    """审批按 0.5 秒分片轮询：行晚于第一片到达时不能丢，超时也不能留下抢输入的读取者。"""
+
+    def console(self, *keys):
+        pending = list(keys)
+        return types.SimpleNamespace(kbhit=lambda: bool(pending), getwch=lambda: pending.pop(0),
+                                     putwch=lambda char: None)
+
+    def test_pipe_line_arriving_after_several_polls_is_returned(self):
+        lines = queue.Queue()
+        started = []
+
+        def fake_input():
+            started.append(threading.current_thread())
+            return lines.get()
+
+        with patch("builtins.input", fake_input):
+            self.assertIsNone(_read_line_thread(0.01))
+            self.assertIsNone(_read_line_thread(0.01))
+            lines.put("approve")
+            self.assertEqual(_read_line_thread(2), "approve")
+        self.assertEqual(len(started), 1)
+
+    def test_console_keeps_partial_line_between_polls(self):
+        keys = self.console("a", "p", "x", "\b")
+        with patch.dict(sys.modules, {"msvcrt": keys}):
+            self.assertIsNone(_read_console_line(0.01))
+        keys = self.console("p", "\xe0", "H", "\r")
+        with patch.dict(sys.modules, {"msvcrt": keys}):
+            self.assertEqual(_read_console_line(0.01), "app")
+
+    def test_console_interrupt_and_eof_keys(self):
+        with patch.dict(sys.modules, {"msvcrt": self.console("\x03")}):
+            with self.assertRaises(KeyboardInterrupt):
+                _read_console_line(0.01)
+        with patch.dict(sys.modules, {"msvcrt": self.console("x", "\x1a")}):
+            with self.assertRaises(EOFError):
+                _read_console_line(0.01)
+
+    def test_late_console_approval_is_accepted_and_expired_text_does_not_leak(self):
+        ui = types.SimpleNamespace(show_approval=lambda text: None, info=lambda text: None)
+        request = types.SimpleNamespace(summary="", time_remaining=None, check=None)
+        with patch.dict(sys.modules, {"msvcrt": self.console("x")}):
+            self.assertEqual(InteractiveApprover(ui, timeout=0.05, reader=_read_console_line)(request), EXPIRED)
+        with patch.dict(sys.modules, {"msvcrt": self.console(*"approve\r")}):
+            self.assertEqual(InteractiveApprover(ui, timeout=5, reader=_read_console_line)(request), APPROVED)
 
 
 class ApprovalFlowTests(unittest.TestCase):

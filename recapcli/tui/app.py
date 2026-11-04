@@ -334,8 +334,11 @@ class RecapShell(App):
 
     def _workspace_caption(self):
         path = clean_output(str(self.state.workspace))
-        home = clean_output(str(Path.home()))
-        if path.startswith(home + os.sep) or path == home:
+        try:
+            home = clean_output(str(Path.home()))
+        except RuntimeError:  # Windows 缺少 USERPROFILE 时取不到主目录；只是少缩写，不能让界面起不来。
+            home = None
+        if home and (path.startswith(home + os.sep) or path == home):
             path = "~" + path[len(home):]
         caption = Text(no_wrap=True, overflow="ellipsis")
         caption.append(path)
