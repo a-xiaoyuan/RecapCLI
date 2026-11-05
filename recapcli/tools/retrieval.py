@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -15,6 +16,19 @@ from .filesystem import (MAX_FILE_BYTES, MAX_SEARCH_FILE_BYTES, ScanBudget, Scan
 SCHEMA_VERSION = 3
 MAX_RESULTS = 200
 REFRESH_SECONDS = 10
+
+
+def scope_filter(workspace, scope):
+    """给 SQLite 的 in_scope 用：每行都会调用，工作区内只比较字符串，不构造路径对象。
+
+    索引里工作区文件存相对路径，外部文件存绝对路径。
+    """
+    if not scope.is_relative_to(workspace):
+        return lambda value: (workspace / value).is_relative_to(scope)
+    if scope == workspace:
+        return lambda value: not os.path.isabs(value)
+    prefix = _relative(workspace, scope)
+    return lambda value: value == prefix or value.startswith(prefix + "/")
 
 
 def _read_source(workspace, path, budget=None):
@@ -176,7 +190,7 @@ def _search(workspace, *, name=None, kind=None, query=None, path=".", max_result
         mode=mode, timeout_seconds=timeout_seconds, scope=scope)
     try:
         connection = _connect(workspace)
-        connection.create_function("in_scope", 1, lambda path: (workspace / path).is_relative_to(scope_target))
+        connection.create_function("in_scope", 1, scope_filter(workspace, scope_target))
         try:
             with connection:
                 ranking, retrieval = {}, {}

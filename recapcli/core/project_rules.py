@@ -1,14 +1,46 @@
 """读取工作区根目录与子目录的开发约定。"""
 
 import hashlib
+import os
 from pathlib import Path
+import subprocess
 
+from ..base.paths import SKIP_DIRS
 from ..tools.filesystem import ToolError, _resolve
 
 
 MAX_RULE_BYTES = 8 * 1024
 MAX_RULE_FILES = 20
-SKIP_DIRECTORIES = {".git", ".recapcli", ".venv", "node_modules", "__pycache__"}
+GIT_TIMEOUT_SECONDS = 5
+
+
+def _git_rule_files(workspace):
+    """Git 项目用 ls-files 查找，不进入被忽略的大目录；用不了时返回 None。
+
+    只认工作区根目录的仓库：工作区在别的仓库的忽略目录里时，ls-files 会什么都不返回。
+    """
+    if not (workspace / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+             "--", ":(glob)**/AGENTS.md"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=GIT_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode:
+        return None
+    return [Path(os.fsdecode(name)) for name in result.stdout.split(b"\0") if name]
+
+
+def _walked_rule_files(workspace):
+    """先剪掉跳过的目录再往下走，不能遍历完再过滤。"""
+    found = []
+    for directory, folders, files in os.walk(workspace):
+        folders[:] = [name for name in folders if name not in SKIP_DIRS]
+        if "AGENTS.md" in files:
+            found.append((Path(directory) / "AGENTS.md").relative_to(workspace))
+    return found
 
 
 def _read_rule(workspace, relative, max_bytes):
@@ -45,17 +77,11 @@ def load_rule_layers(workspace, max_bytes=MAX_RULE_BYTES, max_files=MAX_RULE_FIL
         layers.append(root)
     total = root.get("bytes", 0)
     files = 0
-    candidates = []
-    try:
-        for path in workspace.rglob("AGENTS.md"):
-            relative = path.relative_to(workspace)
-            if relative.as_posix() == "AGENTS.md":
-                continue
-            if any(part in SKIP_DIRECTORIES for part in relative.parts):
-                continue
-            candidates.append(relative)
-    except OSError:
-        return layers
+    found = _git_rule_files(workspace)
+    if found is None:
+        found = _walked_rule_files(workspace)
+    candidates = [relative for relative in found if relative.as_posix() != "AGENTS.md"
+                  and not any(part in SKIP_DIRS for part in relative.parts)]
     for relative in sorted(candidates, key=lambda item: (len(item.parts), item.as_posix())):
         if files >= max_files:
             break

@@ -8,7 +8,7 @@ import re
 import time
 
 from .filesystem import ScanBudget, ScanLimit, ToolError, _relative, _resolve, file_reference
-from .retrieval import _connect, _refresh, _read_source, _delete, REFRESH_SECONDS
+from .retrieval import _connect, _refresh, _read_source, _delete, REFRESH_SECONDS, scope_filter
 
 
 @contextmanager
@@ -18,7 +18,7 @@ def catalog(workspace, path=".", refresh=False):
     root = workspace if scope.is_relative_to(workspace) else scope
     connection = _connect(workspace)
     try:
-        connection.create_function("in_scope", 1, lambda value: (workspace / value).is_relative_to(scope))
+        connection.create_function("in_scope", 1, scope_filter(workspace, scope))
         with connection:
             state = connection.execute("SELECT refreshed_at,details FROM scan_state WHERE id=1").fetchone()
             details = json.loads(state[1]) if state else {}

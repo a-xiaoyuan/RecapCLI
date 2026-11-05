@@ -310,6 +310,23 @@ class RetrievalTests(unittest.TestCase):
             self.assertTrue(any("name" in match["sources"] for match in result["matches"]))
             provider.assert_not_called()
 
+    def test_scope_filter_matches_path_semantics(self):
+        workspace = self.workspace
+        outside = workspace.parent / "outside"
+        whole = retrieval.scope_filter(workspace, workspace)
+        self.assertTrue(whole("src/app.py"))
+        self.assertFalse(whole(outside.joinpath("app.py").as_posix()))
+        folder = retrieval.scope_filter(workspace, workspace / "src")
+        self.assertTrue(folder("src/app.py"))
+        self.assertFalse(folder("src2/app.py"))
+        self.assertFalse(folder("app.py"))
+        single = retrieval.scope_filter(workspace, workspace / "app.py")
+        self.assertTrue(single("app.py"))
+        self.assertFalse(single("app.py.bak"))
+        external = retrieval.scope_filter(workspace, outside)
+        self.assertTrue(external(outside.joinpath("app.py").as_posix()))
+        self.assertFalse(external("src/app.py"))
+
 
 if __name__ == "__main__":
     unittest.main()

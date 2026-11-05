@@ -1,7 +1,10 @@
 import hashlib
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from recapcli.core.project_rules import (
     load_rule_layers,
@@ -163,6 +166,52 @@ class ProjectRuleSummaryTests(unittest.TestCase):
             project_rules_description(None),
             "本轮未记录项目规则；普通提问时读取根目录 AGENTS.md",
         )
+
+    def sources(self):
+        return [layer["source"] for layer in load_rule_layers(self.workspace)]
+
+    def git(self, *arguments):
+        subprocess.run(["git", "-C", str(self.workspace), *arguments], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_git_project_skips_ignored_directories_without_walking(self):
+        self.git("init")
+        self.write(".gitignore", "scratch/")
+        self.write("scratch/AGENTS.md", "忽略目录里的规则")
+        self.write("pkg/AGENTS.md", "未跟踪但没被忽略")
+        with patch("recapcli.core.project_rules._walked_rule_files") as walk:
+            self.assertEqual(self.sources(), ["pkg/AGENTS.md"])
+        walk.assert_not_called()
+
+    def test_git_failure_falls_back_to_walking(self):
+        (self.workspace / ".git").mkdir()
+        self.write("pkg/AGENTS.md", "子目录规则")
+        with patch("recapcli.core.project_rules.subprocess.run", side_effect=OSError):
+            self.assertEqual(self.sources(), ["pkg/AGENTS.md"])
+
+    def test_workspace_inside_another_repository_is_walked(self):
+        self.git("init")
+        self.write(".gitignore", "nested/")
+        self.write("nested/pkg/AGENTS.md", "工作区在忽略目录里")
+        self.workspace = self.workspace / "nested"
+        self.assertEqual(self.sources(), ["pkg/AGENTS.md"])
+
+    def test_walk_prunes_skipped_directories(self):
+        self.write(".venv/lib/AGENTS.md", "依赖里的规则")
+        self.write("node_modules/x/AGENTS.md", "依赖里的规则")
+        self.write("pkg/AGENTS.md", "子目录规则")
+        visited = []
+        real_walk = os.walk
+
+        def spy(top):
+            for directory, folders, files in real_walk(top):
+                visited.append(Path(directory).name)
+                yield directory, folders, files
+
+        with patch("recapcli.core.project_rules.os.walk", spy):
+            self.assertEqual(self.sources(), ["pkg/AGENTS.md"])
+        self.assertNotIn(".venv", visited)
+        self.assertNotIn("node_modules", visited)
 
 
 if __name__ == "__main__":
