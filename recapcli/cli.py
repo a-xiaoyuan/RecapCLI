@@ -8,7 +8,7 @@ from openai import APIError, OpenAI
 
 from .config import ConfigError, load_config
 from .llm.client import ModelClient, api_error_message
-from .application.options import (capabilities_from, check_approval_timeout, limits_from, max_steps_from,
+from .application.options import (capabilities_from, check_approval_timeout, hooks_from, limits_from, max_steps_from,
                                   verify_command_from)
 from .application.runtime import run_turn, save_session
 from .application.commands import handle_command, show_models, show_tasks
@@ -30,7 +30,7 @@ def make_approver(ui, *, yes, interactive, timeout):
 
 
 def interactive_loop(client, model, workspace, store, ui, session, max_steps, memory_enabled, limits=None,
-                     capabilities=("read",), mode="react", auto_compact=True, approver=None, verify_command=None,
+                     capabilities=("read",), mode="react", auto_compact=True, approver=None, verify_command=None, hooks=None,
                      extra_tools=None, extra_executor=None):
     ui.info("多轮对话模式：直接输入问题；/help 查看命令，/exit 退出。")
     while True:
@@ -80,7 +80,7 @@ def interactive_loop(client, model, workspace, store, ui, session, max_steps, me
             answer = run_turn(client, model, workspace, store, ui, session,
                               prompt, max_steps=max_steps, memory_enabled=memory_enabled, limits=limits,
                               capabilities=capabilities, mode=mode,
-                              auto_compact=auto_compact, compact_only=compact_only, approver=approver, verify_command=verify_command,
+                              auto_compact=auto_compact, compact_only=compact_only, approver=approver, verify_command=verify_command, hooks=hooks,
                               extra_tools=extra_tools, extra_executor=extra_executor)
         except KeyboardInterrupt:
             ui.error("已取消本轮。")
@@ -146,6 +146,8 @@ def build_parser():
                         help="列出已连接 MCP 服务的工具和权限后退出，无需模型配置")
     parser.add_argument("--verify-cmd", metavar="命令",
                         help="有实际编辑时，在模型结束前自动运行此验证命令；失败结果交回模型，最多 3 次。不经过 shell")
+    parser.add_argument("--hooks", type=Path, metavar="路径",
+                        help="加载 Hooks 配置（JSON），在工具前后和结束时运行本地命令；配置内的命令需可信，不支持 multi")
     parser.add_argument("--yes", action="store_true",
                         help="跳过逐次提问并批准本进程内的写入和命令；执行前仍复核参数与文件指纹，变化则作废")
     parser.add_argument("--approval-timeout", type=float, default=120,
@@ -262,6 +264,7 @@ def main(argv=None) -> int:
         args.max_steps = max_steps_from(args)
         limits = limits_from(args)
         verify_command = verify_command_from(args)
+        hooks = hooks_from(args)
     except ValueError as error:
         parser.error(str(error))
     if not args.workspace.is_dir():
@@ -326,7 +329,7 @@ def main(argv=None) -> int:
                     answer = run_turn(client, config.model, args.workspace, store, ui, session,
                                       prompt, max_steps=args.max_steps, memory_enabled=args.memory, limits=limits,
                                       capabilities=capabilities, mode=args.mode,
-                                      auto_compact=args.auto_compact, compact_only=args.compact, approver=approver, verify_command=verify_command,
+                                      auto_compact=args.auto_compact, compact_only=args.compact, approver=approver, verify_command=verify_command, hooks=hooks,
                                       extra_tools=extra_tools, extra_executor=extra_executor)
                     ui.answer(answer)
                     return 0 if save_session(store, session, ui) else 1

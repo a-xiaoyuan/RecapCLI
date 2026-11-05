@@ -11,6 +11,7 @@ from ..tools import tool_definitions
 from .auto_verify import MAX_VERIFY_ROUNDS, run_verification
 from .budget import BudgetExhausted, SKIPPED_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text
+from .hooks import MAX_STOP_BLOCKS
 from .context import MAX_HISTORY_MESSAGES, TokenMeter, json_tokens, select_history
 from .model_call import COMPACT_RESERVE, request_model
 from .planning import PlanFormatError
@@ -63,6 +64,7 @@ class TurnContext:
     on_trace: Callable | None
     on_stream: Callable | None
     verify_command: list | None = None
+    hooks: Any = None
 
 
 class TurnRunner:
@@ -74,6 +76,7 @@ class TurnRunner:
         self.verify_dirty = False   # 上次验证之后有实际编辑
         self.verify_failures = 0
         self.verified = False
+        self.stop_blocks = 0
         self.format_correction = None
         self.corrected_phases = set()
         self.meter = TokenMeter()
@@ -317,6 +320,14 @@ class TurnRunner:
                 if final_request or self.verify_failures >= MAX_VERIFY_ROUNDS:
                     return self.incomplete(message.content, f"自动验证未通过（{label}）")
                 self.reminder = {"role": "system", "content": feedback}
+                return None
+        if ctx.hooks is not None and ctx.role is None:
+            reason = ctx.hooks.run(self, "stop", {"answer": message.content, "edited": self.edited})
+            if reason is not None:
+                self.stop_blocks += 1
+                if final_request or self.stop_blocks >= MAX_STOP_BLOCKS:
+                    return self.incomplete(message.content, "结束 Hook 未放行")
+                self.reminder = {"role": "system", "content": f"结束 Hook 要求继续处理：{reason}"}
                 return None
         if final_request and self.forced_reason and self.local_tool_calls > 0:
             return self.incomplete(message.content, self.forced_reason)

@@ -5,6 +5,7 @@ import os
 import shlex
 
 from ..core.agent import AgentLimits, DEFAULT_STEPS
+from ..core.hooks import HookSet
 
 
 def check_approval_timeout(value):
@@ -50,6 +51,14 @@ def verify_command_from(args):
     if not argv:
         raise ValueError("--verify-cmd 不能为空")
     return argv
+
+
+def hooks_from(args):
+    if args.hooks is None:
+        return None
+    if args.mode == "multi":
+        raise ValueError("--hooks 暂不支持 multi 模式")
+    return HookSet.load(args.hooks)
 
 
 def limits_from(args):

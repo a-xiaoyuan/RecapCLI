@@ -17,6 +17,18 @@ def _can_parallel_reads(tool_calls):
             and all(call.function.name in PARALLEL_READ_TOOLS for call in tool_calls))
 
 
+def _arguments(call):
+    try:
+        return json.loads(call.function.arguments)
+    except (ValueError, TypeError):
+        return call.function.arguments
+
+
+def _hook_result(result):
+    """只给 Hook 收据字段，不把大段文件内容传给外部命令。"""
+    return {key: result[key] for key in ("ok", "error", "summary", "path", "status", "returncode") if key in result}
+
+
 def _tool_location(call):
     try:
         arguments = json.loads(call.function.arguments)
@@ -103,6 +115,10 @@ class ToolBatch:
                     trace("todo", items=run.todos.items)
                     ctx.on_event("[待办]\n" + run.todos.render())
                 return result
+            if ctx.hooks is not None:
+                reason = ctx.hooks.run(run, "pre_tool", {"arguments": _arguments(call)}, tool=call.function.name)
+                if reason is not None:
+                    return {"ok": False, "status": "blocked_by_hook", "error": f"Hook 阻止了本次调用：{reason}"}
             if ctx.extra_executor is not None and call.function.name in ctx.extra_names:
                 return ctx.extra_executor(
                     call.function.name, call.function.arguments, capabilities=granted,
@@ -163,7 +179,9 @@ class ToolBatch:
         ctx, run = self.ctx, self.run
         budget, trace = ctx.budget, run.trace
         runnable = self.calls[:self.allowed] if not budget.time_low() else []
-        parallel_results = self.run_parallel_reads(runnable) if _can_parallel_reads(runnable) else {}
+        # 工具前 Hook 要能挡住每次调用，所以有配置时不并行。
+        parallel = _can_parallel_reads(runnable) and not (ctx.hooks is not None and ctx.hooks.has("pre_tool"))
+        parallel_results = self.run_parallel_reads(runnable) if parallel else {}
         for index, call in enumerate(self.calls):
             run.local_tool_calls += 1
             action_id = self.action_id(index, call)
@@ -185,6 +203,11 @@ class ToolBatch:
             changed = edited_paths(call.function.name, result)
             run.edited.extend(path for path in changed if path not in run.edited)
             run.verify_dirty = run.verify_dirty or bool(changed)
+            if ctx.hooks is not None and not skip_tool and result.get("status") != "blocked_by_hook":
+                feedback = ctx.hooks.run(run, "post_tool", {"arguments": _arguments(call), "result": _hook_result(result)},
+                                         tool=call.function.name)
+                if feedback is not None:
+                    result = {**result, "hook_feedback": feedback}
             self.report(call, result)
             result, tool_message = self.fit_into_turn(call, result, len(self.calls) - index - 1)
             self.report_outcome(result, skip_tool)

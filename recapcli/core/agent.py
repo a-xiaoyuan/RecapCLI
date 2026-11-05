@@ -109,7 +109,7 @@ def _validate_run(prompt, workspace, max_steps, mode, compact_only):
 def _prepare_turn_context(client, model, prompt, workspace, max_steps, limits, capabilities, mode, memory_text,
                           history, summary, *, compact_only, auto_compact, approver, budget, role, cancel_event,
                           tools_enabled, user_message, extra_tools, extra_executor, access_policy, request_reserve,
-                          on_event, on_trace, on_stream, verify_command):
+                          on_event, on_trace, on_stream, verify_command, hooks):
     limits = limits or AgentLimits()
     if isinstance(client, ModelClient):
         limits = replace(limits, max_context_tokens=min(limits.max_context_tokens, client.metadata()["context_tokens"]))
@@ -168,7 +168,7 @@ def _prepare_turn_context(client, model, prompt, workspace, max_steps, limits, c
         extra_names=extra_names, extra_tools=extra_tools, extra_executor=extra_executor, history=history,
         summary=summary, role=role, request_reserve=request_reserve, tools_enabled=tools_enabled,
         auto_compact=auto_compact, compact_only=compact_only, on_event=on_event, on_trace=on_trace, on_stream=on_stream,
-        verify_command=verify_command)
+        verify_command=verify_command, hooks=hooks)
 
 
 def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
@@ -176,7 +176,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
               on_trace=None, summary=None, auto_compact=False, compact_only=False,
               cancel_event=None, approver=None, _budget=None, _role=None, _request_reserve=0,
               _tools_enabled=True, on_stream=None, _user_message=None,
-              extra_tools=None, extra_executor=None, access_policy=None, verify_command=None):
+              extra_tools=None, extra_executor=None, access_policy=None, verify_command=None, hooks=None):
     """成功时返回完整的一轮；失败时不修改调用方的任何历史。
 
     预算（请求、工具、时间、上下文）用完时不抛错：转入最后一次不带工具的汇总请求，
@@ -190,5 +190,5 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         compact_only=compact_only, auto_compact=auto_compact, approver=approver, budget=_budget, role=_role,
         cancel_event=cancel_event, tools_enabled=_tools_enabled, user_message=_user_message, extra_tools=extra_tools,
         extra_executor=extra_executor, access_policy=access_policy, request_reserve=_request_reserve,
-        on_event=on_event, on_trace=on_trace, on_stream=on_stream, verify_command=verify_command)
+        on_event=on_event, on_trace=on_trace, on_stream=on_stream, verify_command=verify_command, hooks=hooks)
     return TurnRunner(context).run()

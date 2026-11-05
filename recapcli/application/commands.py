@@ -93,6 +93,12 @@ def _show_auto_verify(ui, kind, entry, tasks, starts, finished):
     ui.info(f"自动验证 {' '.join(entry['command'])}：{result}")
 
 
+def _show_hook(ui, kind, entry, tasks, starts, finished):
+    target = f" {entry['tool']}" if entry.get("tool") else ""
+    result = "已阻止" if entry["blocked"] else f"{entry['status']}，退出码 {entry['returncode']}"
+    ui.info(f"Hook {entry['event']}{target}：{' '.join(entry['command'])} {result}")
+
+
 _TASK_EVENT_PRINTERS = {
     "project_version": _show_project_version,
     "project_rules": _show_project_rules,
@@ -106,6 +112,7 @@ _TASK_EVENT_PRINTERS = {
     "tool_interrupted": _show_labeled_event,
     "verification": _show_labeled_event,
     "auto_verify": _show_auto_verify,
+    "hook": _show_hook,
     "compaction": _show_labeled_event,
     "compaction_failed": _show_labeled_event,
     "compaction_skipped": _show_labeled_event,

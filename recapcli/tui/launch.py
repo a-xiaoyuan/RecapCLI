@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from ..application.options import (capabilities_from, check_approval_timeout, limits_from, max_steps_from,
+from ..application.options import (capabilities_from, check_approval_timeout, hooks_from, limits_from, max_steps_from,
                                    verify_command_from)
 from ..cli import build_parser
 from ..cli import main as cli_main
@@ -30,6 +30,7 @@ def shell_options(args):
         continue_session=bool(args.continue_), memory=args.memory, auto_compact=args.auto_compact,
         yes=bool(args.yes), approval_timeout=float(args.approval_timeout),
         mcp_repo=bool(args.mcp_repo), mcp_config=args.mcp_config, verify_command=verify_command_from(args),
+        hooks=hooks_from(args),
     )
 
 
