@@ -10,6 +10,7 @@
 - `recapcli/core/budget.py`：请求/工具/时间预算；用完抛 `BudgetExhausted`，由 agent 转入收尾，不当作失败。
 - `recapcli/core/context.py`：token 估算（`TokenMeter` 用服务端 prompt_tokens 校准）和历史选择。
 - `recapcli/core/planning.py`、`subagents.py`、`team.py`：plan / multi 模式。
+- `recapcli/core/skills.py`：发现 SKILL.md 技能，提示词只放描述，全文由 `load_skill` 按需读取。
 - `recapcli/tools/`：工具实现，`registry.py` 是工具定义与分发入口。
 - `recapcli/application/`：一轮任务的落盘与恢复（`runtime.py`）、斜杠命令（`commands.py`）、帮助文本（`help.py`）、启动参数校验（`options.py`）。
 - `recapcli/cli.py`：行式 CLI 与全部启动参数；`recapcli/tui/`：Textual 界面，样式在 `recap.tcss`，配色在 `theme.py`。`app.py` 组合 `transcript.py`、`status_bar.py`、`command_input.py`、`approval_panel.py`、`clipboard.py`。

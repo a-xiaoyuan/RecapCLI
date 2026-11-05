@@ -24,6 +24,32 @@ recapcli --allow-write --verify-cmd "python -m unittest"
 
 Hook 从标准输入读取事件 JSON，退出码 `0` 放行，`2` 阻止并把输出交回模型，其他情况只提示。`pre_tool` 阻止后工具不执行，`stop` 阻止后模型继续处理，最多 3 次。配置必须显式指定，不会自动读取项目文件；里面的命令以当前用户权限运行，不走逐次审批。`stop` 只在 `react` 模式生效，`--hooks` 暂不支持 `multi`。
 
+## Skills
+
+技能是一份写给 Agent 的操作指引，格式兼容 `SKILL.md`：一个目录放一个技能，头部写名称和描述，正文写步骤。
+
+```markdown
+---
+name: release-notes
+description: 用户要写发布说明时使用
+---
+
+1. 用 git log 列出上次发布以来的提交。
+2. 按功能、修复分组，写成中文。
+```
+
+RecapCLI 按下面的顺序扫描，同名时靠前的生效：
+
+1. `项目/.agents/skills/技能名/SKILL.md`
+2. `项目/.claude/skills/技能名/SKILL.md`
+3. 配置目录下的 `skills/技能名/SKILL.md`
+
+系统提示词只列出名称和描述，模型判断用得上时才调用 `load_skill` 读全文，所以技能多了也不会每轮占满上下文。列表最多占 8 KiB，放不下的技能不会列出；单个文件最大 64 KiB。
+
+输入 `/skills` 查看已发现的技能和被跳过的原因。每个任务都会记录当轮技能的名称和 sha256，可在任务记录的 `skill_versions` 里核对。
+
+技能只是资料：不能授权写入或执行，也不替代审批，里面的脚本不会自动运行，要走 `run_command`。项目里的技能不能通过符号链接指向项目之外。目前只在 `react` 模式的主代理上生效，`plan`、`multi` 和子代理不加载；头部只解析常见写法，`allowed-tools` 等其他字段会被忽略。
+
 ## 网页工具
 
 需要联网时使用 `--allow-web`。网页读取不需要搜索密钥；网页搜索需要在 RecapCLI 的 `.env` 或环境变量中配置 `BRAVE_API_KEY` 或 `TAVILY_API_KEY`。

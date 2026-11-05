@@ -18,6 +18,7 @@ from .context import DEFAULT_CONTEXT_TOKENS
 from .planning import PlanController
 from .project_rules import load_rule_layers, summarize_rule_layers, MAX_RULE_BYTES
 from .results import TraceError, TurnResult, clear_old_tool_results, edited_paths  # noqa: F401  (re-exported)
+from .skills import MAX_CATALOG_BYTES, SKILL_TOOL
 from .todos import TODO_TOOL
 from .turn import TurnContext, TurnRunner
 
@@ -109,7 +110,7 @@ def _validate_run(prompt, workspace, max_steps, mode, compact_only):
 def _prepare_turn_context(client, model, prompt, workspace, max_steps, limits, capabilities, mode, memory_text,
                           history, summary, *, compact_only, auto_compact, approver, budget, role, cancel_event,
                           tools_enabled, user_message, extra_tools, extra_executor, access_policy, request_reserve,
-                          on_event, on_trace, on_stream, verify_command, hooks):
+                          on_event, on_trace, on_stream, verify_command, hooks, skills):
     limits = limits or AgentLimits()
     if isinstance(client, ModelClient):
         limits = replace(limits, max_context_tokens=min(limits.max_context_tokens, client.metadata()["context_tokens"]))
@@ -154,9 +155,14 @@ def _prepare_turn_context(client, model, prompt, workspace, max_steps, limits, c
     turn = [prepared_user]
     extra_definitions = list(extra_tools or ()) if tools_enabled else []
     definitions = tool_definitions(capabilities) + extra_definitions if tools_enabled else []
-    # 待办清单只给主代理；子代理的任务已经由父任务拆好。
-    if tools_enabled and role is None and not compact_only and mode == "react":
+    # 待办清单和技能只给 react 主代理；子代理的任务已经由父任务拆好。
+    main_agent = tools_enabled and role is None and not compact_only and mode == "react"
+    if main_agent:
         definitions = definitions + [TODO_TOOL]
+    skills = skills if main_agent and skills is not None and skills.skills else None
+    if skills is not None:
+        definitions = definitions + [SKILL_TOOL]
+        system_text += "\n\n" + skills.prompt_text(min(MAX_CATALOG_BYTES, limits.context_bytes // 8))
     extra_names = {item["function"]["name"] for item in extra_definitions}
     history = history or []
     validate_summary(summary, history)
@@ -168,7 +174,7 @@ def _prepare_turn_context(client, model, prompt, workspace, max_steps, limits, c
         extra_names=extra_names, extra_tools=extra_tools, extra_executor=extra_executor, history=history,
         summary=summary, role=role, request_reserve=request_reserve, tools_enabled=tools_enabled,
         auto_compact=auto_compact, compact_only=compact_only, on_event=on_event, on_trace=on_trace, on_stream=on_stream,
-        verify_command=verify_command, hooks=hooks)
+        verify_command=verify_command, hooks=hooks, skills=skills)
 
 
 def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
@@ -176,13 +182,14 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
               on_trace=None, summary=None, auto_compact=False, compact_only=False,
               cancel_event=None, approver=None, _budget=None, _role=None, _request_reserve=0,
               _tools_enabled=True, on_stream=None, _user_message=None,
-              extra_tools=None, extra_executor=None, access_policy=None, verify_command=None, hooks=None):
+              extra_tools=None, extra_executor=None, access_policy=None, verify_command=None, hooks=None, skills=None):
     """成功时返回完整的一轮；失败时不修改调用方的任何历史。
 
     预算（请求、工具、时间、上下文）用完时不抛错：转入最后一次不带工具的汇总请求，
     连这一步也做不了时用本轮事实生成结束说明，状态为 incomplete。
     工具已执行后遇到服务端上下文超限或输出截断时同样收尾；其他模型错误仍然抛出。
     配置 verify_command 后，react 主代理有实际编辑时会在结束前运行它，失败结果交回模型。
+    skills 只对 react 主代理生效：提示词列出名称和描述，全文由 load_skill 按需读取。
     """
     workspace, max_steps = _validate_run(prompt, workspace, max_steps, mode, compact_only)
     context = _prepare_turn_context(
@@ -190,5 +197,6 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
         compact_only=compact_only, auto_compact=auto_compact, approver=approver, budget=_budget, role=_role,
         cancel_event=cancel_event, tools_enabled=_tools_enabled, user_message=_user_message, extra_tools=extra_tools,
         extra_executor=extra_executor, access_policy=access_policy, request_reserve=_request_reserve,
-        on_event=on_event, on_trace=on_trace, on_stream=on_stream, verify_command=verify_command, hooks=hooks)
+        on_event=on_event, on_trace=on_trace, on_stream=on_stream, verify_command=verify_command, hooks=hooks,
+        skills=skills)
     return TurnRunner(context).run()

@@ -6,6 +6,7 @@ import json
 from ..tools import execute_tool
 from .budget import SKIPPED_RESULT
 from .results import clear_old_tool_results, edited_paths, fact_result, oversized_result
+from .skills import SKILL_TOOL
 from .todos import TODO_TOOL
 
 PARALLEL_READ_TOOLS = frozenset({"read_file", "find_files", "list_directory", "search_text", "read_url", "web_search"})
@@ -119,6 +120,8 @@ class ToolBatch:
                 reason = ctx.hooks.run(run, "pre_tool", {"arguments": _arguments(call)}, tool=call.function.name)
                 if reason is not None:
                     return {"ok": False, "status": "blocked_by_hook", "error": f"Hook 阻止了本次调用：{reason}"}
+            if ctx.skills is not None and call.function.name == SKILL_TOOL["function"]["name"]:
+                return ctx.skills.load(call.function.arguments)
             if ctx.extra_executor is not None and call.function.name in ctx.extra_names:
                 return ctx.extra_executor(
                     call.function.name, call.function.arguments, capabilities=granted,

@@ -293,7 +293,7 @@ class ShellDriver:
                            capabilities=self.options.capabilities,
                            approver=self._approver() if head in {"/send", "/stop"} else None)
             return None
-        if head in {"/tasks", "/task", "/diff", "/undo"}:
+        if head in {"/tasks", "/task", "/diff", "/undo", "/skills"}:
             store = self.store if self.store is not None else SimpleNamespace(workspace=self.options.workspace)
             session = self.session if self.session is not None else {"id": "", "messages": [], "summary": None}
             handle_command(prompt, self.presenter, store, session, self.model or "",

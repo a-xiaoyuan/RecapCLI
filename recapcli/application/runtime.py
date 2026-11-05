@@ -9,6 +9,7 @@ from openai import APIError
 
 from ..core.agent import AgentLimits, DEFAULT_STEPS, run_agent
 from ..core.recovery import TurnRecovery
+from ..core.skills import discover_skills
 from ..llm.client import ModelClient
 from ..storage.tasks import TaskStore, project_version
 from ..tools import execute_tool
@@ -56,12 +57,13 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
     tasks = TaskStore(workspace)
     if compact_only:
         max_steps = 1
+    skills = discover_skills(workspace) if mode == "react" and not compact_only else None
     task_id = tasks.start(session["id"], prompt, model, "compact" if compact_only else mode, {
         "history_messages": len(session["messages"]), "capabilities": capabilities,
         "additional_directories": [str(path) for path in store.access.directories],
         "limits": asdict(limits), "max_steps": max_steps if max_steps is not None else DEFAULT_STEPS[mode],
         "provider_host": str(getattr(getattr(client, "base_url", None), "host", "unknown")),
-        "experience_versions": [], "skill_versions": [],
+        "experience_versions": [], "skill_versions": skills.versions() if skills is not None else [],
         "auto_compact": auto_compact, "summary_covered_messages": (session.get("summary") or {}).get("covered_messages", 0),
         "model_config": model_config,
     })
@@ -101,7 +103,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
                            summary=session.get("summary"), auto_compact=auto_compact, compact_only=compact_only,
                            cancel_event=cancel_event, approver=approver,
                            extra_tools=extra_tools, extra_executor=extra_executor,
-                           access_policy=store.access, verify_command=verify_command, hooks=hooks,
+                           access_policy=store.access, verify_command=verify_command, hooks=hooks, skills=skills,
                            on_stream=getattr(ui, "stream_update", None) if isinstance(client, ModelClient) else None)
     except BaseException as error:
         if getattr(ui, "stream_update", None) is not None:

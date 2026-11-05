@@ -65,6 +65,7 @@ class TurnContext:
     on_stream: Callable | None
     verify_command: list | None = None
     hooks: Any = None
+    skills: Any = None
 
 
 class TurnRunner:

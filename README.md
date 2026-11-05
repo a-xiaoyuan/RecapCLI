@@ -19,7 +19,7 @@ RecapCLI 用你自己的模型接口工作，支持 OpenAI 兼容的 Chat Comple
 | 它到底做了什么 | 工具结果、命令退出码、审批和用量都写入任务记录，用 `/task ID` 查看 |
 | 改错了怎么办 | 编辑自动备份，`/undo` 按编辑组撤销，文件有后续变化时不会覆盖 |
 | 任务太长跑不完 | 上下文和预算用完时转入收尾，说明已完成和未完成的部分 |
-| 怎么接入团队规则 | 读取 `AGENTS.md`，并支持 Hooks、MCP 和长期记忆 |
+| 怎么接入团队规则 | 读取 `AGENTS.md`，并支持 Skills、Hooks、MCP 和长期记忆 |
 
 ## 快速开始
 
@@ -175,6 +175,7 @@ recapcli --profile backup
 下面这些内容放在 [进阶参考](docs/reference.md)：
 
 - [自动验证与 Hooks](docs/reference.md#自动验证与-hooks)
+- [Skills](docs/reference.md#skills)
 - [MCP 服务](docs/reference.md#mcp-服务)
 - [计划、预算与收尾](docs/reference.md#计划协作与混合检索)
 - [语义检索配置](docs/reference.md#计划协作与混合检索)
@@ -196,7 +197,7 @@ recapcli/
   ui/            行式终端输出
   application/   一轮任务、斜杠命令、启动校验
   storage/       会话、记忆和任务记录
-  core/ mcp/     Agent 主循环、规划、预算、Hooks、MCP
+  core/ mcp/     Agent 主循环、规划、预算、Skills、Hooks、MCP
   tools/         文件、检索、编辑、命令和审批
   llm/           模型客户端、协议和流式输出
   base/          路径、文件写入和 token 估算

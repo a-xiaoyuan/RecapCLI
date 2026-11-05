@@ -5,6 +5,7 @@ import json
 from ..config import list_model_profiles
 from ..core.memory import active
 from ..core.project_rules import project_rules_description
+from ..core.skills import PROJECT_ROOTS, discover_skills, user_skills_dir
 from ..storage.tasks import TaskStore
 from .runtime import run_undo, save_session
 from .changes import show_changes
@@ -166,6 +167,21 @@ def _cmd_add_dir(name, argument, ui, store, session, model, *, capabilities, app
             ui.error(str(error))
     else:
         ui.info("当前文件访问目录：\n" + "\n".join(str(path) for path in (store.workspace, *store.access.directories)))
+    return session
+
+
+def _cmd_skills(name, argument, ui, store, session, model, *, capabilities, approver):
+    catalog = discover_skills(store.workspace)
+    if not catalog.skills and not catalog.skipped:
+        places = "、".join(f"{root}/技能名/" for root in PROJECT_ROOTS)
+        ui.info(f"未发现技能。把 SKILL.md 放到 {places} 或 {user_skills_dir()}。")
+        return session
+    ui.info(f"技能（{len(catalog.skills)} 个，只在 react 模式提供给模型）：")
+    for skill in catalog.skills:
+        ui.info(f"  {skill.name} · {skill.source}")
+        ui.info(f"    {skill.description}")
+    for source, reason in catalog.skipped:
+        ui.info(f"  已跳过 {source}：{reason}")
     return session
 
 
@@ -373,6 +389,7 @@ def _cmd_forget(name, argument, ui, store, session, model, *, capabilities, appr
 
 _COMMANDS: dict[str, callable] = {
     "/add-dir": _cmd_add_dir,
+    "/skills": _cmd_skills,
     "/exit": _cmd_exit,
     "/quit": _cmd_exit,
     "/help": _cmd_help,
