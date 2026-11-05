@@ -46,7 +46,7 @@ def _publish_task(tasks, task_id, ui, *, show_changes=False):
 def run_turn(client, model, workspace, store, ui, session, prompt, *,
              max_steps=None, memory_enabled=True, limits=None, capabilities=("read",), mode="react",
              auto_compact=True, compact_only=False, cancel_event=None, approver=None,
-             extra_tools=None, extra_executor=None):
+             extra_tools=None, extra_executor=None, verify_command=None):
     """先落任务，再执行；失败轨迹独立于成功会话，核心不依赖存储。"""
     limits = limits or AgentLimits()
     model_config = client.metadata() if isinstance(client, ModelClient) else None
@@ -101,7 +101,7 @@ def run_turn(client, model, workspace, store, ui, session, prompt, *,
                            summary=session.get("summary"), auto_compact=auto_compact, compact_only=compact_only,
                            cancel_event=cancel_event, approver=approver,
                            extra_tools=extra_tools, extra_executor=extra_executor,
-                           access_policy=store.access,
+                           access_policy=store.access, verify_command=verify_command,
                            on_stream=getattr(ui, "stream_update", None) if isinstance(client, ModelClient) else None)
     except BaseException as error:
         if getattr(ui, "stream_update", None) is not None:

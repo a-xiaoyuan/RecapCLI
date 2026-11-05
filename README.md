@@ -118,6 +118,14 @@ recapcli --mode multi "分析会话保存逻辑"
 
 **Ctrl+A** 全选输入；输入框为空时全选对话，随后按 **Ctrl+C** 复制。IDE 截获快捷键时，可直接输入 `/copy` 或 `/copy all`。
 
+想让 Agent 改完自己验证，用 `--verify-cmd` 指定命令：
+
+```sh
+recapcli --allow-write --verify-cmd "python -m unittest"
+```
+
+本轮有实际编辑时，模型结束前会自动运行这个命令；失败结果交回模型继续修，最多 3 次，仍失败时任务标记为未完成。它只在 `react` 模式生效，不经过 shell，所以不能用管道或 `&&`，命令也不需要逐次审批。
+
 需要联网时使用 `--allow-web`。网页读取不需要搜索密钥；网页搜索需要在 RecapCLI 的 `.env` 或环境变量中配置 `BRAVE_API_KEY` 或 `TAVILY_API_KEY`。
 
 ## MCP 服务

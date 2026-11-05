@@ -37,6 +37,7 @@ class ShellOptions:
     mcp_repo: bool = False
     mcp_config: Path | None = None
     additional_dirs: tuple = ()
+    verify_command: list | None = None
 
 
 class Presenter:
@@ -401,7 +402,7 @@ class ShellDriver:
                 prompt, max_steps=self.options.max_steps, memory_enabled=self.options.memory,
                 limits=self.options.limits, capabilities=self.options.capabilities, mode=self.options.mode,
                 auto_compact=self.options.auto_compact, compact_only=compact_only,
-                cancel_event=self.cancel_event, approver=approver,
+                cancel_event=self.cancel_event, approver=approver, verify_command=self.options.verify_command,
                 extra_tools=self.mcp_manager.definitions if self.mcp_manager is not None else None,
                 extra_executor=self.mcp_manager.call if self.mcp_manager is not None else None,
             )

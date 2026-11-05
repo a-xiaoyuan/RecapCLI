@@ -8,6 +8,7 @@ from openai import APIError
 
 from ..llm.protocols import assistant_record
 from ..tools import tool_definitions
+from .auto_verify import MAX_VERIFY_ROUNDS, run_verification
 from .budget import BudgetExhausted, SKIPPED_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text
 from .context import MAX_HISTORY_MESSAGES, TokenMeter, json_tokens, select_history
@@ -61,6 +62,7 @@ class TurnContext:
     on_event: Callable
     on_trace: Callable | None
     on_stream: Callable | None
+    verify_command: list | None = None
 
 
 class TurnRunner:
@@ -69,6 +71,9 @@ class TurnRunner:
         self.requests_used = 0
         self.local_tool_calls = 0
         self.edited = []
+        self.verify_dirty = False   # 上次验证之后有实际编辑
+        self.verify_failures = 0
+        self.verified = False
         self.format_correction = None
         self.corrected_phases = set()
         self.meter = TokenMeter()
@@ -300,9 +305,23 @@ class TurnRunner:
             self.trace("todo_reminder", open_items=self.todos.open_items())
             ctx.on_event("[待办] 清单还有未完成项，提醒模型继续")
             return None
+        if ctx.verify_command and ctx.role is None and self.verify_dirty:
+            label = " ".join(ctx.verify_command)
+            if ctx.budget.time_low():
+                ctx.on_event("[验证] 时间不足，未运行")
+                return self.incomplete(message.content, f"时间不足，自动验证未运行（{label}）")
+            self.verify_dirty = False
+            self.verified, feedback = run_verification(self)
+            if not self.verified:
+                self.verify_failures += 1
+                if final_request or self.verify_failures >= MAX_VERIFY_ROUNDS:
+                    return self.incomplete(message.content, f"自动验证未通过（{label}）")
+                self.reminder = {"role": "system", "content": feedback}
+                return None
         if final_request and self.forced_reason and self.local_tool_calls > 0:
             return self.incomplete(message.content, self.forced_reason)
-        return TurnResult(message.content, ctx.turn, "returned", "模型已返回回答；任务验收未验证", self.new_summary)
+        checked = "；自动验证通过" if self.verified else ""
+        return TurnResult(message.content, ctx.turn, "returned", f"模型已返回回答{checked}；任务验收未验证", self.new_summary)
 
     def handle_response(self, response, step, final_request, tools_allowed):
         ctx = self.ctx

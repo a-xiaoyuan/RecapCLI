@@ -182,7 +182,9 @@ class ToolBatch:
                 # 在上下文处理前保存真实结果，操作事实不随模型上下文丢失。
                 trace("tool_result", action_id=action_id, call_id=call.id, name=call.function.name,
                       result=fact_result(result))
-            run.edited.extend(path for path in edited_paths(call.function.name, result) if path not in run.edited)
+            changed = edited_paths(call.function.name, result)
+            run.edited.extend(path for path in changed if path not in run.edited)
+            run.verify_dirty = run.verify_dirty or bool(changed)
             self.report(call, result)
             result, tool_message = self.fit_into_turn(call, result, len(self.calls) - index - 1)
             self.report_outcome(result, skip_tool)

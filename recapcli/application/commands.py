@@ -88,6 +88,11 @@ def _show_subagent_event(ui, kind, entry, tasks, starts, finished):
     ui.info("子代理记录（模型意见不等于验收）：" + json.dumps(entry, ensure_ascii=False))
 
 
+def _show_auto_verify(ui, kind, entry, tasks, starts, finished):
+    result = "通过" if entry["success"] else f"失败（{entry['status']}，退出码 {entry['returncode']}）"
+    ui.info(f"自动验证 {' '.join(entry['command'])}：{result}")
+
+
 _TASK_EVENT_PRINTERS = {
     "project_version": _show_project_version,
     "project_rules": _show_project_rules,
@@ -100,6 +105,7 @@ _TASK_EVENT_PRINTERS = {
     "recovery": _show_labeled_event,
     "tool_interrupted": _show_labeled_event,
     "verification": _show_labeled_event,
+    "auto_verify": _show_auto_verify,
     "compaction": _show_labeled_event,
     "compaction_failed": _show_labeled_event,
     "compaction_skipped": _show_labeled_event,
