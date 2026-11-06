@@ -202,6 +202,7 @@ recapcli/
   llm/           模型客户端、协议和流式输出
   base/          路径、文件写入和 token 估算
 tests/           单元与集成测试
+evals/           固定任务上的真实模型评测，见 evals/README.md
 ```
 
 ```sh

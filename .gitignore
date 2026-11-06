@@ -38,3 +38,6 @@ logs/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Evaluation runs: workspaces and model transcripts stay local
+evals/runs/

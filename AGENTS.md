@@ -15,6 +15,7 @@
 - `recapcli/application/`：一轮任务的落盘与恢复（`runtime.py`）、斜杠命令（`commands.py`）、帮助文本（`help.py`）、启动参数校验（`options.py`）。
 - `recapcli/cli.py`：行式 CLI 与全部启动参数；`recapcli/tui/`：Textual 界面，样式在 `recap.tcss`，配色在 `theme.py`。`app.py` 组合 `transcript.py`、`status_bar.py`、`command_input.py`、`approval_panel.py`、`clipboard.py`。
 - `recapcli/storage/`：会话 JSON、任务 SQLite（`.recapcli/` 目录）。
+- `evals/`：固定目标提交上的真实模型评测，`run` 会产生费用，见 `evals/README.md`；运行结果在被忽略的 `evals/runs/`。
 
 ## 验证
 
