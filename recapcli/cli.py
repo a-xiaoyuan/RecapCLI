@@ -335,7 +335,7 @@ def main(argv=None) -> int:
                     return 0 if save_session(store, session, ui) else 1
                 return interactive_loop(client, config.model, args.workspace, store, ui, session,
                                         args.max_steps, args.memory, limits, capabilities, args.mode,
-                                        args.auto_compact, approver,
+                                        args.auto_compact, approver, verify_command=verify_command, hooks=hooks,
                                         extra_tools=extra_tools, extra_executor=extra_executor)
             finally:
                 from .tools.commands import close_commands

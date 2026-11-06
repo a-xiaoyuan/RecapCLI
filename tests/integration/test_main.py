@@ -799,6 +799,35 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(self.errors.getvalue().count("命令执行失败"), 3)
         self.assertEqual(store.memory_path.read_bytes(), original)
 
+    def test_interactive_loop_runs_verify_command(self):
+        check = self.workspace / "check.py"
+        check.write_text("print('验证标记')\nraise SystemExit(1)\n", encoding="utf-8")
+        edit = tool_call(name="edit_file", arguments=json.dumps({"path": "new.txt", "old_text": "", "new_text": "内容"}))
+        with patch.object(TerminalUI, "read_prompt", side_effect=["新建文件", "/exit"]):
+            code, requests = self.run_main(
+                ["--workspace", str(self.workspace), "--allow-write", "--yes", "--no-memory",
+                 "--verify-cmd", f'"{sys.executable}" "{check}"', "--banner", "off", "--color", "never"],
+                [reply(calls=[edit]), reply("改好了"), reply("仍然失败"), reply("还是失败")],
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(requests), 4)
+        self.assertIn("验证标记", requests[2]["messages"][-1]["content"])
+
+    def test_interactive_loop_runs_hooks(self):
+        check = self.workspace / "stop.py"
+        check.write_text("print('Hook标记')\nraise SystemExit(2)\n", encoding="utf-8")
+        config = self.workspace / "hooks.json"
+        config.write_text(json.dumps({"stop": [{"command": [sys.executable, str(check)]}]}), encoding="utf-8")
+        with patch.object(TerminalUI, "read_prompt", side_effect=["你好", "/exit"]):
+            code, requests = self.run_main(
+                ["--workspace", str(self.workspace), "--no-memory", "--hooks", str(config),
+                 "--banner", "off", "--color", "never"],
+                [reply("第一次"), reply("第二次"), reply("第三次")],
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(requests), 3)
+        self.assertIn("Hook标记", requests[1]["messages"][-1]["content"])
+
     def test_failed_model_turn_preserves_completed_tools_for_next_question(self):
         (self.workspace / "README.md").write_text("offline content", encoding="utf-8")
         prompts = ["第一问", "失败的问题", "继续提问", "/exit"]
