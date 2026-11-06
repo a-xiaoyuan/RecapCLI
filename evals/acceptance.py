@@ -8,7 +8,8 @@ import sys
 import tempfile
 from types import SimpleNamespace
 
-ACCEPTANCE_VERSION = 2
+ACCEPTANCE_VERSION = 3
+ROOT_LOADED_CLAIM = re.compile(r"(?<![\w/\\.-])AGENTS\.md\s*[·:：]?\s*已加载")
 
 
 def check(checks, name, fn):
@@ -26,15 +27,22 @@ def require(condition, message):
 
 
 def validate_rule_summary(record, text, expected_loaded):
-    """核对实际加载状态与数量；根规则的准确缺失/跳过说明不构成失败。"""
+    """只判用户读到的摘要是否准确，不绑定内部字段的写法。
+
+    根规则没加载时，摘要不能说它已加载，还要说清楚加载的不是根规则：
+    写出子目录规则或文件名，或者明确说根规则没加载，都算说清楚了。
+    """
     loaded = [item for item in record.get("layers", []) if item.get("status") == "loaded"]
     require(len(loaded) == expected_loaded, f"实际加载规则数量不符：{len(loaded)}")
     if not expected_loaded:
-        require(record.get("status") != "loaded" and "已加载" not in text,
-                f"没有有效规则却报告已加载：{text}")
+        require("已加载" not in text, f"没有有效规则却报告已加载：{text}")
         return
-    require(record.get("status") == "loaded", f"规则总状态未反映已加载的规则：{record.get('status')}")
-    size = re.search(r"已加载\s*(\d+)\s*字节", text)
+    if not any(item.get("source") == "AGENTS.md" for item in loaded):
+        require(ROOT_LOADED_CLAIM.search(text) is None, f"根规则没有加载，摘要却说它已加载：{text}")
+        require("子目录" in text or re.search(r"根目录.*[未没]", text)
+                or any(item.get("source", "") in text for item in loaded),
+                f"摘要没有说明实际加载的规则：{text}")
+    size = re.search(r"已加载.*?(\d+)\s*字节", text)
     require(size is not None, f"摘要未正确报告已加载的规则：{text}")
     sizes = {sum(item.get("bytes", 0) for item in loaded)}
     # 摘要明确以文件名开头时，字节数也可以指该文件；不能强迫旧实现改用总字节数。
@@ -105,8 +113,8 @@ def main(argv=None):
         from recapcli.application.help import help_text
         from recapcli.cli import main
 
-        fixture = scratch / "history"
-        fixture.mkdir(exist_ok=True)
+        # 每次用新目录，上一次验收留下的任务不能影响这次得分。
+        fixture = Path(tempfile.mkdtemp(prefix="history-", dir=scratch))
         tasks = TaskStore(fixture)
         wanted = []
         for index in range(5):

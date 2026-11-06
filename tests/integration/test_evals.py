@@ -4,6 +4,7 @@ from contextlib import redirect_stderr
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ from openai import OpenAI
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from evals import acceptance as evaluator_v2, runner  # noqa: E402
+from evals import acceptance as evaluator, runner  # noqa: E402
 from recapcli.core.agent import AgentLimits  # noqa: E402
 
 EVALUATOR = """import json, sys
@@ -269,30 +270,83 @@ class RuleAcceptanceTests(unittest.TestCase):
     def test_accurate_root_status_notes_are_allowed(self):
         for text_ in ("根目录未找到 AGENTS.md，子目录规则 · 已加载 17 字节",
                       "根目录 AGENTS.md 未加载，子目录规则 · 已加载 17 字节 · 含 2 个规则文件",
-                      "pkg/AGENTS.md · 已加载 17 字节 · 1 个未加载"):
+                      "pkg/AGENTS.md · 已加载 17 字节 · 1 个未加载",
+                      "子目录规则已加载 · pkg/AGENTS.md · 共 17 字节",
+                      "项目规则 · 已加载 17 字节（根目录规则未进入上下文）"):
             with self.subTest(text=text_):
-                evaluator_v2.validate_rule_summary(self.record(), text_, 1)
+                evaluator.validate_rule_summary(self.record(), text_, 1)
 
-    def test_loaded_text_cannot_hide_wrong_record_status(self):
-        with self.assertRaises(AssertionError):
-            evaluator_v2.validate_rule_summary(self.record("missing"), "子目录规则 · 已加载 17 字节", 1)
+    def test_internal_status_field_does_not_decide_the_result(self):
+        evaluator.validate_rule_summary(self.record("missing"), "子目录规则 · 已加载 17 字节", 1)
+
+    def test_text_cannot_claim_the_root_when_only_nested_rule_loaded(self):
+        for text_ in ("AGENTS.md · 已加载 17 字节", "AGENTS.md · 已加载 17 字节 · 含 1 个规则文件"):
+            with self.subTest(text=text_), self.assertRaisesRegex(AssertionError, "根规则没有加载"):
+                evaluator.validate_rule_summary(self.record(), text_, 1)
+
+    def test_text_must_say_what_was_loaded(self):
+        with self.assertRaisesRegex(AssertionError, "没有说明"):
+            evaluator.validate_rule_summary(self.record(), "规则 · 已加载 17 字节", 1)
 
     def test_named_file_bytes_need_not_be_the_aggregate(self):
         record = self.record()
         record["layers"].append({"source": "AGENTS.md", "status": "loaded", "bytes": 9})
-        evaluator_v2.validate_rule_summary(record, "AGENTS.md · 已加载 9 字节 · 含 2 个规则文件", 2)
-        evaluator_v2.validate_rule_summary(record, "规则 · 已加载 26 字节", 2)
+        evaluator.validate_rule_summary(record, "AGENTS.md · 已加载 9 字节 · 含 2 个规则文件", 2)
+        evaluator.validate_rule_summary(record, "规则 · 已加载 26 字节", 2)
         with self.assertRaises(AssertionError):
-            evaluator_v2.validate_rule_summary(record, "规则 · 已加载 9 字节", 2)
+            evaluator.validate_rule_summary(record, "规则 · 已加载 9 字节", 2)
 
     def test_wrong_byte_count_and_missing_loaded_text_still_fail(self):
         for text_ in ("根目录未找到 AGENTS.md", "pkg/AGENTS.md · 已加载 999 字节"):
             with self.subTest(text=text_), self.assertRaises(AssertionError):
-                evaluator_v2.validate_rule_summary(self.record(), text_, 1)
+                evaluator.validate_rule_summary(self.record(), text_, 1)
 
     def test_no_rules_cannot_be_reported_as_loaded(self):
         with self.assertRaises(AssertionError):
-            evaluator_v2.validate_rule_summary({"status": "missing", "layers": []}, "已加载 0 字节", 0)
+            evaluator.validate_rule_summary({"status": "missing", "layers": []}, "已加载 0 字节", 0)
+
+
+class AcceptanceIsolationTests(EvalCase):
+    def test_precheck_does_not_touch_case_workspaces(self):
+        self.evaluator.write_text(EVALUATOR.replace(
+            'passed = "fixed"', '(workspace / "left-behind.txt").write_text("x")\npassed = "fixed"'), encoding="utf-8")
+        run_root, manifest = self.prepare()
+        self.assertTrue((run_root / "precheck-workspace/left-behind.txt").exists())
+        for case in manifest["cases"]:
+            self.assertFalse((Path(case["workspace"]) / "left-behind.txt").exists())
+
+    def test_repeated_feature_acceptance_gives_the_same_checks(self):
+        workspace = self.root / "engine"
+        shutil.copytree(ROOT / "recapcli", workspace / "recapcli", ignore=shutil.ignore_patterns("__pycache__"))
+        results = [runner.acceptance(runner.EVALUATOR, "feature", workspace)["result"]["checks"] for _ in range(2)]
+        self.assertEqual(results[0], results[1])
+
+    def test_rescore_baseline_keeps_source_and_review_results(self):
+        run_root, manifest = self.prepare()
+        self.run_case(run_root, manifest, "fix-1", [edit(), text("改好了")])
+        source = self.root / "baseline.json"
+        destination = self.root / "rescored.json"
+        rows = [{"id": "fix-1", "task": "fix", "task_ok": False, "checks_passed": 0, "checks_total": 1},
+                {"id": "read-1", "task": "read", "task_ok": True, "checks_passed": None, "checks_total": None}]
+        runner.write_json(source, {"acceptance_sha256": "old", "results": rows})
+        before = source.read_bytes()
+        runner.rescore_baseline(run_root, source=source, destination=destination, evaluator=self.evaluator)
+        self.assertEqual(source.read_bytes(), before)
+        rescored = runner.read_json(destination)
+        self.assertEqual(rescored["original_acceptance_sha256"], "old")
+        self.assertEqual(rescored["acceptance_sha256"], runner.file_hash(self.evaluator))
+        self.assertTrue(rescored["results"][0]["task_ok"])
+        self.assertEqual(rescored["results"][1], rows[1])
+
+    def test_rescore_refuses_changed_artifact(self):
+        run_root, manifest = self.prepare()
+        self.run_case(run_root, manifest, "fix-1", [edit(), text("改好了")])
+        (Path(manifest["cases"][0]["workspace"]) / "app.txt").write_text("后来改的", encoding="utf-8")
+        source = self.root / "baseline.json"
+        runner.write_json(source, {"acceptance_sha256": "old", "results": [
+            {"id": "fix-1", "task": "fix", "task_ok": False, "checks_passed": 0, "checks_total": 1}]})
+        with self.assertRaisesRegex(RuntimeError, "基线产物已变化"):
+            runner.rescore_baseline(run_root, source=source, destination=self.root / "out.json", evaluator=self.evaluator)
 
 
 class CommittedFilesTests(unittest.TestCase):
@@ -309,10 +363,17 @@ class CommittedFilesTests(unittest.TestCase):
         self.assertEqual((totals["runs"], totals["both_ok"], totals["model_requests"], totals["tool_calls"]), (6, 0, 77, 154))
         self.assertEqual(totals["total_tokens"], 1584578)
 
-    def test_baseline_acceptance_is_preserved_as_v1(self):
-        baseline = runner.read_json(runner.BASELINE)
+    def test_original_baseline_is_preserved_as_v1(self):
+        baseline = runner.read_json(runner.ORIGINAL_BASELINE)
         self.assertEqual(runner.file_hash(runner.LEGACY_EVALUATOR), baseline["acceptance_sha256"])
         self.assertNotEqual(runner.file_hash(runner.EVALUATOR), baseline["acceptance_sha256"])
+
+    def test_rescored_baseline_uses_current_acceptance(self):
+        original = runner.read_json(runner.ORIGINAL_BASELINE)
+        rescored = runner.read_json(runner.BASELINE)
+        self.assertEqual(rescored["acceptance_sha256"], runner.file_hash(runner.EVALUATOR))
+        self.assertEqual(rescored["original_acceptance_sha256"], original["acceptance_sha256"])
+        self.assertEqual([item["id"] for item in rescored["results"]], [item["id"] for item in original["results"]])
 
     def test_run_refuses_without_real_model_flag(self):
         with patch.object(runner, "run_real") as run, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

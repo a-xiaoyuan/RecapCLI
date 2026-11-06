@@ -39,7 +39,8 @@ from recapcli.tools.commands import close_commands  # noqa: E402
 SPEC = EVALS / "tasks.json"
 EVALUATOR = EVALS / "acceptance.py"
 RUNS = EVALS / "runs"
-BASELINE = EVALS / "baselines" / "2026-11-03.json"
+ORIGINAL_BASELINE = EVALS / "baselines" / "2026-11-03.json"
+BASELINE = EVALS / "baselines" / "2026-11-03-v3.json"
 LEGACY_EVALUATOR = EVALS / "baselines" / "acceptance-v1.py"
 ACCEPTANCE_TIMEOUT_SECONDS = 120
 BOUNDARY = "这是少量固定任务的重复运行，只能说明这组任务上的变化，不能外推成通用成功率。"
@@ -139,11 +140,11 @@ def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=EVALUATOR, model=None):
             manifest["cases"].append({"id": identity, "task": task["id"], "kind": task["kind"], "repeat": repeat,
                                       "workspace": str(workspace)})
     write_json(run_root / "manifest.json", manifest)
-    first = {}
-    for case in manifest["cases"]:
-        first.setdefault(case["task"], case)
-    precheck = {case["task"]: acceptance(evaluator, case["task"], Path(case["workspace"]))
-                for case in first.values() if case["kind"] == "acceptance"}
+    # 预检用单独的工作区：验收会留下文件，不能影响之后真实用例的得分。
+    probe = run_root / "precheck-workspace"
+    create_workspace(repo, spec["target_commit"], probe)
+    precheck = {task["id"]: acceptance(evaluator, task["id"], probe)
+                for task in spec["tasks"] if task["kind"] == "acceptance"}
     write_json(run_root / "precheck.json", precheck)
     already = [task for task, result in precheck.items() if result["returncode"] == 0]
     if already:
@@ -320,6 +321,8 @@ def render_report(manifest, results, totals, baseline=None):
             lines += ["", "**注意：目标工作区和基线不是同一份字节，对比要打折扣。**"]
         if baseline["acceptance_sha256"] != manifest["acceptance_sha256"]:
             lines += ["", "**注意：验收脚本和基线不同，两边的结果不能直接比较。**"]
+        if baseline.get("original_acceptance_sha256"):
+            lines += ["", "基线分数是用当前验收离线重评的，原始分数保存在 `baselines/2026-11-03.json`。"]
     lines += ["", BOUNDARY, ""]
     return "\n".join(lines)
 
@@ -388,6 +391,30 @@ def recheck(run_root, *, evaluator=EVALUATOR, baseline_path=BASELINE):
     return output
 
 
+def rescore_baseline(run_dir, *, source=ORIGINAL_BASELINE, destination=BASELINE, evaluator=EVALUATOR):
+    """用当前验收离线重评基线产物，另存新文件；原始基线和人工核对结论不变。"""
+    run_dir = Path(run_dir).resolve()
+    baseline = read_json(source)
+    results = []
+    for item in baseline["results"]:
+        if item["checks_total"] is None:
+            results.append(item)
+            continue
+        workspace = run_dir / "workspaces" / item["id"]
+        saved_diff = (run_dir / "results" / item["id"] / "changes.diff").read_bytes()
+        # 按目标提交比，不用 HEAD：基线工作区后来多过提交，文件内容才是要核对的。
+        if git(workspace, "diff", "--binary", baseline.get("target_commit", "HEAD")) != saved_diff:
+            raise RuntimeError(f"{item['id']}：基线产物已变化，不能重评")
+        parsed = acceptance(evaluator, item["task"], workspace).get("result")
+        if parsed is None:
+            raise RuntimeError(f"{item['id']}：验收没有返回结果")
+        results.append({**item, "task_ok": parsed["passed"], "checks_total": len(parsed["checks"]),
+                        "checks_passed": sum(check["passed"] for check in parsed["checks"])})
+    write_json(destination, {**baseline, "acceptance_sha256": file_hash(evaluator),
+                             "original_acceptance_sha256": baseline["acceptance_sha256"], "results": results})
+    return destination
+
+
 def model_identity(config):
     return {"model": config.model, "profile": config.profile, "protocol": config.protocol,
             "provider_host": urlsplit(config.base_url or "https://api.openai.com").hostname,
@@ -424,6 +451,8 @@ def build_parser():
     actions.add_parser("report", help="汇总已有结果，不调用模型")
     recheck_parser = actions.add_parser("recheck", help="离线重评已有产物，另存结果，不调用模型")
     recheck_parser.add_argument("--run-dir", type=Path, help="原运行目录，默认最近一次运行")
+    rescore = actions.add_parser("rescore-baseline", help="用当前验收离线重评基线产物，不调用模型")
+    rescore.add_argument("--run-dir", type=Path, required=True, help="基线运行目录")
     return parser
 
 
@@ -440,6 +469,8 @@ def main(argv=None):
         run_real(args.case)
     elif args.action == "recheck":
         print(recheck(args.run_dir or latest_run()))
+    elif args.action == "rescore-baseline":
+        print(rescore_baseline(args.run_dir))
     else:
         print(report(latest_run()))
     return 0
