@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 from typing import Any, Callable
 
-from openai import APIError
+from openai import APIError, APITimeoutError
 
 from ..llm.protocols import assistant_record
 from ..tools import tool_definitions
@@ -74,7 +74,7 @@ class TurnRunner:
         self.requests_used = 0
         self.local_tool_calls = 0
         self.edited = []
-        self.verify_dirty = False   # 上次验证之后有实际编辑
+        self.verify_dirty = False   # 有实际编辑，且尚未通过验证
         self.verify_failures = 0
         self.verified = False
         self.stop_blocks = 0
@@ -314,8 +314,9 @@ class TurnRunner:
             if ctx.budget.time_low():
                 ctx.on_event("[验证] 时间不足，未运行")
                 return self.incomplete(message.content, f"时间不足，自动验证未运行（{label}）")
-            self.verify_dirty = False
             self.verified, feedback = run_verification(self)
+            # 失败后仍需复验；模型再次直接回答不能绕过验证闸门。
+            self.verify_dirty = not self.verified
             if not self.verified:
                 self.verify_failures += 1
                 if final_request or self.verify_failures >= MAX_VERIFY_ROUNDS:
@@ -386,9 +387,12 @@ class TurnRunner:
             self.forced_reason = str(error)
             return None
         except APIError as error:
-            # 本地估算可能低于服务端 tokenizer；工具已执行时要交代进度，不能只报错。
-            if context_overflow(error) and has_tool_results(ctx.turn):
-                return self.finish_incomplete("服务端报告上下文超限")
+            # 工具事实已产生时，超限或超时都要交代进度；收尾只汇总，不重放工具。
+            if has_tool_results(ctx.turn):
+                if context_overflow(error):
+                    return self.finish_incomplete("服务端报告上下文超限")
+                if isinstance(error, APITimeoutError):
+                    return self.finish_incomplete("模型请求超时")
             raise
         return self.handle_response(response, step, final_request, tools_allowed)
 

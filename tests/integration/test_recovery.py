@@ -51,6 +51,8 @@ class RecoveryTests(unittest.TestCase):
         def handler(request):
             self.requests.append(json.loads(request.content))
             value = responses[len(self.requests) - 1]
+            if value == "timeout":
+                raise httpx2.ReadTimeout("offline timeout", request=request)
             return value if isinstance(value, httpx2.Response) else httpx2.Response(200, json=value)
         client = OpenAI(api_key="offline-fake-key", base_url="https://offline.invalid/v1", max_retries=0,
                         http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
@@ -91,6 +93,26 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn("record_id", json.dumps(self.requests[0]["messages"]))
         self.assertEqual((self.workspace / "count.txt").read_text(), "x")
         self.assertEqual(len(list((self.workspace / ".recapcli/commands").glob("*.json"))), 1)
+
+    def test_timeout_after_edit_and_command_saves_summary_without_replaying_operations(self):
+        (self.workspace / "a.txt").write_text("old", encoding="utf-8")
+        script = "from pathlib import Path; p=Path('count.txt'); p.write_text(p.read_text()+'x' if p.exists() else 'x')"
+        answer = self.turn([reply(calls=[call("edit", path="a.txt", old_text="old", new_text="new"),
+                                         call("command", "run_command", argv=[sys.executable, "-c", script])]),
+                            "timeout", reply("已修改并执行命令，其余核对未完成")], limits=AgentLimits(max_retries=0))
+        self.assertEqual(answer, "已修改并执行命令，其余核对未完成")
+        task_store = TaskStore(self.workspace)
+        task = task_store.get(task_store.list_tasks()[0]["id"])
+        self.assertEqual(task["status"], "incomplete")
+        self.assertIn("模型请求超时", task["stop_reason"])
+        self.assertEqual(task["model_requests"], 3)
+        self.assertEqual(sum(e["kind"] == "tool_result" for e in task["events"]), 2)
+        self.assertEqual((self.workspace / "a.txt").read_text(), "new")
+        self.assertEqual((self.workspace / "count.txt").read_text(), "x")
+        self.assertEqual(len(list((self.workspace / ".recapcli/backups").glob("*.json"))), 1)
+        self.assertEqual(len(list((self.workspace / ".recapcli/commands").glob("*.json"))), 1)
+        self.assertEqual(self.requests[-1]["tool_choice"], "none")
+        self.assertEqual(self.session["messages"][-1]["content"], answer)
 
     def test_interrupted_tool_batch_closes_unknown_and_unexecuted_calls(self):
         calls = [call(str(index), path=f"{index}.txt", old_text="", new_text="created") for index in range(3)]

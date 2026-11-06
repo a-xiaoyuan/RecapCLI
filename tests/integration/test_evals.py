@@ -16,7 +16,7 @@ from openai import OpenAI
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from evals import runner  # noqa: E402
+from evals import acceptance as evaluator_v2, runner  # noqa: E402
 from recapcli.core.agent import AgentLimits  # noqa: E402
 
 EVALUATOR = """import json, sys
@@ -189,6 +189,111 @@ class ReportTests(EvalCase):
         runner.write_json(path, baseline)
         self.assertNotIn("**注意", runner.report(run_root, baseline_path=path))
 
+    def test_report_recovers_known_usage_from_events_instead_of_old_zero(self):
+        run_root, _ = self.finished_run()
+        result_path = run_root / "results/fix-1/result.json"
+        legacy = runner.read_json(result_path)
+        legacy["total_tokens"] = 0
+        runner.write_json(result_path, legacy)
+        task_path = result_path.with_name("task.json")
+        task = runner.read_json(task_path)
+        response = next(e for e in task["events"] if e["kind"] == "model_response")
+        response["data"]["usage"] = {"total_tokens": 23}
+        runner.write_json(task_path, task)
+        report = runner.report(run_root, baseline_path=None)
+        scored = runner.read_json(run_root / "summary.json")["results"][0]
+        self.assertIsNone(scored["total_tokens"])
+        self.assertEqual(scored["known_total_tokens"], 23)
+        self.assertEqual(scored["usage_missing_requests"], 1)
+        self.assertIn("≥23（1 次请求用量未知）", report)
+        self.assertEqual(runner.read_json(result_path)["total_tokens"], 0)
+
+    def test_recheck_preserves_original_results_and_separates_evaluator_revision(self):
+        run_root, manifest = self.finished_run()
+        runner.report(run_root, baseline_path=None)
+        originals = [run_root / name for name in ("manifest.json", "summary.json", "report.md")]
+        originals += list((run_root / "results").glob("*/*"))
+        before = {path: path.read_bytes() for path in originals}
+        self.evaluator.write_text(EVALUATOR + "\n# revised\n", encoding="utf-8")
+        revised = runner.recheck(run_root, evaluator=self.evaluator, baseline_path=None)
+        self.assertEqual({path: path.read_bytes() for path in originals}, before)
+        changed = runner.read_json(revised / "manifest.json")
+        self.assertEqual(changed["original_acceptance_sha256"], manifest["acceptance_sha256"])
+        self.assertNotEqual(changed["acceptance_sha256"], manifest["acceptance_sha256"])
+        scored = runner.read_json(revised / "summary.json")["results"]
+        self.assertTrue(scored[0]["task_ok"])
+        self.assertIn("未重新运行模型", (revised / "report.md").read_text(encoding="utf-8"))
+
+    def test_recheck_refuses_changed_artifact(self):
+        run_root, manifest = self.finished_run()
+        workspace = Path(manifest["cases"][0]["workspace"])
+        (workspace / "app.txt").write_text("changed after evaluation", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "产物已变化"):
+            runner.recheck(run_root, evaluator=self.evaluator, baseline_path=None)
+
+
+class TokenUsageTests(unittest.TestCase):
+    def task(self, *usages, requests=None):
+        return {"events": [{"kind": "model_request", "data": {}} for _ in range(len(usages) if requests is None else requests)]
+                + [{"kind": "model_response", "data": {"usage": usage}} for usage in usages]}
+
+    def test_complete_usage_is_exact_even_if_zero(self):
+        result = runner.token_usage(self.task({"total_tokens": 12}, {"total_tokens": 0}))
+        self.assertEqual(result, {"total_tokens": 12, "known_total_tokens": 12, "usage_missing_requests": 0})
+
+    def test_failed_request_keeps_known_lower_bound(self):
+        result = runner.token_usage(self.task({"total_tokens": 12}, requests=2))
+        self.assertIsNone(result["total_tokens"])
+        self.assertEqual(result["known_total_tokens"], 12)
+        self.assertEqual(result["usage_missing_requests"], 1)
+
+    def test_missing_usage_and_missing_task_are_not_zero(self):
+        self.assertIsNone(runner.token_usage(self.task(None))["total_tokens"])
+        self.assertIsNone(runner.token_usage(None)["total_tokens"])
+
+    def test_aggregate_preserves_unknown_and_known_subtotal(self):
+        items = []
+        for usage in (self.task({"total_tokens": 10}), self.task({"total_tokens": 20}, requests=2)):
+            items.append({"task_ok": False, "engine_ok": False, "model_requests": 2, "tool_calls": 0,
+                          "seconds": 1, **runner.token_usage(usage)})
+        totals = runner.summarize(items)
+        self.assertIsNone(totals["total_tokens"])
+        self.assertEqual(totals["known_total_tokens"], 30)
+        self.assertEqual(totals["usage_missing_requests"], 1)
+
+
+class RuleAcceptanceTests(unittest.TestCase):
+    def record(self, status="loaded"):
+        return {"status": status, "layers": [{"source": "pkg/AGENTS.md", "status": "loaded", "bytes": 17}]}
+
+    def test_accurate_root_status_notes_are_allowed(self):
+        for text_ in ("根目录未找到 AGENTS.md，子目录规则 · 已加载 17 字节",
+                      "根目录 AGENTS.md 未加载，子目录规则 · 已加载 17 字节 · 含 2 个规则文件",
+                      "pkg/AGENTS.md · 已加载 17 字节 · 1 个未加载"):
+            with self.subTest(text=text_):
+                evaluator_v2.validate_rule_summary(self.record(), text_, 1)
+
+    def test_loaded_text_cannot_hide_wrong_record_status(self):
+        with self.assertRaises(AssertionError):
+            evaluator_v2.validate_rule_summary(self.record("missing"), "子目录规则 · 已加载 17 字节", 1)
+
+    def test_named_file_bytes_need_not_be_the_aggregate(self):
+        record = self.record()
+        record["layers"].append({"source": "AGENTS.md", "status": "loaded", "bytes": 9})
+        evaluator_v2.validate_rule_summary(record, "AGENTS.md · 已加载 9 字节 · 含 2 个规则文件", 2)
+        evaluator_v2.validate_rule_summary(record, "规则 · 已加载 26 字节", 2)
+        with self.assertRaises(AssertionError):
+            evaluator_v2.validate_rule_summary(record, "规则 · 已加载 9 字节", 2)
+
+    def test_wrong_byte_count_and_missing_loaded_text_still_fail(self):
+        for text_ in ("根目录未找到 AGENTS.md", "pkg/AGENTS.md · 已加载 999 字节"):
+            with self.subTest(text=text_), self.assertRaises(AssertionError):
+                evaluator_v2.validate_rule_summary(self.record(), text_, 1)
+
+    def test_no_rules_cannot_be_reported_as_loaded(self):
+        with self.assertRaises(AssertionError):
+            evaluator_v2.validate_rule_summary({"status": "missing", "layers": []}, "已加载 0 字节", 0)
+
 
 class CommittedFilesTests(unittest.TestCase):
     def test_spec_limits_are_valid_for_current_engine(self):
@@ -204,9 +309,10 @@ class CommittedFilesTests(unittest.TestCase):
         self.assertEqual((totals["runs"], totals["both_ok"], totals["model_requests"], totals["tool_calls"]), (6, 0, 77, 154))
         self.assertEqual(totals["total_tokens"], 1584578)
 
-    def test_baseline_acceptance_is_the_committed_script(self):
+    def test_baseline_acceptance_is_preserved_as_v1(self):
         baseline = runner.read_json(runner.BASELINE)
-        self.assertEqual(runner.file_hash(runner.EVALUATOR), baseline["acceptance_sha256"])
+        self.assertEqual(runner.file_hash(runner.LEGACY_EVALUATOR), baseline["acceptance_sha256"])
+        self.assertNotEqual(runner.file_hash(runner.EVALUATOR), baseline["acceptance_sha256"])
 
     def test_run_refuses_without_real_model_flag(self):
         with patch.object(runner, "run_real") as run, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

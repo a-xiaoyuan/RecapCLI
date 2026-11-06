@@ -40,6 +40,7 @@ SPEC = EVALS / "tasks.json"
 EVALUATOR = EVALS / "acceptance.py"
 RUNS = EVALS / "runs"
 BASELINE = EVALS / "baselines" / "2026-11-03.json"
+LEGACY_EVALUATOR = EVALS / "baselines" / "acceptance-v1.py"
 ACCEPTANCE_TIMEOUT_SECONDS = 120
 BOUNDARY = "这是少量固定任务的重复运行，只能说明这组任务上的变化，不能外推成通用成功率。"
 
@@ -98,6 +99,20 @@ def acceptance(evaluator, task, workspace):
     except (ValueError, IndexError):
         pass
     return result
+
+
+def token_usage(task):
+    """按逐请求事实累计已知用量；缺失请求的用量保留未知，不用零填补。"""
+    if task is None:
+        return {"total_tokens": None, "known_total_tokens": 0, "usage_missing_requests": None}
+    events = task["events"]
+    requests = sum(event["kind"] == "model_request" for event in events)
+    responses = [event["data"].get("usage") for event in events if event["kind"] == "model_response"]
+    known = [usage["total_tokens"] for usage in responses if isinstance(usage, dict)
+             and type(usage.get("total_tokens")) is int and usage["total_tokens"] >= 0]
+    complete = len(known) == len(responses) == requests
+    return {"total_tokens": sum(known) if complete else None, "known_total_tokens": sum(known),
+            "usage_missing_requests": max(0, requests - len(known))}
 
 
 def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=EVALUATOR, model=None):
@@ -221,7 +236,7 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
               "stop_reason": task["stop_reason"] if task else None, "exception": error,
               "seconds": round(elapsed, 3), "model_requests": task["model_requests"] if task else None,
               "tool_calls": sum(event["kind"] == "tool_start" for event in events),
-              "total_tokens": (task["usage"] or {}).get("total_tokens", 0) if task else 0,
+              **token_usage(task),
               "approvals": approvals, "git_status": status, "acceptance": checked,
               "acceptance_unchanged": file_hash(evaluator) == manifest["acceptance_sha256"]}
     write_json(out / "result.json", result)
@@ -233,6 +248,8 @@ def score(result, review=None):
     engine_ok = result["agent_status"] == "returned" and not result["exception"]
     scored = {key: result[key] for key in ("id", "task", "repeat", "agent_status", "stop_reason", "model_requests",
                                            "tool_calls", "seconds", "total_tokens")}
+    scored.update(known_total_tokens=result.get("known_total_tokens", result["total_tokens"] or 0),
+                  usage_missing_requests=result.get("usage_missing_requests", 0))
     scored.update(engine_ok=engine_ok, checks_passed=None, checks_total=None)
     if result["kind"] == "review":
         scored["task_ok"] = None if review is None else review["verdict"] == "passed"
@@ -253,16 +270,31 @@ def summarize(results):
             "model_requests": sum(item["model_requests"] or 0 for item in results),
             "tool_calls": sum(item["tool_calls"] for item in results),
             "seconds": round(sum(item["seconds"] for item in results), 1),
-            "total_tokens": sum(item["total_tokens"] for item in results)}
+            "total_tokens": sum(item["total_tokens"] for item in results)
+                            if all(item["total_tokens"] is not None for item in results) else None,
+            "known_total_tokens": sum(item.get("known_total_tokens", item["total_tokens"] or 0) for item in results),
+            "usage_missing_requests": (sum(item.get("usage_missing_requests", 0) for item in results)
+                                       if all(item.get("usage_missing_requests", 0) is not None for item in results) else None)}
 
 
 def _mark(value):
     return {True: "是", False: "否", None: "待核对"}[value]
 
 
+def _tokens(item):
+    if item["total_tokens"] is not None:
+        return str(item["total_tokens"])
+    missing = item.get("usage_missing_requests")
+    detail = f"{missing} 次请求用量未知" if missing is not None else "用量记录不完整"
+    return f"≥{item.get('known_total_tokens', 0)}（{detail}）"
+
+
 def render_report(manifest, results, totals, baseline=None):
     lines = ["# RecapCLI 评测报告", "", f"引擎提交：`{manifest['engine_commit']}`",
              f"目标提交：`{manifest['target_commit']}`", f"模型：`{manifest['model'].get('model', '未记录')}`", ""]
+    lines += [f"验收脚本指纹：`{manifest['acceptance_sha256']}`", ""]
+    if manifest.get("recheck_of"):
+        lines += ["这是已有产物的离线重评分，未重新运行模型或修复后的引擎；原始结果保持不变。", ""]
     if manifest["engine_status"]:
         lines += ["**注意：引擎工作区有未提交改动，这份结果不能对应到单个提交。**", ""]
     lines += ["| 用例 | 任务做对 | 引擎正常结束 | 验收项 | 终态 | 请求 / 工具 | 耗时 | tokens |", "| --- | --- | --- | --- | --- | --- | --- | --- |"]
@@ -270,17 +302,20 @@ def render_report(manifest, results, totals, baseline=None):
         checks = f"{item['checks_passed']}/{item['checks_total']}" if item["checks_total"] else "-"
         lines.append(f"| {item['id']} | {_mark(item['task_ok'])} | {_mark(item['engine_ok'])} | {checks} | "
                      f"{item['agent_status']} | {item['model_requests']} / {item['tool_calls']} | "
-                     f"{item['seconds']:.1f}s | {item['total_tokens']} |")
+                     f"{item['seconds']:.1f}s | {_tokens(item)} |")
     labels = (("runs", "运行次数"), ("task_ok", "任务做对"), ("task_pending", "待人工核对"), ("engine_ok", "引擎正常结束"),
               ("both_ok", "两项都通过"), ("model_requests", "模型请求"), ("tool_calls", "工具调用"),
               ("seconds", "Agent 耗时（秒）"), ("total_tokens", "累计 tokens"))
     if baseline is None:
         lines += ["", "| 指标 | 本次 |", "| --- | --- |"]
-        lines += [f"| {label} | {totals[key]} |" for key, label in labels]
+        lines += [f"| {label} | {_tokens(totals) if key == 'total_tokens' else totals[key]} |" for key, label in labels]
     else:
         before = summarize(baseline["results"])
         lines += ["", f"| 指标 | 基线 {baseline['date']} | 本次 |", "| --- | --- | --- |"]
-        lines += [f"| {label} | {before[key]} | {totals[key]} |" for key, label in labels]
+        lines += [f"| {label} | {_tokens(before) if key == 'total_tokens' else before[key]} | "
+                  f"{_tokens(totals) if key == 'total_tokens' else totals[key]} |" for key, label in labels]
+        if {item["id"] for item in baseline["results"]} != {item["id"] for item in results}:
+            lines += ["", "两侧用例集合不同，累计用量、耗时和通过数量不能直接作为改善幅度。"]
         if baseline["target_fingerprint"] != manifest["target_fingerprint"]:
             lines += ["", "**注意：目标工作区和基线不是同一份字节，对比要打折扣。**"]
         if baseline["acceptance_sha256"] != manifest["acceptance_sha256"]:
@@ -299,13 +334,58 @@ def report(run_root, *, baseline_path=BASELINE):
     for case in manifest["cases"]:
         path = run_root / "results" / case["id"] / "result.json"
         if path.exists():
-            results.append(score(read_json(path), reviews.get(case["id"])))
+            result = read_json(path)
+            task_path = path.with_name("task.json")
+            if task_path.exists():
+                result.update(token_usage(read_json(task_path)))
+            results.append(score(result, reviews.get(case["id"])))
     totals = summarize(results)
     baseline = read_json(baseline_path) if baseline_path is not None and Path(baseline_path).exists() else None
     text = render_report(manifest, results, totals, baseline)
     write_json(run_root / "summary.json", {"totals": totals, "results": results})
     (run_root / "report.md").write_text(text, encoding="utf-8")
     return text
+
+
+def recheck(run_root, *, evaluator=EVALUATOR, baseline_path=BASELINE):
+    """用新版验收离线重评已有产物；单独存放结果，不覆写原始运行。"""
+    run_root = Path(run_root).resolve()
+    manifest = read_json(run_root / "manifest.json")
+    output = run_root / "rechecks" / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    output.mkdir(parents=True)
+    revised = {**manifest, "recheck_of": str(run_root),
+               "original_acceptance_sha256": manifest["acceptance_sha256"],
+               "acceptance_sha256": file_hash(evaluator)}
+    write_json(output / "manifest.json", revised)
+    reviews = run_root / "source-reviews.json"
+    if reviews.exists():
+        write_json(output / reviews.name, read_json(reviews))
+    for case in manifest["cases"]:
+        source = run_root / "results" / case["id"]
+        if not (source / "result.json").exists():
+            continue
+        result = read_json(source / "result.json")
+        task_path = source / "task.json"
+        if task_path.exists():
+            result.update(token_usage(read_json(task_path)))
+        else:
+            # 没有逐请求记录时无法纠正旧零值，明确保留未知。
+            result.update(token_usage(None))
+        if case["kind"] == "acceptance":
+            workspace = Path(case["workspace"])
+            saved_diff = (source / "changes.diff").read_bytes()
+            if (git(workspace, "diff", "--binary", "HEAD") != saved_diff
+                    or git(workspace, "ls-files", "--others", "--exclude-standard", "-z")):
+                raise RuntimeError(f"{case['id']}：产物已变化，不能按原运行重评")
+            result["acceptance"] = acceptance(evaluator, case["task"], workspace)
+            if file_hash(evaluator) != revised["acceptance_sha256"]:
+                raise RuntimeError("验收脚本在重评期间发生变化，结果未保存")
+        result.update(source_result=str(source / "result.json"), acceptance_unchanged=True)
+        destination = output / "results" / case["id"]
+        destination.mkdir(parents=True)
+        write_json(destination / "result.json", result)
+    report(output, baseline_path=baseline_path)
+    return output
 
 
 def model_identity(config):
@@ -342,6 +422,8 @@ def build_parser():
     run.add_argument("--real-model", action="store_true", help="确认调用真实模型")
     run.add_argument("--case", help="只运行一例，如 bugfix-1")
     actions.add_parser("report", help="汇总已有结果，不调用模型")
+    recheck_parser = actions.add_parser("recheck", help="离线重评已有产物，另存结果，不调用模型")
+    recheck_parser.add_argument("--run-dir", type=Path, help="原运行目录，默认最近一次运行")
     return parser
 
 
@@ -356,6 +438,8 @@ def main(argv=None):
         if not args.real_model:
             parser.error("run 会调用真实模型并产生费用；确认后加 --real-model")
         run_real(args.case)
+    elif args.action == "recheck":
+        print(recheck(args.run_dir or latest_run()))
     else:
         print(report(latest_run()))
     return 0

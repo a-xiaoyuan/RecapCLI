@@ -86,6 +86,21 @@ class AutoVerifyTests(unittest.TestCase):
         self.assertIn("自动验证未通过", result.stop_reason)
         self.assertEqual(len(self.checks()), 3)
 
+    def test_text_only_replies_cannot_bypass_a_failed_check(self):
+        result = self.run_turn([edit("old", "bad"), text("改好了"), text("现在没问题"), text("可以结束")], ALWAYS_FAILS)
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("自动验证未通过", result.stop_reason)
+        self.assertEqual([item["returncode"] for item in self.checks()], [3, 3, 3])
+        self.assertEqual((self.workspace / "a.txt").read_text(encoding="utf-8"), "bad")
+
+    def test_recheck_can_pass_without_another_edit(self):
+        command = [sys.executable, "-c", "from pathlib import Path; import sys; "
+                   "p=Path('checked'); seen=p.exists(); p.touch(); sys.exit(not seen)"]
+        result = self.run_turn([edit("old", "fixed"), text("好了"), text("再核对一次")], command)
+        self.assertEqual(result.status, "returned")
+        self.assertIn("自动验证通过", result.stop_reason)
+        self.assertEqual([item["success"] for item in self.checks()], [False, True])
+
     def test_no_edit_means_no_check(self):
         result = self.run_turn([text("只是回答")], ALWAYS_FAILS)
         self.assertEqual(result.status, "returned")
@@ -97,9 +112,10 @@ class AutoVerifyTests(unittest.TestCase):
         self.assertEqual(self.checks(), [])
 
     def test_missing_program_is_reported_as_failure(self):
-        result = self.run_turn([edit("old", "one"), text("好了"), text("没法验证")], ["recapcli-no-such-program"])
+        result = self.run_turn([edit("old", "one"), text("好了"), text("没法验证"), text("仍无法验证")],
+                               ["recapcli-no-such-program"])
         self.assertFalse(self.checks()[0]["success"])
-        self.assertEqual(result.status, "returned")
+        self.assertEqual(result.status, "incomplete")
 
     def test_without_a_command_nothing_changes(self):
         result = self.run_turn([edit("old", "fixed"), text("改好了")], None)

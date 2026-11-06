@@ -14,9 +14,12 @@ python -X utf8 evals/runner.py prepare              # 准备工作区并预检�
 python -X utf8 evals/runner.py run --real-model     # 调用真实模型，会产生费用
 python -X utf8 evals/runner.py run --real-model --case bugfix-1
 python -X utf8 evals/runner.py report               # 汇总并和基线对比，不调用模型
+python -X utf8 evals/runner.py recheck              # 用新版验收离线重评已有产物，另存结果
 ```
 
 工作区、模型回答和报告都写到 `evals/runs/`，不入库。
+
+`recheck --run-dir 路径` 可以指定原运行目录；默认使用最近一次运行。它核对保存的改动与工作区一致后，只重新运行外部验收，结果另存到该运行目录的 `rechecks/`，不会覆盖原报告或调用模型，也不会改变原运行的引擎终态。报告记录新旧验收脚本指纹，验收变更后的分数不能直接与旧分数比较。
 
 ## 怎么计分
 
@@ -31,9 +34,13 @@ python -X utf8 evals/runner.py report               # 汇总并和基线对比�
 
 项目理解任务靠人工核对：把结论写到运行目录的 `source-reviews.json`，格式是 `{"understanding-1": {"verdict": "passed"}}`。核对之前显示“待核对”，不算通过也不算失败。
 
+用量从任务的逐请求事件累计。有请求缺少用量时，`total_tokens` 为 `null`，报告显示已知下界和缺失请求数，例如 `≥335258（1 次请求用量未知）`。这不是精确总量，失败任务也不会因此显示成零。`report` 和 `recheck` 都会从保存的 `task.json` 恢复已有记录中的已知用量。
+
 ## 基线
 
 `baselines/2026-11-03.json` 是当时结果的摘要，已去掉本机路径和接口地址。`report` 发现目标内容或验收脚本和基线不同时，会在报告里提示。
+
+原验收脚本保存在 `baselines/acceptance-v1.py`，与基线记录的指纹一致。当前 v2 验收核对实际加载状态、规则数量、摘要字节数、模型上下文和权限，不再因准确说明根规则缺失或跳过就判失败。原始分数保留，已有产物可用 v2 离线重评；这是裁判修正，不代表引擎能力提升。
 
 和基线比较时要注意：
 

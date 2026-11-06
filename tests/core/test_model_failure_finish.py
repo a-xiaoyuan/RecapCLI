@@ -1,4 +1,4 @@
-"""工具已执行后，上下文超限和输出截断转入收尾；其他模型错误仍按失败处理。"""
+"""工具已执行后，超时、上下文超限和输出截断转入收尾；其他模型错误仍按失败处理。"""
 
 from pathlib import Path
 import sqlite3
@@ -7,9 +7,9 @@ import unittest
 from unittest.mock import patch
 
 import httpx2
-from openai import AuthenticationError, BadRequestError, OpenAI
+from openai import APITimeoutError, AuthenticationError, BadRequestError, OpenAI
 
-from recapcli.core.agent import run_agent
+from recapcli.core.agent import AgentLimits, run_agent
 from recapcli.tools.retrieval import _connect
 
 
@@ -35,19 +35,23 @@ OVERFLOW = api_error(400, "This model's maximum context length is 8192 tokens.",
 
 
 class ModelFailureFinishTests(unittest.TestCase):
-    def run_turn(self, *responses):
+    def run_turn(self, *responses, max_steps=None, max_retries=0):
         self.requests = 0
         self.events = []
         self.traces = []
 
         def handler(request):
             self.requests += 1
-            return responses[self.requests - 1]
+            response = responses[self.requests - 1]
+            if response == "timeout":
+                raise httpx2.ReadTimeout("offline timeout", request=request)
+            return response
 
         client = OpenAI(api_key="offline-test-key", base_url="https://offline.invalid/v1", max_retries=0,
                         http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
         with tempfile.TemporaryDirectory() as workspace, client:
             return run_agent(client, "test-model", "看目录", workspace, on_event=self.events.append,
+                             max_steps=max_steps, limits=AgentLimits(max_retries=max_retries),
                              on_trace=lambda kind, data: self.traces.append((kind, data)))
 
     def executed_tools(self):
@@ -75,6 +79,38 @@ class ModelFailureFinishTests(unittest.TestCase):
     def test_context_overflow_before_any_tool_stays_an_error(self):
         with self.assertRaises(BadRequestError):
             self.run_turn(OVERFLOW)
+
+    def test_timeout_after_tools_requests_summary_without_replaying_tools(self):
+        result = self.run_turn(tool_call(), "timeout", text("目录已看，分析未完成"))
+        self.assertEqual(result.status, "incomplete")
+        self.assertEqual(result.answer, "目录已看，分析未完成")
+        self.assertIn("模型请求超时", result.stop_reason)
+        self.assertEqual(self.executed_tools(), ["list_directory"])
+        final = [data for kind, data in self.traces if kind == "model_request"][-1]
+        self.assertFalse(final["tools_allowed"])
+
+    def test_summary_timeout_falls_back_to_facts(self):
+        result = self.run_turn(tool_call(), "timeout", "timeout")
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("模型请求超时", result.answer)
+        self.assertIn("已调用 1 次工具", result.answer)
+        self.assertEqual(self.executed_tools(), ["list_directory"])
+
+    def test_timeout_before_any_tool_stays_an_error(self):
+        with self.assertRaises(APITimeoutError):
+            self.run_turn("timeout")
+
+    def test_timeout_on_last_request_does_not_exceed_request_budget(self):
+        result = self.run_turn(tool_call(), "timeout", max_steps=2)
+        self.assertEqual(result.status, "incomplete")
+        self.assertEqual(self.requests, 2)
+        self.assertIn("已调用 1 次工具", result.answer)
+
+    def test_timeout_retries_and_summary_share_the_request_budget(self):
+        result = self.run_turn(tool_call(), "timeout", "timeout", text("已收尾"), max_steps=4, max_retries=1)
+        self.assertEqual(result.status, "incomplete")
+        self.assertEqual(self.requests, 4)
+        self.assertEqual(self.executed_tools(), ["list_directory"])
 
     def test_other_model_errors_after_tools_stay_errors(self):
         with self.assertRaises(BadRequestError):

@@ -187,7 +187,7 @@ def run_agent(client, model, prompt, workspace, max_steps=None, on_event=print,
 
     预算（请求、工具、时间、上下文）用完时不抛错：转入最后一次不带工具的汇总请求，
     连这一步也做不了时用本轮事实生成结束说明，状态为 incomplete。
-    工具已执行后遇到服务端上下文超限或输出截断时同样收尾；其他模型错误仍然抛出。
+    工具已执行后遇到模型超时、服务端上下文超限或输出截断时同样收尾；其他模型错误仍然抛出。
     配置 verify_command 后，react 主代理有实际编辑时会在结束前运行它，失败结果交回模型。
     skills 只对 react 主代理生效：提示词列出名称和描述，全文由 load_skill 按需读取。
     """

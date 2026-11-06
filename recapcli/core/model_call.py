@@ -15,7 +15,7 @@ PHASE_LABELS = {"plan": "规划", "execute": "执行", "review": "核对", "summ
 
 
 def request_model(run, messages, phase, *, tools=None, tools_allowed=False, history_messages=0, final=False):
-    """请求模型并返回响应；只有成功时才把消耗的请求数写回 run。"""
+    """请求模型并返回响应；失败和重试也占用请求预算。"""
     ctx = run.ctx
     client, limits, budget = ctx.client, ctx.limits, ctx.budget
     requests_used = run.requests_used
@@ -29,6 +29,7 @@ def request_model(run, messages, phase, *, tools=None, tools_allowed=False, hist
             raise BudgetExhausted("本轮执行时间预算即将耗尽")
         request_index = budget.request(ctx.request_reserve)
         requests_used += 1
+        run.requests_used = requests_used
         model_config = client.metadata() if isinstance(client, ModelClient) else {"protocol": "chat_completions", "model": ctx.model}
         run.trace("model_request", index=request_index, phase=phase, model_config=model_config,
                   history_messages=history_messages, context_tokens=int(estimate * run.meter.ratio), tools_allowed=tools_allowed,
@@ -84,5 +85,4 @@ def request_model(run, messages, phase, *, tools=None, tools_allowed=False, hist
         # 响应已经到手就使用它；超时与否交给下一轮的预算判断，不丢弃已付费的回答。
         if visible_stream:
             ctx.on_stream("end", "")
-        run.requests_used = requests_used
         return response
