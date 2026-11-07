@@ -117,6 +117,7 @@ class SessionStore:
         self.sessions_dir = state_directory(self.workspace, "sessions")
         self.root = self.sessions_dir.parent
         self.memory_path = self.root / "memory.json"
+        self.facts_path = self.root / "facts" / "facts.sqlite3"
         self._saved_signatures = {}
 
     # ---- 会话 ----
@@ -341,6 +342,17 @@ class SessionStore:
         if versions:
             source["project_version"] = versions[-1]
         return self.add_memory(text, kind="experience", status="candidate", source=source)
+
+    def add_fact(self, text):
+        """长期项目事实写入 SQLite，不放进会话消息。"""
+        from .facts import FactStore
+        return FactStore(self.workspace).add(text)
+
+    def recall_facts(self, query, k=3):
+        if not self.facts_path.is_file():
+            return []
+        from .facts import FactStore
+        return FactStore(self.workspace).recall(query, k)
 
     def memory_context(self, limit=3000, *, query=None):
         """有问题时按词法相关性检索；无问题时保留旧接口的最近优先行为。"""
