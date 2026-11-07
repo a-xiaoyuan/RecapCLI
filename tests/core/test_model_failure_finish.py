@@ -1,4 +1,4 @@
-"""工具已执行后，超时、上下文超限和输出截断转入收尾；其他模型错误仍按失败处理。"""
+"""工具已执行后，5xx、断连、超时、上下文超限和输出截断转入收尾；其他模型错误仍按失败处理。"""
 
 from pathlib import Path
 import sqlite3
@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import patch
 
 import httpx2
-from openai import APITimeoutError, AuthenticationError, BadRequestError, OpenAI
+from openai import (APIConnectionError, APITimeoutError, AuthenticationError, BadRequestError,
+                    InternalServerError, OpenAI)
 
 from recapcli.core.agent import AgentLimits, run_agent
 from recapcli.tools.retrieval import _connect
@@ -45,6 +46,8 @@ class ModelFailureFinishTests(unittest.TestCase):
             response = responses[self.requests - 1]
             if response == "timeout":
                 raise httpx2.ReadTimeout("offline timeout", request=request)
+            if response == "disconnect":
+                raise httpx2.ConnectError("offline disconnect", request=request)
             return response
 
         client = OpenAI(api_key="offline-test-key", base_url="https://offline.invalid/v1", max_retries=0,
@@ -111,6 +114,40 @@ class ModelFailureFinishTests(unittest.TestCase):
         self.assertEqual(result.status, "incomplete")
         self.assertEqual(self.requests, 4)
         self.assertEqual(self.executed_tools(), ["list_directory"])
+
+    def test_server_errors_after_tools_request_summary_without_replaying_tools(self):
+        for status in (500, 502, 503):
+            with self.subTest(status=status):
+                result = self.run_turn(tool_call(), api_error(status, "unavailable"), text("目录已看，分析未完成"))
+                self.assertEqual(result.status, "incomplete")
+                self.assertEqual(result.answer, "目录已看，分析未完成")
+                self.assertIn(f"模型服务返回 HTTP {status}", result.stop_reason)
+                self.assertEqual(self.executed_tools(), ["list_directory"])
+
+    def test_disconnect_after_tools_requests_summary(self):
+        result = self.run_turn(tool_call(), "disconnect", text("已收尾"))
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("模型连接中断", result.stop_reason)
+        self.assertEqual(self.executed_tools(), ["list_directory"])
+
+    def test_summary_failure_after_server_error_falls_back_to_facts(self):
+        result = self.run_turn(tool_call(), api_error(502, "bad gateway"), "disconnect")
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("模型服务返回 HTTP 502", result.answer)
+        self.assertIn("已调用 1 次工具", result.answer)
+
+    def test_server_error_retries_share_the_request_budget(self):
+        result = self.run_turn(tool_call(), api_error(502, "x"), api_error(502, "x"), text("已收尾"),
+                               max_steps=4, max_retries=1)
+        self.assertEqual(result.status, "incomplete")
+        self.assertEqual(self.requests, 4)
+        self.assertEqual(self.executed_tools(), ["list_directory"])
+
+    def test_service_failure_before_any_tool_stays_an_error(self):
+        with self.assertRaises(InternalServerError):
+            self.run_turn(api_error(502, "bad gateway"))
+        with self.assertRaises(APIConnectionError):
+            self.run_turn("disconnect")
 
     def test_other_model_errors_after_tools_stay_errors(self):
         with self.assertRaises(BadRequestError):

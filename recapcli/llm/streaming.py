@@ -6,9 +6,12 @@ MAX_STREAM_BYTES = 1024 * 1024
 
 
 class IncompleteStreamError(RuntimeError):
-    def __init__(self, message, *, protocol, usage=None, partial_text=""):
+    """interrupted 表示连接结束时没有完成标记；模型拒绝和输出超限不算。"""
+
+    def __init__(self, message, *, protocol, usage=None, partial_text="", interrupted=False):
         super().__init__(message)
         self.usage = usage
+        self.interrupted = interrupted
         self.response = {"protocol": protocol, "status": "interrupted", "partial_text": partial_text}
 
 
@@ -63,7 +66,7 @@ def chat_stream(client, *, model, messages, options, timeout, on_delta, check):
                                             partial_text="".join(texts))
     if finish is None:
         raise IncompleteStreamError("模型流式连接结束，但缺少完成标记；未执行工具", protocol="chat_completions",
-                                    usage=usage, partial_text="".join(texts))
+                                    usage=usage, partial_text="".join(texts), interrupted=True)
     if calls and sorted(calls) != list(range(len(calls))):
         raise ValueError("流式工具调用序号不连续")
     return ChatCompletion.model_validate({
@@ -95,5 +98,5 @@ def responses_stream(client, *, model, messages, options, timeout, on_delta, che
                 raise IncompleteStreamError("模型流式输出超过 1 MiB", protocol="responses", partial_text="".join(texts))
     if response is None:
         raise IncompleteStreamError("Responses 流式连接结束，但缺少完成事件；未执行工具", protocol="responses",
-                                    partial_text="".join(texts))
+                                    partial_text="".join(texts), interrupted=True)
     return response

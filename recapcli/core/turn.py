@@ -4,9 +4,10 @@ from dataclasses import dataclass
 import json
 from typing import Any, Callable
 
-from openai import APIError, APITimeoutError
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 
 from ..llm.protocols import assistant_record
+from ..llm.streaming import IncompleteStreamError
 from ..tools import tool_definitions
 from .acceptance import acceptance_label
 from .budget import BudgetExhausted, SKIPPED_RESULT
@@ -24,6 +25,21 @@ COMPACT_AT = 0.75          # 当前轮超过窗口的这个比例时，移出较
 FINAL_INSTRUCTION = ("本次是最后一次模型请求，不能调用工具。请基于已有事实直接给出最终答复；"
                      "仍需更多信息或操作时，说明未完成项和原因。不要继续规划或输出工具调用标记。")
 PLANNER_FINAL_INSTRUCTION = "仅返回要求的计划 JSON，不调用工具，不执行计划。"
+
+
+def model_failure_reason(error):
+    """可以转入收尾的模型故障；鉴权、参数、模型拒绝等错误返回空，继续按失败处理。"""
+    if isinstance(error, IncompleteStreamError):
+        return "模型流式连接中断" if error.interrupted else ""
+    if context_overflow(error):
+        return "服务端报告上下文超限"
+    if isinstance(error, APITimeoutError):
+        return "模型请求超时"
+    if isinstance(error, APIConnectionError):
+        return "模型连接中断"
+    if isinstance(error, APIStatusError) and error.status_code >= 500:
+        return f"模型服务返回 HTTP {error.status_code}"
+    return ""
 
 
 @dataclass
@@ -355,13 +371,11 @@ class TurnRunner:
                 return self.finish_incomplete(str(error))
             self.forced_reason = str(error)
             return None
-        except APIError as error:
-            # 工具事实已产生时，超限或超时都要交代进度；收尾只汇总，不重放工具。
-            if has_tool_results(ctx.turn) or self.end_checks.acceptance_rounds:
-                if context_overflow(error):
-                    return self.finish_incomplete("服务端报告上下文超限")
-                if isinstance(error, APITimeoutError):
-                    return self.finish_incomplete("模型请求超时")
+        except (APIError, IncompleteStreamError) as error:
+            # 工具事实已产生时，服务故障也要交代进度；收尾只汇总，不重放工具。
+            reason = model_failure_reason(error)
+            if reason and (has_tool_results(ctx.turn) or self.end_checks.acceptance_rounds):
+                return self.finish_incomplete(reason)
             raise
         return self.handle_response(response, step, final_request, tools_allowed)
 

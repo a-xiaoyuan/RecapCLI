@@ -63,6 +63,8 @@ class ChangeWorkflowTests(unittest.TestCase):
             item = replies.pop(0)
             if isinstance(item, Exception):
                 raise item
+            if isinstance(item, httpx2.Response):
+                return item
             return httpx2.Response(200, json=item)
         with OpenAI(api_key="offline", base_url="https://offline.invalid/v1", max_retries=0,
                     http_client=httpx2.Client(transport=httpx2.MockTransport(reply))) as client:
@@ -139,7 +141,7 @@ class ChangeWorkflowTests(unittest.TestCase):
         before = self.a.read_bytes()
         with self.assertRaises(APIError):
             self.run_model([response("edit_file", {"path": "a.py", "old_text": "value = 1", "new_text": "value = 10"}),
-                            httpx2.ConnectError("offline failure")])
+                            httpx2.Response(401, json={"error": {"message": "invalid api key"}})])
         task = self.latest_task()
         self.assertEqual(task["status"], "failed")
         group = change_report(task)["groups"][0]

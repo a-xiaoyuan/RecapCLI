@@ -145,6 +145,39 @@ class MultimodalStreamingTests(unittest.TestCase):
         self.assertIn("hello", self.requests[1]["messages"][-1]["content"])
         self.assertEqual("".join(text for kind, text in updates if kind == "delta"), "读取完成")
 
+    def stream_after_tool(self, broken):
+        (self.workspace / "README.md").write_text("hello", encoding="utf-8")
+        first = sse([chunk(calls=[{"index": 0, "id": "call-one", "type": "function", "function": {
+            "name": "read_file", "arguments": '{"path":"README.md"}'}}]), chunk(finish="tool_calls")])
+        with self.sdk([first, broken, sse(text_events("已读取，分析未完成"))]) as client:
+            return run_agent(client, "offline", "读 README", self.workspace, on_event=lambda text: None,
+                             on_stream=lambda kind, text: None)
+
+    def test_stream_cut_after_tools_goes_to_summary(self):
+        result = self.stream_after_tool(sse([chunk("写到一半")]))
+        self.assertEqual(result.status, "incomplete")
+        self.assertEqual(result.answer, "已读取，分析未完成")
+        self.assertIn("模型流式连接中断", result.stop_reason)
+        self.assertEqual(len(self.requests), 3)
+
+    def test_transport_error_inside_stream_goes_to_summary(self):
+        class BrokenStream(httpx2.SyncByteStream):
+            def __iter__(self):
+                yield ("data: " + json.dumps(chunk("写到一半")) + "\n\n").encode()
+                raise httpx2.ReadError("connection reset")
+
+        response = httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=BrokenStream())
+        result = self.stream_after_tool(response)
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("模型连接中断", result.stop_reason)
+        self.assertNotIn("写到一半", result.answer)
+
+    def test_refused_stream_after_tools_stays_an_error(self):
+        refusal = chunk()
+        refusal["choices"][0]["delta"]["refusal"] = "不能回答"
+        with self.assertRaisesRegex(IncompleteStreamError, "模型拒绝"):
+            self.stream_after_tool(sse([refusal]))
+
     def test_interrupted_stream_does_not_save_partial_answer_or_execute_tools(self):
         output, errors = io.StringIO(), io.StringIO()
         store = SessionStore(self.workspace)

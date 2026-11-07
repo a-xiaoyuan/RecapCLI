@@ -230,6 +230,8 @@ class TaskRuntimeTests(unittest.TestCase):
             response = replies[len(self.requests) - 1]
             if isinstance(response, BaseException):
                 raise response
+            if isinstance(response, httpx2.Response):
+                return response
             return httpx2.Response(200, json=response)
 
         with OpenAI(api_key="offline-secret-key", base_url="https://offline.invalid/v1", max_retries=0,
@@ -270,16 +272,28 @@ class TaskRuntimeTests(unittest.TestCase):
         self.assertEqual(task["metadata"]["provider_host"], "offline.invalid")
         self.assertNotIn("offline-secret-key", json.dumps(task))
 
-    def test_edit_and_receipt_survive_exhausted_model_retries_in_session(self):
+    def test_exhausted_connection_retries_after_edit_finish_as_incomplete(self):
+        answer = self.run_replies([self.edit(), *[httpx2.ConnectError("offline failure") for _ in range(3)],
+                                   reply("已改 app.py，验证未完成")],
+                                  capabilities=("read", "write"), approver=approve_all)
+        task = self.task()
+        self.assertEqual(answer, "已改 app.py，验证未完成")
+        self.assertEqual(task["status"], "incomplete")
+        self.assertIn("模型连接中断", task["stop_reason"])
+        self.assertEqual(self.source.read_text(), "print(2)\n")
+        self.assertEqual(task["model_requests"], 5)
+        self.assertEqual(sum(event["kind"] == "tool_result" for event in task["events"]), 1)
+
+    def test_edit_and_receipt_survive_a_fatal_model_error_in_session(self):
+        denied = httpx2.Response(401, json={"error": {"message": "invalid api key"}})
         with self.assertRaises(APIError):
-            self.run_replies([self.edit(), *[httpx2.ConnectError("offline failure") for _ in range(3)]],
-                             capabilities=("read", "write"), approver=approve_all)
+            self.run_replies([self.edit(), denied], capabilities=("read", "write"), approver=approve_all)
         task = self.task()
         self.assertEqual(task["status"], "failed")
         self.assertEqual(self.source.read_text(), "print(2)\n")
         self.assertEqual([message["role"] for message in self.session["messages"]], ["user", "assistant", "tool", "assistant"])
         self.assertIn("本轮已中断", self.sessions.load(self.session["id"])["messages"][-1]["content"])
-        self.assertEqual(task["model_requests"], 4)
+        self.assertEqual(task["model_requests"], 2)
         backup = next(event for event in task["events"] if event["kind"] == "artifact")
         result = next(event for event in task["events"] if event["kind"] == "tool_result")
         self.assertLess(backup["sequence"], result["sequence"])
