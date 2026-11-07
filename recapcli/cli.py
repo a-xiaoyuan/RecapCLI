@@ -114,7 +114,7 @@ def build_parser():
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="默认工作区与运行记录目录")
     parser.add_argument("--add-dir", type=Path, action="append", default=[], help="额外授权的目录，可重复指定；也可在首次访问时确认")
     parser.add_argument("--mode", choices=["react", "plan", "multi"], default="react",
-                        help="执行模式：react 直接执行；plan 先列出带依赖的步骤，确认后再执行，无依赖的只读步骤同批并行；multi 默认只读分析，开放写入/命令后启用执行团队")
+                        help="执行模式：react 直接执行；plan 先列出带依赖的步骤，确认后再执行，无依赖的只读步骤同批并行；multi 默认只读分析，开放写入或命令后由 Planner、Worker、Reviewer 分工，Reviewer 跑验证，最多打回 2 次")
     parser.add_argument("--max-steps", type=int, help="每轮模型请求总上限，react 默认 50，plan/multi 默认 60")
     parser.add_argument("--plan-steps", type=int, default=AgentLimits.max_plan_steps, help="计划步骤上限，默认 12")
     parser.add_argument("--plan-replans", type=int, default=AgentLimits.max_replans, help="重规划上限，默认 2")

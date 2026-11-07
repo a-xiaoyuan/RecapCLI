@@ -1,7 +1,9 @@
 import contextlib
+from collections import Counter
 from copy import deepcopy
 import io
 import json
+import random
 import re
 import sys
 from pathlib import Path
@@ -13,6 +15,7 @@ from unittest.mock import patch
 import httpx2
 from openai import APIError, OpenAI
 
+from recapcli.base.tokens import json_tokens
 from recapcli.cli import main
 from recapcli.application.runtime import run_turn
 from recapcli.core.agent import AgentLimits, TraceError, run_agent
@@ -40,6 +43,68 @@ def reply(content=None, calls=None):
 def tool(tool_name="read_file", **arguments):
     return {"id": "same-id", "type": "function",
             "function": {"name": tool_name, "arguments": json.dumps(arguments or {"path": "app.py"})}}
+
+
+def measure_team(seed=20261107, trials=12):
+    """假模型按种子决定审查失败次数，统计打回和上下文隔离后的 token。"""
+    rng = random.Random(seed)
+    sendback_counts = []
+    passed = 0
+    isolated_tokens = combined_tokens = None
+    for trial in range(trials):
+        fail_budget = rng.choice((0, 1, 2, 3))
+        state = {"left": fail_budget}
+        requests = []
+
+        def respond(role, count, data):
+            requests.append((role, data))
+            if role == "planner":
+                return reply(json.dumps({"steps": [{"id": "read", "description": "读取 app.py", "kind": "read"}]}))
+            if role == "worker":
+                return reply("已读取 app.py:1。" + ("上下文填充" * 40))
+            if role == "reviewer":
+                if state["left"] > 0:
+                    state["left"] -= 1
+                    return reply(json.dumps({"approved": False, "reason": "尚未通过", "steps": [
+                        {"id": f"again{state['left']}", "description": "再读一次", "kind": "read"}]}))
+                return reply(json.dumps({"approved": True, "reason": "通过", "steps": []}))
+            return reply("汇总完成")
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / "app.py").write_text("print(1)\n", encoding="utf-8")
+            seen = []
+
+            def handler(request):
+                data = json.loads(request.content)
+                system = data["messages"][0]["content"]
+                match = re.search(r"当前角色：([a-z]+)", system)
+                role = match.group(1) if match else "compact"
+                seen.append(role)
+                count = seen.count(role)
+                response = respond(role, count, data)
+                return response if isinstance(response, httpx2.Response) else httpx2.Response(200, json=response)
+
+            traces = []
+            client = OpenAI(api_key="offline-test-key", base_url="https://offline.invalid/v1", max_retries=0,
+                            http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+            with client:
+                result = run_agent(client, "test-model", "读取并审查", workspace, mode="multi",
+                                   capabilities=("read", "exec"), approver=lambda request: "approved",
+                                   on_event=lambda _text: None,
+                                   on_trace=lambda kind, data: traces.append((kind, data)))
+        sendbacks = sum(1 for kind, data in traces if kind == "team_review" and data.get("sendback"))
+        sendback_counts.append(sendbacks)
+        if result.status == "returned":
+            passed += 1
+        if isolated_tokens is None:
+            reviewer = next(data["messages"] for role, data in requests if role == "reviewer")
+            workers = [data["messages"] for role, data in requests if role == "worker"]
+            isolated_tokens = json_tokens(reviewer)
+            combined_tokens = json_tokens({"reviewer": reviewer, "workers": workers})
+    return {"seed": seed, "trials": trials, "passed": passed,
+            "sendbacks": dict(Counter(sendback_counts)),
+            "isolated_tokens": isolated_tokens, "combined_tokens": combined_tokens}
 
 
 class SubagentTests(unittest.TestCase):
@@ -454,6 +519,68 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual(report["commands"][0]["returncode"], 0)
         self.assertEqual(task["verification_status"], "unverified")
         self.assertEqual(len(session["messages"]), 2)
+
+    def test_reviewer_runs_verification_and_sends_back_at_most_twice(self):
+        def respond(role, count, data):
+            if role == "planner":
+                return reply(json.dumps({"steps": [{"id": "read", "description": "读取 app.py", "kind": "read"}]}))
+            if role == "worker":
+                text = next(item["content"] for item in data["messages"] if item["role"] == "user")
+                if "改为 2" in text and not any(item.get("role") == "tool" for item in data["messages"]):
+                    return reply(calls=[tool("edit_file", path="app.py", old_text="print(1)\n", new_text="print(2)\n")])
+                return reply("本步已结束")
+            if role == "reviewer":
+                names = {item["function"]["name"] for item in data.get("tools", [])}
+                self.assertIn("run_command", names)
+                self.assertNotIn("edit_file", names)
+                tool_messages = [item for item in data["messages"] if item.get("role") == "tool"]
+                if not tool_messages:
+                    return reply(calls=[tool("run_command", argv=[sys.executable, "app.py"])])
+                output = json.loads(tool_messages[-1]["content"]).get("output", "")
+                if str(output).strip() == "2":
+                    return reply(json.dumps({"approved": True, "reason": "命令输出为 2", "steps": []}))
+                return reply(json.dumps({"approved": False, "reason": "输出仍是 1", "steps": [
+                    {"id": f"fix{count}", "description": "改为 2", "kind": "write"}]}))
+            return reply("app.py 已通过审查者的命令验证")
+
+        result = self.run_multi(respond, capabilities=("read", "write", "exec"), approver=lambda request: "approved")
+        self.assertEqual(result.status, "returned")
+        self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "print(2)\n")
+        reviews = [data for kind, data in self.traces if kind == "team_review"]
+        self.assertEqual([item["approved"] for item in reviews], [False, True])
+        self.assertEqual(sum(item["sendback"] for item in reviews), 1)
+        reviewer_commands = [data for kind, data in self.traces
+                             if kind == "tool_result" and data.get("agent") == "reviewer" and data["name"] == "run_command"]
+        self.assertEqual([item["result"]["output"].strip() for item in reviewer_commands], ["1", "2"])
+        reviewer_request = next(data for role, data in self.requests if role == "reviewer")
+        self.assertNotIn("当前角色：worker", reviewer_request["messages"][0]["content"])
+
+    def test_third_rejection_is_not_sent_back(self):
+        def respond(role, count, data):
+            if role == "planner":
+                return reply(json.dumps({"steps": [{"id": "read", "description": "读取", "kind": "read"}]}))
+            if role == "worker":
+                return reply("仍未改好")
+            if role == "reviewer":
+                return reply(json.dumps({"approved": False, "reason": "验证失败", "steps": [
+                    {"id": f"again{count}", "description": "再试", "kind": "read"}]}))
+            return reply("未能通过")
+
+        result = self.run_multi(respond, capabilities=("read", "exec"))
+        self.assertEqual(result.status, "incomplete")
+        reviews = [data for kind, data in self.traces if kind == "team_review"]
+        self.assertEqual(len(reviews), 3)
+        self.assertEqual(sum(item["sendback"] for item in reviews), 2)
+        self.assertEqual(self.counts["worker"], 3)
+
+    def test_measured_sendbacks_stay_within_two_and_context_is_smaller(self):
+        measured = measure_team()
+        self.assertEqual(measured["trials"], 12)
+        self.assertLessEqual(max(int(key) for key in measured["sendbacks"]), 2)
+        self.assertEqual(sum(measured["sendbacks"].values()), 12)
+        self.assertGreater(measured["combined_tokens"], measured["isolated_tokens"])
+        self.assertGreater(measured["passed"], 0)
+        self.assertLess(measured["passed"], measured["trials"])
 
     def test_worker_facts_survive_review_api_failure_without_replaying_edit(self):
         def respond(role, count, data):

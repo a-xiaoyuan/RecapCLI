@@ -11,6 +11,8 @@ from openai import APIError
 from .budget import AgentCancelled
 from .planning import plan_instruction, _read_object, _read_steps, ready_batch
 
+MAX_SENDBACKS = 2
+
 
 def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, capabilities,
              history, memory_text, summary, new_summary, on_event, on_trace, approver,
@@ -23,7 +25,7 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
 
     def trace(role, kind, data):
         with lock:
-            if role and role.startswith("worker:") and kind == "tool_result":
+            if role and (role.startswith("worker:") or role == "reviewer") and kind == "tool_result":
                 result = data["result"]
                 facts.append({"agent": role, "name": data["name"], "call_id": data["call_id"],
                               **{key: result[key] for key in ("ok", "error", "path", "reference", "backup_id",
@@ -105,8 +107,8 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
         trace(role, "subagent_result", report)
         return report
 
-    # 最多一轮按审查意见修正；不会重放旧工具，而是生成新的剩余步骤。
-    for revision in range(2):
+    # 审查不通过就打回，最多 MAX_SENDBACKS 次；不会重放旧工具，而是生成新的剩余步骤。
+    for revision in range(MAX_SENDBACKS + 1):
         while batch := ready_batch(steps):
             budget.remaining_time()
             available = max_steps - budget.requests - 2
@@ -136,20 +138,28 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
         remaining = max_steps - budget.requests - 1
         if remaining < 1:
             break
+        recorded = len(facts)
         review = invoke("reviewer", (
-            "独立审查实际代码和下列执行报告；需要时读取文件。禁止编辑和运行命令。"
+            "独立审查实际代码和下列执行报告。可以读取文件，并运行验证命令；禁止编辑。"
             "区分执行结果与任务验收，不把 Worker 自述当作测试证据。"
             "只返回 JSON：{\"approved\":true或false,\"reason\":\"核对依据与未验证项\",\"steps\":[]}。"
-            "若需修正，approved=false，steps 按原计划格式给出新的未完成步骤，不重复成功操作。"
+            "验证不通过时 approved=false，steps 按原计划格式给出新的未完成步骤，不重复成功操作。"
+            f"最多打回 {MAX_SENDBACKS} 次。"
             "\n计划：" + json.dumps([asdict(step) for step in steps], ensure_ascii=False)
-            + "\n执行报告：" + context()), min(4, remaining), frozenset(capabilities) & {"read"})
+            + "\n执行报告：" + context()), min(4, remaining), frozenset(capabilities) & {"read", "exec"})
         review_data = _read_object(review.answer)
         if not isinstance(review_data.get("approved"), bool) or not isinstance(review_data.get("reason"), str):
             raise ValueError("团队审查必须包含 approved 布尔值和 reason")
         approved = review_data["approved"] and all(step.status == "completed" for step in steps)
         reason = review_data["reason"]
-        trace(None, "team_review", {"revision": revision, "approved": approved, "reason": reason})
-        if approved or revision or not review_data.get("steps"):
+        reviewer_commands = [fact for fact in facts[recorded:] if fact["agent"] == "reviewer"
+                             and fact["name"] in {"run_command", "command_status"}]
+        if reviewer_commands and not reviewer_commands[-1].get("success"):
+            approved = False
+            reason = "审查者的验证命令没有成功；不能以模型自述视为通过。" + reason
+        trace(None, "team_review", {"revision": revision, "approved": approved, "reason": reason,
+                                    "sendback": (not approved) and revision < MAX_SENDBACKS and bool(review_data.get("steps"))})
+        if approved or revision >= MAX_SENDBACKS or not review_data.get("steps"):
             break
         done = [step for step in steps if step.status == "completed"]
         steps = done + _read_steps(review_data, done, max_steps=limits.max_plan_steps)
