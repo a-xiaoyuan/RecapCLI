@@ -19,7 +19,7 @@ from recapcli.core import agent  # noqa: E402
 from recapcli.llm.client import ModelClient  # noqa: E402
 from recapcli.llm.streaming import chat_stream  # noqa: E402
 
-BASE_ENGINE = "6b2392fa16b64775d454a849cf0a23047d155388"
+BASE_ENGINE = "c4f26806666c25f50dc72080b9daccfa0bf1ae7d"
 ENGINE_INPUTS = ("recapcli", "pyproject.toml", "uv.lock", "evals/tasks.json", "evals/acceptance.py")
 RUNS = runner.RUNS / "prompt-comparison"
 ANCHOR = "- 验证优先跑与改动相关的最小测试，不要一上来跑全量；按项目约定（AGENTS.md）选择命令。argv 不经 shell，Python 用提供的解释器路径。"
@@ -177,7 +177,7 @@ def run(root, probe_path):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="固定 6b2392f 的 bugfix 提示词对照")
+    parser = argparse.ArgumentParser(description=f"固定 {BASE_ENGINE[:7]} 的 bugfix 提示词对照")
     actions = parser.add_subparsers(dest="action", required=True)
     actions.add_parser("probe", help="只发一条有限输出的探测请求")
     actions.add_parser("prepare", help="离线准备四份工作区和对照清单")

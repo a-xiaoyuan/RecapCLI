@@ -46,7 +46,7 @@ python -X utf8 evals/runner.py recheck --run-dir RUN_DIR
 
 ### 提示词对照
 
-`prompt_comparison.py` 固定 `6b2392f` 的引擎源码、依赖、目标和 v3 评分。同一引擎交替运行 `control-1`、`candidate-1`、`control-2`、`candidate-2`。两组只差「改完要运行真实场景并看输出内容」这一行。先提交实验脚本并从干净工作区准备，再用一条小请求探测模型端点。通过后，从准备时的同一提交启动付费对照。
+`prompt_comparison.py` 固定 `c4f2680` 的引擎源码、依赖、目标和 v3 评分。同一引擎交替运行 `control-1`、`candidate-1`、`control-2`、`candidate-2`。两组只差「改完要运行真实场景并看输出内容」这一行。先提交实验脚本并从干净工作区准备，再用一条小请求探测模型端点。通过后，从准备时的同一提交启动付费对照。
 
 ```sh
 python -X utf8 evals/prompt_comparison.py probe
