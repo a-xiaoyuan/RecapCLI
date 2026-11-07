@@ -18,6 +18,7 @@ from recapcli.cli import main
 from recapcli.application.runtime import run_turn
 from recapcli.config import ConfigError, list_model_profiles, load_config
 from recapcli.core.agent import AgentLimits
+from recapcli.tools.approval import approve_all
 from recapcli.core.compaction import history_hash, validate_summary
 from recapcli.llm.client import ModelClient
 from recapcli.storage.session import SessionStore
@@ -391,7 +392,7 @@ class ResponsesRuntimeTests(ModelTestCase):
                  json.dumps({"status": "completed", "reason": "模型核对", "steps": []}), "最终说明"]
         self.replies = [response_reply(message(text, f"msg-plan-{index}")) for index, text in enumerate(texts)]
         with self.runtime() as client:
-            answer = self.run_turn(client, mode="plan", max_steps=5)
+            answer = self.run_turn(client, mode="plan", max_steps=5, approver=approve_all)
         self.assertIn("最终说明", answer)
         self.assertEqual(len(self.requests), 4)
         self.assertEqual([item["body"]["tool_choice"] for item in self.requests], ["none", "auto", "none", "none"])

@@ -11,7 +11,7 @@ from ..base.access import PathAccess, using_access
 from ..llm.client import ModelClient
 from ..llm.images import has_image_references, prepare_user_message
 from ..tools import tool_definitions
-from ..tools.approval import fail_closed
+from ..tools.approval import authorize_action, fail_closed
 from .budget import AgentBudget
 from .compaction import validate_summary
 from .context import DEFAULT_CONTEXT_TOKENS
@@ -145,7 +145,17 @@ def _prepare_turn_context(client, model, prompt, workspace, max_steps, limits, c
     if role:
         from .subagents import ROLE_INSTRUCTIONS
         system_text += "\n\n" + ROLE_INSTRUCTIONS[role.split(":", 1)[0]]
-    planner = PlanController(on_event, limits.max_plan_steps, limits.max_replans) if mode == "plan" else None
+    def confirm_plan(description):
+        denial = authorize_action(
+            "confirm_plan", workspace, {"plan": description},
+            approver=approver or fail_closed,
+            on_approval=(lambda payload: on_trace("approval", {"source": "plan", **payload})) if on_trace else None,
+            time_remaining=budget.remaining_time(),
+        )
+        return denial is None
+
+    planner = PlanController(on_event, limits.max_plan_steps, limits.max_replans,
+                             confirm=confirm_plan) if mode == "plan" else None
     if (has_image_references(prompt) and user_message is None and isinstance(client, ModelClient)
             and not client.metadata()["capabilities"]["images"]):
         raise ValueError("当前模型配置 images=false；请确认模型支持视觉后开启图片能力")

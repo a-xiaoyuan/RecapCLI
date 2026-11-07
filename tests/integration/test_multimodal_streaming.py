@@ -16,6 +16,7 @@ from PIL import Image
 from recapcli.application.runtime import run_turn
 from recapcli.config import Config, ConfigError, load_config
 from recapcli.core.agent import run_agent
+from recapcli.tools.approval import approve_all
 from recapcli.core.budget import AgentCancelled
 from recapcli.core.compaction import prepare_compaction
 from recapcli.llm.images import image_data_url, prepare_user_message
@@ -255,7 +256,7 @@ class MultimodalStreamingTests(unittest.TestCase):
                    plain('{"status":"completed","reason":"已有观察结果","steps":[]}'), sse(text_events("图片总结"))]
         with self.sdk(replies) as client:
             result = run_agent(client, "offline", '@image:<error screen.png> 分析', self.workspace,
-                               mode="plan", max_steps=4, on_event=lambda text: None,
+                               mode="plan", max_steps=4, on_event=lambda text: None, approver=approve_all,
                                on_stream=lambda kind, text: updates.append((kind, text)))
         self.assertIn("图片总结", result.answer)
         self.assertEqual("".join(text for kind, text in updates if kind == "delta"), "图片总结")

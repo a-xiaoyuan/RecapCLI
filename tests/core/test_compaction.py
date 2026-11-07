@@ -13,6 +13,7 @@ from recapcli.cli import main
 from recapcli.application.runtime import run_turn
 from recapcli.application.commands import handle_command
 from recapcli.core.agent import AgentLimits, run_agent
+from recapcli.tools.approval import approve_all
 from recapcli.core.compaction import prepare_compaction, turn_ends
 from recapcli.storage.session import SessionStore
 from recapcli.storage.tasks import TaskStore
@@ -233,7 +234,7 @@ class CompactionTests(unittest.TestCase):
         self.requests = []
         self.run_turn([reply(json.dumps({"steps": ["核对"]})), reply("执行说明"),
                        reply(json.dumps({"status": "completed", "reason": "模型核对", "steps": []})), reply("汇总")],
-                      mode="plan", max_steps=4, limits=AgentLimits(max_context_tokens=WINDOW))
+                      mode="plan", max_steps=4, limits=AgentLimits(max_context_tokens=WINDOW), approver=approve_all)
         self.assertEqual(len(self.requests), 4)
         self.assertIn("历史摘要", self.requests[0]["messages"][0]["content"])
         self.assertEqual(self.tasks()[0]["verification_status"], "unverified")
@@ -270,7 +271,7 @@ class CompactionTests(unittest.TestCase):
     def test_auto_compaction_and_plan_share_all_five_requests(self):
         self.run_turn([reply(json.dumps(CONTENT)), reply(json.dumps({"steps": ["核对"]})), reply("说明"),
                        reply(json.dumps({"status": "completed", "reason": "模型核对", "steps": []})), reply("汇总")],
-                      mode="plan", max_steps=5, limits=AgentLimits(max_context_tokens=WINDOW))
+                      mode="plan", max_steps=5, limits=AgentLimits(max_context_tokens=WINDOW), approver=approve_all)
         self.assertEqual(len(self.requests), 5)
         task = self.tasks()[0]
         self.assertEqual(task["model_requests"], 5)

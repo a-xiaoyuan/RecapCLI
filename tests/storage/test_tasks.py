@@ -372,7 +372,8 @@ class TaskRuntimeTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.requests = []
                 self.run_replies([document(steps=["核对代码"]), reply("执行说明"),
-                                  document(status=status, reason="模型判断", steps=[]), reply("汇总")], mode="plan")
+                                  document(status=status, reason="模型判断", steps=[]), reply("汇总")], mode="plan",
+                                 approver=approve_all)
                 task = self.task()
                 self.assertEqual(task["status"], expected)
                 self.assertEqual(task["plan"]["steps"][0]["model_review"], "模型判断")
@@ -381,7 +382,7 @@ class TaskRuntimeTests(unittest.TestCase):
     def test_plan_budget_exhaustion_is_incomplete_and_does_not_run_unreviewed_steps(self):
         self.run_replies([document(steps=["读取文件", "修改文件"]),
                           reply(name="read_file", arguments={"path": "app.py"}),
-                          reply("已经读取"), reply("预算用尽")], mode="plan", max_steps=4)
+                          reply("已经读取"), reply("预算用尽")], mode="plan", max_steps=4, approver=approve_all)
         self.assertEqual(self.task()["status"], "incomplete")
         self.assertEqual(self.task()["plan"]["steps"][0]["status"], "reviewing")
         self.assertEqual(self.source.read_text(), "print(1)\n")

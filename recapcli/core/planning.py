@@ -130,9 +130,10 @@ def ready_batch(steps):
 
 
 class PlanController:
-    def __init__(self, on_event, max_steps=MAX_PLAN_STEPS, max_replans=MAX_REPLANS):
+    def __init__(self, on_event, max_steps=MAX_PLAN_STEPS, max_replans=MAX_REPLANS, confirm=None):
         self.max_steps, self.max_replans = max_steps, max_replans
         self.on_event = on_event
+        self.confirm = confirm if confirm is not None else (lambda _description: True)
         self.phase = "plan"
         self.steps = []
         self.current = 0
@@ -182,6 +183,9 @@ class PlanController:
         if self.phase == "plan":
             self.steps = _read_steps(_read_object(content), max_steps=self.max_steps)
             self.on_event("[计划]\n" + self.describe())
+            if not self.confirm(self.describe()):
+                self.stop("用户未确认计划，未执行任何步骤")
+                return False
             self._start_step()
         elif self.phase == "execute":
             for step in self.batch:

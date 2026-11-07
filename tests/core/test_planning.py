@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from openai import OpenAI
 from recapcli.cli import main
 from recapcli.core.agent import AgentLimits, run_agent
 from recapcli.storage.session import SessionStore
+from recapcli.tools.approval import approve_all, fail_closed
 from recapcli.ui.terminal_ui import TerminalUI
 
 
@@ -38,6 +40,50 @@ def completed(reason="已根据实际结果核对"):
     return document(status="completed", reason=reason, steps=[])
 
 
+def measure_parallel_reads(delay=0.2):
+    """同一计划批次里两个无依赖读取，对照引擎并行墙钟和两次串行睡眠。"""
+    spans = []
+
+    def slow(name, arguments, workspace, **options):
+        start = time.perf_counter()
+        time.sleep(delay)
+        spans.append((start, time.perf_counter()))
+        return {"ok": True, "content": "ok"}
+
+    steps = [{"id": key, "description": key, "kind": "read", "depends_on": []} for key in ("left", "right")]
+    replies = [
+        document(steps=steps),
+        reply(calls=[{"id": key, "type": "function", "function": {
+            "name": "read_file", "arguments": json.dumps({"path": f"{key}.txt"})}} for key in ("left", "right")]),
+        reply("两项读取完成"),
+        document(results=[{"id": key, "status": "completed", "reason": "已核对"} for key in ("left", "right")]),
+        reply("汇总"),
+    ]
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx2.Response(200, json=replies[len(requests) - 1])
+
+    with tempfile.TemporaryDirectory() as directory, \
+            patch("recapcli.core.tool_batch.execute_tool", side_effect=slow):
+        workspace = Path(directory)
+        client = OpenAI(api_key="offline-test-key", base_url="https://offline.invalid/v1", max_retries=0,
+                        http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+        with client:
+            result = run_agent(client, "test-model", "同时读取", workspace, mode="plan", approver=approve_all,
+                               on_event=lambda _message: None)
+    parallel = max(item[1] for item in spans) - min(item[0] for item in spans)
+    serial_started = time.perf_counter()
+    time.sleep(delay)
+    time.sleep(delay)
+    serial = time.perf_counter() - serial_started
+    overlap = len(spans) == 2 and spans[0][0] < spans[1][1] and spans[1][0] < spans[0][1]
+    return {"delay_seconds": delay, "calls": len(spans), "parallel_seconds": parallel,
+            "serial_seconds": serial, "overlap": overlap, "status": result.status,
+            "batched": "left；right" in requests[1]["messages"][0]["content"]}
+
+
 class PlanningTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -59,6 +105,7 @@ class PlanningTests(unittest.TestCase):
                       http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
 
     def run_plan(self, replies, on_request=None, **options):
+        options.setdefault("approver", approve_all)
         with self.client(replies, on_request) as client:
             return run_agent(client, "test-model", "分析 app.py", self.workspace,
                              mode="plan", on_event=self.events.append, **options)
@@ -169,6 +216,14 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 5)
         self.assertTrue(any("格式修正" in event for event in self.events))
 
+    def test_independent_reads_run_together_and_faster_than_serial(self):
+        measured = measure_parallel_reads()
+        self.assertEqual(measured["calls"], 2)
+        self.assertTrue(measured["overlap"])
+        self.assertTrue(measured["batched"])
+        self.assertEqual(measured["status"], "returned")
+        self.assertLess(measured["parallel_seconds"], measured["serial_seconds"])
+
     def test_dependency_plan_batches_independent_reads_before_dependent_step(self):
         steps = [{"id": key, "description": key, "kind": "read", "depends_on": dependencies}
                  for key, dependencies in (("left", []), ("right", []), ("finish", ["left", "right"]))]
@@ -180,6 +235,21 @@ class PlanningTests(unittest.TestCase):
         self.assertIn("3/3", result.answer)
         self.assertIn("left；right", self.requests[1]["messages"][0]["content"])
         self.assertIn("当前步骤：finish", self.requests[3]["messages"][0]["content"])
+
+    def test_rejected_plan_lists_dependencies_and_does_not_execute(self):
+        result = self.run_plan([
+            document(steps=[{"id": "left", "description": "读取左文件", "kind": "read", "depends_on": []},
+                            {"id": "right", "description": "读取右文件", "kind": "read", "depends_on": ["left"]}]),
+            reply("计划未执行"),
+        ], approver=fail_closed)
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("用户未确认计划，未执行任何步骤", result.answer)
+        self.assertTrue(any("depends_on" not in event and "读取右文件" in event and "left" in event
+                            for event in self.events))
+        self.assertFalse(any(message.get("role") == "tool" for message in result.messages))
+        self.assertFalse(any(event.startswith("[步骤]") for event in self.events))
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual(self.requests[1]["tool_choice"], "none")
 
     def test_dependency_cycles_and_unknown_ids_stop_before_execution(self):
         for dependency in ("missing", "a"):
@@ -333,7 +403,7 @@ class PlanningTests(unittest.TestCase):
         for _ in range(2):
             replies.extend([document(steps=["回答问题"]), reply("说明"), completed(), reply("回答")])
         with patch.object(TerminalUI, "read_prompt", side_effect=["第一问", "第二问", "/exit"]):
-            code, _, errors = self.run_cli(["--mode", "plan"], replies)
+            code, _, errors = self.run_cli(["--mode", "plan", "--yes"], replies)
         self.assertEqual(code, 0, errors)
         self.assertIn("当前阶段：制定计划", self.requests[4]["messages"][0]["content"])
         self.assertIn("使用中文解释", self.requests[4]["messages"][0]["content"])
