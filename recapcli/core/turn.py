@@ -37,7 +37,7 @@ def model_failure_reason(error):
         return "模型请求超时"
     if isinstance(error, APIConnectionError):
         return "模型连接中断"
-    if isinstance(error, APIStatusError) and error.status_code >= 500:
+    if isinstance(error, APIStatusError) and (error.status_code == 429 or error.status_code >= 500):
         return f"模型服务返回 HTTP {error.status_code}"
     return ""
 

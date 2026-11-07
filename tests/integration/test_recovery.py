@@ -77,6 +77,24 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(sum(event["kind"] == "model_request" for event in events), 4)
         self.assertEqual(sum(event["kind"] == "tool_result" for event in events), 1)
 
+    def test_exhausted_rate_limit_after_edit_saves_fallback_without_replaying_edit(self):
+        path = self.workspace / "a.txt"
+        path.write_text("old", encoding="utf-8")
+        answer = self.turn([reply(calls=[call("edit", path="a.txt", old_text="old", new_text="new")]),
+                            unavailable(429), unavailable(429), unavailable(429)],
+                           max_steps=4, limits=AgentLimits(max_retries=1))
+        task_store = TaskStore(self.workspace)
+        task = task_store.get(task_store.list_tasks()[0]["id"])
+        self.assertEqual(task["status"], "incomplete")
+        self.assertIn("HTTP 429", task["stop_reason"])
+        self.assertIn("HTTP 429", answer)
+        self.assertIn("a.txt", answer)
+        self.assertEqual(task["model_requests"], 4)
+        self.assertEqual(sum(event["kind"] == "model_retry" for event in task["events"]), 1)
+        self.assertEqual(sum(event["kind"] == "tool_result" for event in task["events"]), 1)
+        self.assertEqual(self.requests[-1]["tool_choice"], "none")
+        self.assertEqual(path.read_text(encoding="utf-8"), "new")
+
     def test_command_receipt_survives_failed_request_and_continuation(self):
         script = "from pathlib import Path; p=Path('count.txt'); p.write_text(p.read_text()+'x' if p.exists() else 'x')"
         with self.assertRaises(APIStatusError):
