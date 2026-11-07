@@ -286,9 +286,8 @@ class TaskStore:
             if event["kind"] == "auto_verify":
                 result = {**data, "ok": data["success"]}
             elif event["kind"] == "acceptance_check":
-                # 这里的 status 是验收结论，不是命令终态。
-                result = {"record_id": data["record_id"], "returncode": data["returncode"],
-                          "ok": data["status"] == "passed", "status": "finished"}
+                # 验收项的结论已按配置核对退出码，预期退出码可以不是 0。
+                result = {"record_id": data["record_id"], "ok": data["status"] == "passed", "judged": True}
             elif event["kind"] == "tool_result" and data["name"] in {"run_command", "command_status"}:
                 result = data["result"]
             else:
@@ -298,8 +297,8 @@ class TaskStore:
         if not results:
             raise ValueError("验收必须引用该任务已保存的命令结果 ID")
         result = results[-1]
-        if status == "passed" and (not result.get("ok") or result.get("returncode") != 0
-                                   or result.get("status", "finished") != "finished"):
+        finished = result.get("returncode") == 0 and result.get("status", "finished") == "finished"
+        if status == "passed" and not (result.get("ok") and (result.get("judged") or finished)):
             raise ValueError("命令未正常退出，不能登记为通过")
         evidence = {"source": "user", "status": status, "command_id": command_id, "note": note.strip()}
         with self._connection() as connection:

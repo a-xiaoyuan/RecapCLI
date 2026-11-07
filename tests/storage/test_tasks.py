@@ -71,6 +71,19 @@ class TaskStoreTests(unittest.TestCase):
         self.tasks.verify(task_id, "passed", passed, "检查实际输出")
         self.assertEqual(self.tasks.get(task_id)["verification_status"], "passed")
 
+    def test_requirement_check_with_expected_nonzero_exit_can_be_verified(self):
+        task_id = self.tasks.start("session", "验收", "test-model", "react", {})
+        expected, plain = "c" * 32, "d" * 32
+        self.tasks.append(task_id, "acceptance_check", {
+            "attempt": 1, "id": "usage", "status": "passed", "reason": "", "record_id": expected, "returncode": 2})
+        self.tasks.append(task_id, "tool_result", {
+            "name": "run_command", "result": {"ok": True, "record_id": plain, "status": "finished", "returncode": 2}})
+        self.tasks.finish(task_id, "returned", "需求验收通过")
+        with self.assertRaisesRegex(ValueError, "不能登记为通过"):
+            self.tasks.verify(task_id, "passed", plain, "普通命令仍要退出码 0")
+        self.tasks.verify(task_id, "passed", expected, "预期退出码 2")
+        self.assertEqual(self.tasks.get(task_id)["verification_status"], "passed")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.cleanup)
