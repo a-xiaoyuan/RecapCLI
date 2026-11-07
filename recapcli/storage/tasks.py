@@ -12,6 +12,7 @@ import time
 import uuid
 
 from ..base.files import data_root, state_directory
+from ..core.acceptance import summarize_acceptance
 
 
 SCHEMA_VERSION = 1
@@ -279,13 +280,26 @@ class TaskStore:
         task = self.get(task_id)
         if task["status"] == "running":
             raise ValueError("任务仍在执行，暂不能登记验收")
-        results = [event["data"]["result"] for event in task["events"]
-                   if event["kind"] == "tool_result" and event["data"]["name"] in {"run_command", "command_status"}
-                   and event["data"]["result"].get("record_id") == command_id]
+        results = []
+        for event in task["events"]:
+            data = event["data"]
+            if event["kind"] == "auto_verify":
+                result = {**data, "ok": data["success"]}
+            elif event["kind"] == "acceptance_check":
+                # 这里的 status 是验收结论，不是命令终态。
+                result = {"record_id": data["record_id"], "returncode": data["returncode"],
+                          "ok": data["status"] == "passed", "status": "finished"}
+            elif event["kind"] == "tool_result" and data["name"] in {"run_command", "command_status"}:
+                result = data["result"]
+            else:
+                continue
+            if result.get("record_id") == command_id:
+                results.append(result)
         if not results:
             raise ValueError("验收必须引用该任务已保存的命令结果 ID")
         result = results[-1]
-        if status == "passed" and (not result.get("ok") or result.get("returncode") != 0):
+        if status == "passed" and (not result.get("ok") or result.get("returncode") != 0
+                                   or result.get("status", "finished") != "finished"):
             raise ValueError("命令未正常退出，不能登记为通过")
         evidence = {"source": "user", "status": status, "command_id": command_id, "note": note.strip()}
         with self._connection() as connection:
@@ -320,4 +334,7 @@ class TaskStore:
         for key in ("metadata", "usage", "plan"):
             task[key] = json.loads(task[key]) if task[key] is not None else None
         task["events"] = [{**dict(event), "data": json.loads(event["data"])} for event in events]
+        acceptance = summarize_acceptance(task["events"])
+        if acceptance is not None:
+            task["requirement_acceptance"] = acceptance
         return task

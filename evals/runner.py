@@ -31,6 +31,7 @@ sys.path.insert(0, str(REPO))
 from openai import APIStatusError, OpenAI  # noqa: E402
 from recapcli.application.runtime import run_turn  # noqa: E402
 from recapcli.config import load_config  # noqa: E402
+from recapcli.core.acceptance import load_acceptance  # noqa: E402
 from recapcli.core.agent import AgentLimits  # noqa: E402
 from recapcli.llm.client import ModelClient, api_error_message  # noqa: E402
 from recapcli.storage.session import SessionStore  # noqa: E402
@@ -117,9 +118,15 @@ def token_usage(task):
             "usage_missing_requests": max(0, requests - len(known))}
 
 
-def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=EVALUATOR, model=None):
+def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=EVALUATOR, model=None, agent_acceptance_path=None):
     """准备每一例的工作区，并在调用模型前确认验收确实不通过。"""
-    run_root = Path(runs) / datetime.now().strftime("%Y%m%d-%H%M%S")
+    agent_acceptance = None
+    if agent_acceptance_path is not None:
+        path = Path(agent_acceptance_path).resolve()
+        if path == Path(evaluator).resolve():
+            raise ValueError("运行时验收配置必须与评测评分脚本分开")
+        agent_acceptance = {"path": str(path), "sha256": load_acceptance(path).sha256}
+    run_root = Path(runs) / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     run_root.mkdir(parents=True)
     manifest = {"schema_version": 2, "created_at": datetime.now().astimezone().isoformat(),
                 "engine_commit": git(repo, "rev-parse", "HEAD").decode().strip(),
@@ -129,6 +136,8 @@ def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=EVALUATOR, model=None):
                 "auto_compact": False, "max_model_requests": spec["max_model_requests"],
                 "limits": asdict(AgentLimits(**spec["limits"])), "acceptance_sha256": file_hash(evaluator),
                 "tasks": spec["tasks"], "cases": [], "target_fingerprint": None}
+    if agent_acceptance is not None:
+        manifest["agent_acceptance"] = agent_acceptance
     for task in spec["tasks"]:
         for repeat in range(1, spec["repetitions"] + 1):
             identity = f"{task['id']}-{repeat}"
@@ -225,12 +234,17 @@ def read_result(path):
 def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
     identity = case["id"]
     out = Path(run_root) / "results" / identity
-    out.mkdir(parents=True)
     workspace = Path(case["workspace"]).resolve()
     if fingerprint(workspace) != manifest["target_fingerprint"] or git(workspace, "status", "--porcelain=v1"):
         raise RuntimeError(f"{identity}：初始工作区已变化")
     if file_hash(evaluator) != manifest["acceptance_sha256"]:
         raise RuntimeError("验收脚本已变化")
+    agent_acceptance = None
+    if definition := manifest.get("agent_acceptance"):
+        agent_acceptance = load_acceptance(definition["path"])
+        if agent_acceptance.sha256 != definition["sha256"]:
+            raise RuntimeError("运行时需求验收配置已变化")
+    out.mkdir(parents=True)
     prompt = next(item["prompt"] for item in manifest["tasks"] if item["id"] == case["task"])
     limits = AgentLimits(**manifest["limits"])
     store = SessionStore(workspace)
@@ -243,7 +257,8 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
         answer = run_turn(client, model, workspace, store, log, session, prompt,
                           max_steps=manifest["max_model_requests"], memory_enabled=False, limits=limits,
                           capabilities=tuple(manifest["capabilities"]), mode=manifest["mode"],
-                          auto_compact=manifest["auto_compact"], approver=workspace_approver(workspace, approvals))
+                          auto_compact=manifest["auto_compact"], approver=workspace_approver(workspace, approvals),
+                          acceptance=agent_acceptance)
         store.save(session)
     except Exception as exception:
         message = (api_error_message(exception, model) if type(exception).__module__.startswith("openai")
@@ -271,6 +286,8 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
               **token_usage(task),
               "approvals": approvals, "git_status": status, "has_stream_output": log.has_stream_output}
     result["invalid_reason"] = invalid_run_reason(result, task)
+    if task and (requirements := task.get("requirement_acceptance")):
+        result["requirement_acceptance"] = {key: requirements[key] for key in ("passed", "failed", "not_run", "total")}
     result["acceptance"] = (acceptance(evaluator, case["task"], workspace)
                             if case["kind"] == "acceptance" and not result["invalid_reason"] else None)
     result["acceptance_unchanged"] = file_hash(evaluator) == manifest["acceptance_sha256"]
@@ -288,6 +305,8 @@ def score(result, review=None):
     scored.update(known_total_tokens=result.get("known_total_tokens", result["total_tokens"] or 0),
                   usage_missing_requests=result.get("usage_missing_requests", 0))
     scored.update(engine_ok=engine_ok, checks_passed=None, checks_total=None)
+    if "requirement_acceptance" in result:
+        scored["requirement_acceptance"] = result["requirement_acceptance"]
     if reason := result.get("invalid_reason"):
         scored.update(invalid_reason=reason, task_ok=None, engine_ok=None)
         return scored
@@ -372,14 +391,24 @@ def render_report(manifest, results, totals, baseline=None):
             lines += ["", "**注意：验收脚本和基线不同，两边的结果不能直接比较。**"]
         if baseline.get("original_acceptance_sha256"):
             lines += ["", "基线分数是用当前验收离线重评的，原始分数保存在 `baselines/2026-11-03.json`。"]
+    before_results = {item["id"]: item for item in (baseline or {}).get("results", [])}
+    if manifest.get("agent_acceptance") or any("requirement_acceptance" in item for item in before_results.values()):
+        lines += ["", "### 运行时需求验收", "",
+                  "| 用例 | 对照通过 / 总数 | 本次通过 / 总数 | 本次失败 | 本次未运行 |",
+                  "| --- | --- | --- | --- | --- |"]
+        for item in results:
+            current = item.get("requirement_acceptance")
+            previous = before_results.get(item["id"], {}).get("requirement_acceptance")
+            before = f"{previous['passed']}/{previous['total']}" if previous else "—"
+            after = f"{current['passed']}/{current['total']}" if current else "—"
+            failed, not_run = (current["failed"], current["not_run"]) if current else ("—", "—")
+            lines.append(f"| {item['id']} | {before} | {after} | {failed} | {not_run} |")
+        lines += ["", "运行时需求验收单独记录，任务得分仍取自独立评测或人工核对。"]
     lines += ["", BOUNDARY, ""]
     return "\n".join(lines)
 
 
-def report(run_root, *, baseline_path=BASELINE):
-    """只读已有结果，不调用模型。人工核对写在运行目录的 source-reviews.json。"""
-    run_root = Path(run_root)
-    manifest = read_json(run_root / "manifest.json")
+def _scored_results(run_root, manifest):
     review_path = run_root / "source-reviews.json"
     reviews = read_json(review_path) if review_path.exists() else {}
     results = []
@@ -387,8 +416,35 @@ def report(run_root, *, baseline_path=BASELINE):
         path = run_root / "results" / case["id"] / "result.json"
         if path.exists():
             results.append(score(read_result(path), reviews.get(case["id"])))
+    return results
+
+
+def _comparison(run_root, manifest, results):
+    other = read_json(run_root / "manifest.json")
+    controls = ("engine_commit", "engine_status", "target_commit", "target_fingerprint", "acceptance_sha256",
+                "model", "mode", "capabilities", "memory_enabled", "auto_compact", "max_model_requests", "limits", "tasks")
+    differences = [key for key in controls if manifest.get(key) != other.get(key)]
+    if differences:
+        raise ValueError("对照配置不一致：" + "、".join(differences))
+    if bool(manifest.get("agent_acceptance")) == bool(other.get("agent_acceptance")):
+        raise ValueError("对照需包含一组开启和一组关闭运行时需求验收的结果")
+    other_results = _scored_results(run_root, other)
+    if not results or {item["id"] for item in results} != {item["id"] for item in other_results}:
+        raise ValueError("两组对照需运行相同的用例")
+    return {"date": other["created_at"], "target_fingerprint": other["target_fingerprint"],
+            "acceptance_sha256": other["acceptance_sha256"], "results": other_results}
+
+
+def report(run_root, *, baseline_path=BASELINE, compare=None):
+    """汇总已有结果，不调用模型。人工核对写在运行目录的 source-reviews.json。"""
+    run_root = Path(run_root)
+    manifest = read_json(run_root / "manifest.json")
+    results = _scored_results(run_root, manifest)
     totals = summarize(results)
-    baseline = read_json(baseline_path) if baseline_path is not None and Path(baseline_path).exists() else None
+    if compare is not None:
+        baseline = _comparison(Path(compare), manifest, results)
+    else:
+        baseline = read_json(baseline_path) if baseline_path is not None and Path(baseline_path).exists() else None
     text = render_report(manifest, results, totals, baseline)
     write_json(run_root / "summary.json", {"totals": totals, "results": results})
     (run_root / "report.md").write_text(text, encoding="utf-8")
@@ -469,9 +525,11 @@ def latest_run(runs=RUNS):
     return Path((Path(runs) / "latest.txt").read_text(encoding="utf-8"))
 
 
-def run_real(case_id=None):
-    run_root = latest_run()
+def run_real(case_id=None, *, run_root=None):
+    run_root = run_root or latest_run()
     manifest = read_json(run_root / "manifest.json")
+    if manifest.get("agent_acceptance") and case_id is None:
+        raise ValueError("运行时需求验收按任务配置，请用 --case 指定用例")
     cases = [case for case in manifest["cases"] if case_id in (None, case["id"])]
     if not cases:
         raise ValueError(f"没有用例 {case_id}")
@@ -489,11 +547,15 @@ def run_real(case_id=None):
 def build_parser():
     parser = argparse.ArgumentParser(description="在固定目标仓库上运行 RecapCLI 评测")
     actions = parser.add_subparsers(dest="action", required=True)
-    actions.add_parser("prepare", help="准备工作区，不调用模型")
+    prepare_parser = actions.add_parser("prepare", help="准备工作区，不调用模型")
+    prepare_parser.add_argument("--agent-accept", type=Path, help="实验组的运行时需求验收 JSON")
     run = actions.add_parser("run", help="调用真实模型运行，会产生费用")
     run.add_argument("--real-model", action="store_true", help="确认调用真实模型")
     run.add_argument("--case", help="只运行一例，如 bugfix-1")
-    actions.add_parser("report", help="汇总已有结果，不调用模型")
+    run.add_argument("--run-dir", type=Path, help="运行目录，默认最近一次运行")
+    report_parser = actions.add_parser("report", help="汇总已有结果，不调用模型")
+    report_parser.add_argument("--run-dir", type=Path, help="运行目录，默认最近一次运行")
+    report_parser.add_argument("--compare", type=Path, help="另一组对照运行目录")
     recheck_parser = actions.add_parser("recheck", help="离线重评已有产物，另存结果，不调用模型")
     recheck_parser.add_argument("--run-dir", type=Path, help="原运行目录，默认最近一次运行")
     rescore = actions.add_parser("rescore-baseline", help="用当前验收离线重评基线产物，不调用模型")
@@ -507,17 +569,17 @@ def main(argv=None):
     # 语义检索走另一个付费接口，评测里不启用。
     os.environ.update(RECAPCLI_EMBEDDING_MODEL="", RECAPCLI_EMBEDDING_BASE_URL="", PYTHONUTF8="1")
     if args.action == "prepare":
-        print(prepare(read_json(SPEC), model=model_identity(load_config())))
+        print(prepare(read_json(SPEC), model=model_identity(load_config()), agent_acceptance_path=args.agent_accept))
     elif args.action == "run":
         if not args.real_model:
             parser.error("run 会调用真实模型并产生费用；确认后加 --real-model")
-        run_real(args.case)
+        run_real(args.case, run_root=args.run_dir)
     elif args.action == "recheck":
         print(recheck(args.run_dir or latest_run()))
     elif args.action == "rescore-baseline":
         print(rescore_baseline(args.run_dir))
     else:
-        print(report(latest_run()))
+        print(report(args.run_dir or latest_run(), compare=args.compare))
     return 0
 
 

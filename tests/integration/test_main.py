@@ -16,7 +16,7 @@ from recapcli.core.context import json_tokens, select_history
 from recapcli.core.todos import TODO_TOOL
 from recapcli.tools import tool_definitions
 from recapcli.core.project_rules import MAX_RULE_BYTES, project_rules_description
-from recapcli.cli import main
+from recapcli.cli import build_parser, main
 from recapcli.storage.session import SessionStore
 from recapcli.ui.terminal_ui import TerminalUI
 from recapcli.tools import execute_tool
@@ -812,6 +812,64 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(requests), 4)
         self.assertIn("验证标记", requests[2]["messages"][-1]["content"])
+
+    def test_acceptance_blocks_a_success_claim_and_is_visible_in_task_details(self):
+        from recapcli.storage.tasks import TaskStore
+
+        checks = self.workspace / "acceptance.json"
+        checks.write_text(json.dumps({"checks": [
+            {"id": "help", "argv": [sys.executable, "-c", "print('missing-option')"],
+             "output_contains": ["--new-option"]},
+        ]}), encoding="utf-8")
+        with patch.object(TerminalUI, "read_prompt", side_effect=["补选项", "/exit"]):
+            code, requests = self.run_main(
+                ["--workspace", str(self.workspace), "--accept", str(checks), "--no-memory",
+                 "--banner", "off", "--color", "never"],
+                [reply("好了"), reply("好了"), reply("好了")],
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(requests), 3)
+        self.assertIn("missing-option", requests[1]["messages"][-1]["content"])
+        tasks = TaskStore(self.workspace)
+        task = tasks.list_tasks()[0]
+        self.assertEqual(task["status"], "incomplete")
+        self.assertEqual(task["verification_status"], "unverified")
+        self.assertEqual(tasks.get(task["id"])["requirement_acceptance"]["checks"][0]["status"], "failed")
+        code, _ = self.run_main(["--workspace", str(self.workspace), "--task", task["id"]], [])
+        self.assertEqual(code, 0)
+        self.assertIn("需求验收 0/1", self.output.getvalue())
+        self.assertIn("missing-option", self.output.getvalue())
+
+    def test_acceptance_option_is_validated_for_cli_and_tui(self):
+        from recapcli.tui.launch import shell_options
+
+        config = self.workspace / "acceptance.json"
+        config.write_text(json.dumps({"checks": [{"id": "valid", "argv": [sys.executable, "-V"]}]}), encoding="utf-8")
+        args = build_parser().parse_args(["--workspace", str(self.workspace), "--accept", str(config)])
+        self.assertEqual(shell_options(args).acceptance.checks[0].id, "valid")
+        args.mode = "plan"
+        with self.assertRaisesRegex(ValueError, "--accept 只支持 react"):
+            shell_options(args)
+
+    def test_single_prompt_acceptance_checks_explicit_exit_code_and_output(self):
+        from recapcli.storage.tasks import TaskStore
+
+        checks = self.workspace / "acceptance.json"
+        checks.write_text(json.dumps({"checks": [
+            {"id": "invalid-option", "argv": [sys.executable, "-c", "print('bad option'); raise SystemExit(2)"],
+             "exit_code": 2, "output_contains": ["bad option"], "output_excludes": ["Traceback"]},
+        ]}), encoding="utf-8")
+        code, requests = self.run_main(
+            ["检查错误提示", "--workspace", str(self.workspace), "--accept", str(checks), "--no-memory",
+             "--banner", "off", "--color", "never"], [reply("核对完成")],
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(requests), 1)
+        tasks = TaskStore(self.workspace)
+        task = tasks.get(tasks.list_tasks()[0]["id"])
+        self.assertEqual(task["status"], "returned")
+        self.assertEqual(task["requirement_acceptance"]["checks"][0]["returncode"], 2)
+        self.assertEqual(task["requirement_acceptance"]["passed"], 1)
 
     def test_interactive_loop_runs_hooks(self):
         check = self.workspace / "stop.py"

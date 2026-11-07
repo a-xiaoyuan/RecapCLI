@@ -8,11 +8,11 @@ from openai import APIError, APITimeoutError
 
 from ..llm.protocols import assistant_record
 from ..tools import tool_definitions
-from .auto_verify import MAX_VERIFY_ROUNDS, run_verification
+from .acceptance import acceptance_label
 from .budget import BudgetExhausted, SKIPPED_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text
-from .hooks import MAX_STOP_BLOCKS
 from .context import MAX_HISTORY_MESSAGES, TokenMeter, json_tokens, select_history
+from .end_checks import EndChecks
 from .model_call import COMPACT_RESERVE, request_model
 from .planning import PlanFormatError
 from .results import (TraceError, TurnResult, clear_old_tool_results, close_turn, context_overflow,
@@ -66,6 +66,7 @@ class TurnContext:
     verify_command: list | None = None
     hooks: Any = None
     skills: Any = None
+    acceptance: Any = None
 
 
 class TurnRunner:
@@ -74,10 +75,7 @@ class TurnRunner:
         self.requests_used = 0
         self.local_tool_calls = 0
         self.edited = []
-        self.verify_dirty = False   # 有实际编辑，且尚未通过验证
-        self.verify_failures = 0
-        self.verified = False
-        self.stop_blocks = 0
+        self.end_checks = EndChecks(self)
         self.format_correction = None
         self.corrected_phases = set()
         self.meter = TokenMeter()
@@ -122,7 +120,10 @@ class TurnRunner:
         return total + self.definition_tokens <= self.window
 
     def incomplete(self, answer, reason):
-        return TurnResult(answer, self.ctx.turn, "incomplete", f"{reason}；任务验收未验证", self.new_summary)
+        if self.ctx.acceptance is not None and not self.end_checks.acceptance_current:
+            reason += "；" + acceptance_label(0, 0, len(self.ctx.acceptance.checks))
+        manual = "人工验收未登记" if self.ctx.acceptance is not None else "任务验收未验证"
+        return TurnResult(answer, self.ctx.turn, "incomplete", f"{reason}；{manual}", self.new_summary)
 
     def finish_incomplete(self, reason):
         """预算用完：先尝试一次不带工具的汇总，失败则用事实拼结束说明。"""
@@ -302,39 +303,7 @@ class TurnRunner:
         self.trace("message", message=ctx.turn[-1])
         if ctx.planner is not None:
             return self.handle_plan_reply(message, final_request)
-        # 还有未完成的待办时提醒一次，防止多入口需求漏掉某个入口。
-        note = self.todos.reminder() if self.todos is not None and not final_request else None
-        if note is not None:
-            self.reminder = {"role": "system", "content": note}
-            self.trace("todo_reminder", open_items=self.todos.open_items())
-            ctx.on_event("[待办] 清单还有未完成项，提醒模型继续")
-            return None
-        if ctx.verify_command and ctx.role is None and self.verify_dirty:
-            label = " ".join(ctx.verify_command)
-            if ctx.budget.time_low():
-                ctx.on_event("[验证] 时间不足，未运行")
-                return self.incomplete(message.content, f"时间不足，自动验证未运行（{label}）")
-            self.verified, feedback = run_verification(self)
-            # 失败后仍需复验；模型再次直接回答不能绕过验证闸门。
-            self.verify_dirty = not self.verified
-            if not self.verified:
-                self.verify_failures += 1
-                if final_request or self.verify_failures >= MAX_VERIFY_ROUNDS:
-                    return self.incomplete(message.content, f"自动验证未通过（{label}）")
-                self.reminder = {"role": "system", "content": feedback}
-                return None
-        if ctx.hooks is not None and ctx.role is None:
-            reason = ctx.hooks.run(self, "stop", {"answer": message.content, "edited": self.edited})
-            if reason is not None:
-                self.stop_blocks += 1
-                if final_request or self.stop_blocks >= MAX_STOP_BLOCKS:
-                    return self.incomplete(message.content, "结束 Hook 未放行")
-                self.reminder = {"role": "system", "content": f"结束 Hook 要求继续处理：{reason}"}
-                return None
-        if final_request and self.forced_reason and self.local_tool_calls > 0:
-            return self.incomplete(message.content, self.forced_reason)
-        checked = "；自动验证通过" if self.verified else ""
-        return TurnResult(message.content, ctx.turn, "returned", f"模型已返回回答{checked}；任务验收未验证", self.new_summary)
+        return self.end_checks.finish(message.content, final_request)
 
     def handle_response(self, response, step, final_request, tools_allowed):
         ctx = self.ctx
@@ -388,7 +357,7 @@ class TurnRunner:
             return None
         except APIError as error:
             # 工具事实已产生时，超限或超时都要交代进度；收尾只汇总，不重放工具。
-            if has_tool_results(ctx.turn):
+            if has_tool_results(ctx.turn) or self.end_checks.acceptance_rounds:
                 if context_overflow(error):
                     return self.finish_incomplete("服务端报告上下文超限")
                 if isinstance(error, APITimeoutError):
@@ -398,6 +367,8 @@ class TurnRunner:
 
     def run(self):
         ctx = self.ctx
+        if ctx.acceptance is not None:
+            self.trace("acceptance_config", sha256=ctx.acceptance.sha256, checks=ctx.acceptance.catalog())
         self.trace("project_rules", **{key: value for key, value in ctx.rules.items() if key != "text"})
         if ctx.structure is not None:
             self.trace("repository_context", **{key: value for key, value in ctx.structure.items() if key != "map"})

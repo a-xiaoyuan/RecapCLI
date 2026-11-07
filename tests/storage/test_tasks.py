@@ -44,6 +44,33 @@ def document(**data):
 
 
 class TaskStoreTests(unittest.TestCase):
+    def test_manual_verification_accepts_auto_verify_evidence_from_same_task(self):
+        task_id = self.tasks.start("session", "验收", "test-model", "react", {})
+        record_id = "f" * 32
+        self.tasks.append(task_id, "auto_verify", {
+            "record_id": record_id, "success": True, "status": "finished", "returncode": 0,
+        })
+        self.tasks.finish(task_id, "returned", "自动验证通过")
+        other = self.tasks.start("session", "另一项任务", "test-model", "react", {})
+        self.tasks.finish(other, "returned", "已返回")
+        with self.assertRaisesRegex(ValueError, "该任务"):
+            self.tasks.verify(other, "passed", record_id, "检查实际输出")
+        self.tasks.verify(task_id, "passed", record_id, "检查实际输出")
+        self.assertEqual(self.tasks.get(task_id)["verification_status"], "passed")
+
+    def test_manual_verification_accepts_requirement_check_evidence(self):
+        task_id = self.tasks.start("session", "验收", "test-model", "react", {})
+        passed, failed = "a" * 32, "b" * 32
+        self.tasks.append(task_id, "acceptance_check", {
+            "attempt": 1, "id": "ok", "status": "passed", "reason": "", "record_id": passed, "returncode": 0})
+        self.tasks.append(task_id, "acceptance_check", {
+            "attempt": 1, "id": "bad", "status": "failed", "reason": "缺少内容", "record_id": failed, "returncode": 0})
+        self.tasks.finish(task_id, "incomplete", "需求验收未通过")
+        with self.assertRaisesRegex(ValueError, "不能登记为通过"):
+            self.tasks.verify(task_id, "passed", failed, "这一项没有通过")
+        self.tasks.verify(task_id, "passed", passed, "检查实际输出")
+        self.assertEqual(self.tasks.get(task_id)["verification_status"], "passed")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.cleanup)

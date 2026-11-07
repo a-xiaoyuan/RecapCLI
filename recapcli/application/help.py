@@ -24,7 +24,7 @@ COMMANDS = (
     ("/history", "", "查看最近消息", "sessions"),
     ("/compact", "", "请求模型压缩旧历史，原文保留", "sessions"),
     ("/summary", "", "查看历史摘要", "sessions"),
-    ("/task", "ID", "查看工具事实与命令结果", "tasks"),
+    ("/task", "ID", "查看工具事实、命令结果与需求验收", "tasks"),
     ("/jobs", "", "查看本次运行的后台命令", "tasks"),
     ("/job", "命令ID", "查看命令状态与输出", "tasks"),
     ("/send", "命令ID 文本", "向交互会话输入一行，需要审批", "tasks"),

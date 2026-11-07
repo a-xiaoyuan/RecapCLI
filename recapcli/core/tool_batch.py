@@ -5,7 +5,7 @@ import json
 
 from ..tools import execute_tool
 from .budget import SKIPPED_RESULT
-from .results import clear_old_tool_results, edited_paths, fact_result, oversized_result
+from .results import EDIT_TOOLS, clear_old_tool_results, edited_paths, fact_result, oversized_result
 from .skills import SKILL_TOOL
 from .todos import TODO_TOOL
 
@@ -136,6 +136,9 @@ class ToolBatch:
         except BaseException as error:
             trace("tool_interrupted", action_id=action_id, call_id=call.id, name=call.function.name,
                   error_type=type(error).__name__, outcome="unknown")
+            # 没有回执时无法确认写入是否发生，旧验收证据失效。
+            if call.function.name in EDIT_TOOLS or call.function.name in {"run_command", "command_input"}:
+                run.end_checks.changed()
             raise
 
     def report(self, call, result):
@@ -205,7 +208,7 @@ class ToolBatch:
                       result=fact_result(result))
             changed = edited_paths(call.function.name, result)
             run.edited.extend(path for path in changed if path not in run.edited)
-            run.verify_dirty = run.verify_dirty or bool(changed)
+            run.end_checks.observe_tool(call.function.name, result, changed)
             if ctx.hooks is not None and not skip_tool and result.get("status") != "blocked_by_hook":
                 feedback = ctx.hooks.run(run, "post_tool", {"arguments": _arguments(call), "result": _hook_result(result)},
                                          tool=call.function.name)

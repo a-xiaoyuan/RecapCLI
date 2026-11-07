@@ -4,6 +4,7 @@ import math
 import os
 import shlex
 
+from ..core.acceptance import load_acceptance
 from ..core.agent import AgentLimits, DEFAULT_STEPS
 from ..core.hooks import HookSet
 
@@ -40,6 +41,8 @@ def verify_command_from(args):
     """把 --verify-cmd 拆成 argv；命令不经过 shell，所以管道和 && 不生效。"""
     if args.verify_cmd is None:
         return None
+    if getattr(args, "mode", "react") != "react":
+        raise ValueError("--verify-cmd 只支持 react 模式")
     try:
         argv = shlex.split(args.verify_cmd, posix=os.name != "nt")
     except ValueError as error:
@@ -59,6 +62,14 @@ def hooks_from(args):
     if args.mode == "multi":
         raise ValueError("--hooks 暂不支持 multi 模式")
     return HookSet.load(args.hooks)
+
+
+def acceptance_from(args):
+    if args.accept is None:
+        return None
+    if args.mode != "react":
+        raise ValueError("--accept 只支持 react 模式")
+    return load_acceptance(args.accept)
 
 
 def limits_from(args):

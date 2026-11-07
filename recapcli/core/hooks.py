@@ -78,6 +78,8 @@ class HookSet:
                                      check=ctx.budget.remaining_time)
             except ToolError as error:
                 result = {"status": "failed", "returncode": None, "output": str(error), "record_id": None}
+            if result["record_id"]:
+                run.end_checks.changed()
             blocked = result["status"] == "finished" and result["returncode"] == BLOCK_EXIT_CODE
             run.trace("hook", event=event, tool=tool, command=hook["command"], blocked=blocked, status=result["status"],
                       returncode=result["returncode"], record_id=result["record_id"])

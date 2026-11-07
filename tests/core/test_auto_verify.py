@@ -14,7 +14,9 @@ from recapcli.application.commands import _TASK_EVENT_PRINTERS
 from recapcli.application.options import verify_command_from
 from recapcli.cli import build_parser
 from recapcli.core.agent import run_agent
+from recapcli.core.hooks import HookSet
 from recapcli.tools.approval import approve_all, fail_closed
+from recapcli.tools.commands import close_commands
 
 PASSES_WHEN_FIXED = [sys.executable, "-c",
                      "import sys; text = open('a.txt').read(); print('当前内容', text); sys.exit(text != 'fixed')"]
@@ -43,7 +45,7 @@ class AutoVerifyTests(unittest.TestCase):
         self.workspace = Path(directory.name)
         (self.workspace / "a.txt").write_text("old", encoding="utf-8")
 
-    def run_turn(self, replies, command, approver=approve_all):
+    def run_turn(self, replies, command, approver=approve_all, *, hooks=None):
         self.requests = []
         self.traces = []
         self.events = []
@@ -55,8 +57,8 @@ class AutoVerifyTests(unittest.TestCase):
         client = OpenAI(api_key="offline-test-key", base_url="https://offline.invalid/v1", max_retries=0,
                         http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
         with client:
-            return run_agent(client, "test-model", "修改", self.workspace, capabilities=("read", "write"),
-                             approver=approver, on_event=self.events.append, verify_command=command,
+            return run_agent(client, "test-model", "修改", self.workspace, capabilities=("read", "write", "exec"),
+                             approver=approver, on_event=self.events.append, verify_command=command, hooks=hooks,
                              on_trace=lambda kind, data: self.traces.append((kind, data)))
 
     def checks(self):
@@ -122,6 +124,39 @@ class AutoVerifyTests(unittest.TestCase):
         self.assertEqual(result.status, "returned")
         self.assertEqual(self.checks(), [])
 
+    def command_reply(self, script, *, background=False):
+        arguments = json.dumps({"argv": [sys.executable, "-c", script], "background": background})
+        return completion({"role": "assistant", "content": None, "tool_calls": [{
+            "id": "run", "type": "function", "function": {"name": "run_command", "arguments": arguments},
+        }]}, "tool_calls")
+
+    def test_command_edits_trigger_verification_even_with_nonzero_exit(self):
+        script = 'from pathlib import Path; Path("a.txt").write_text("bad"); raise SystemExit(7)'
+        result = self.run_turn([self.command_reply(script), text("完成"), text("完成"), text("完成")],
+                               PASSES_WHEN_FIXED)
+        self.assertEqual(result.status, "incomplete")
+        self.assertEqual((self.workspace / "a.txt").read_text(), "bad")
+        self.assertEqual([event["returncode"] for event in self.checks()], [1, 1, 1])
+
+    def test_stop_hook_runs_before_the_final_verifier(self):
+        path = self.workspace / "hooks.json"
+        path.write_text(json.dumps({"stop": [{"command": [
+            sys.executable, "-c", 'from pathlib import Path; Path("a.txt").write_text("bad")',
+        ]}]}), encoding="utf-8")
+        result = self.run_turn([edit("old", "fixed"), text("完成"), text("完成"), text("完成")],
+                               PASSES_WHEN_FIXED, hooks=HookSet.load(path))
+        self.assertEqual(result.status, "incomplete")
+        order = [kind for kind, _ in self.traces if kind in {"hook", "auto_verify"}]
+        self.assertEqual(order, ["hook", "auto_verify"] * 3)
+
+    def test_pending_background_command_cannot_pass_verification(self):
+        self.addCleanup(close_commands, self.workspace)
+        result = self.run_turn([self.command_reply("import time; time.sleep(30)", background=True),
+                                text("完成"), text("完成"), text("完成")], PASSES_WHEN_FIXED)
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("命令仍在运行", result.stop_reason)
+        self.assertEqual(self.checks(), [])
+
 
 class VerifyOptionTests(unittest.TestCase):
     def test_cli_option_reaches_the_parser(self):
@@ -146,6 +181,12 @@ class VerifyOptionTests(unittest.TestCase):
         for value in ("   ", 'python "unclosed'):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "--verify-cmd"):
                 verify_command_from(SimpleNamespace(verify_cmd=value))
+
+    def test_unsupported_modes_reject_verify_command(self):
+        for mode in ("plan", "multi"):
+            args = build_parser().parse_args(["--mode", mode, "--verify-cmd", "python -m unittest"])
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "只支持 react"):
+                verify_command_from(args)
 
 
 if __name__ == "__main__":

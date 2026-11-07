@@ -74,9 +74,9 @@ class EvalCase(unittest.TestCase):
         self.git("add", "--all")
         self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--no-gpg-sign", "-m", message)
 
-    def prepare(self):
+    def prepare(self, **options):
         run_root = runner.prepare(self.spec, repo=self.repo, runs=self.root / "runs", evaluator=self.evaluator,
-                                  model={"model": "offline"})
+                                  model={"model": "offline"}, **options)
         return run_root, runner.read_json(run_root / "manifest.json")
 
     def run_case(self, run_root, manifest, identity, replies):
@@ -119,6 +119,33 @@ class PrepareTests(EvalCase):
 
 
 class RunTests(EvalCase):
+    def test_requirement_acceptance_ablation_uses_independent_scoring(self):
+        self.spec["tasks"] = self.spec["tasks"][:1]
+        self.spec["repetitions"] = 1
+        user_checks = self.root / "requirements.json"
+        user_checks.write_text(json.dumps({"checks": [
+            {"id": "cli-output", "description": "检查程序实际输出",
+             "argv": [sys.executable, "-c", 'from pathlib import Path; print(Path("app.txt").read_text())'],
+             "output_contains": ["fixed"], "output_excludes": ["broken"]},
+        ]}), encoding="utf-8")
+        control_dir, control = self.prepare()
+        experiment_dir, experiment = self.prepare(agent_acceptance_path=user_checks)
+        without = self.run_case(control_dir, control, "fix-1", [text("改好了")])
+        with_check = self.run_case(experiment_dir, experiment, "fix-1", [text("改好了"), edit(), text("这次好了")])
+        self.assertFalse(runner.score(without)["task_ok"])
+        self.assertTrue(runner.score(with_check)["task_ok"])
+        self.assertEqual((without["model_requests"], with_check["model_requests"]), (1, 3))
+        self.assertEqual(with_check["requirement_acceptance"], {"passed": 1, "failed": 0, "not_run": 0, "total": 1})
+        task = runner.read_json(experiment_dir / "results/fix-1/task.json")
+        checks = [event["data"] for event in task["events"] if event["kind"] == "acceptance_check"]
+        self.assertEqual([entry["status"] for entry in checks], ["failed", "passed"])
+        self.assertIn("broken", checks[0]["output"])
+        self.assertIn("fixed", checks[1]["output"])
+        rendered = runner.report(experiment_dir, compare=control_dir)
+        self.assertIn("运行时需求验收", rendered)
+        self.assertIn("| fix-1 | — | 1/1 | 0 | 0 |", rendered)
+        self.assertIn("| 任务做对 | 0 | 1 |", rendered)
+
     def test_success_records_diff_and_both_scores(self):
         run_root, manifest = self.prepare()
         result = self.run_case(run_root, manifest, "fix-1", [edit(), text("改好了")])

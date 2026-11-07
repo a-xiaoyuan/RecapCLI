@@ -19,6 +19,20 @@ python -X utf8 evals/runner.py recheck              # 用新版验收离线重�
 
 工作区、模型回答和报告都写到 `evals/runs/`，不入库。
 
+### 对比运行时需求验收
+
+用同一引擎、目标、用例、模型和预算分别准备两组。实验组在 `prepare` 加 `--agent-accept 路径`，保存验收配置的指纹；对照组用普通 `prepare`。运行时验收的命令与评测评分脚本分别维护，评分脚本继续保留在目标工作区之外。
+
+```sh
+python -X utf8 evals/runner.py prepare
+python -X utf8 evals/runner.py prepare --agent-accept /path/to/agent-acceptance.json
+python -X utf8 evals/runner.py run --real-model --run-dir CONTROL_DIR --case bugfix-1
+python -X utf8 evals/runner.py run --real-model --run-dir EXPERIMENT_DIR --case bugfix-1
+python -X utf8 evals/runner.py report --run-dir EXPERIMENT_DIR --compare CONTROL_DIR
+```
+
+配置文件在运行前重新校验指纹。报告分别列出运行时需求验收、独立评测得分和请求数。先用离线夹具验证失败反馈和对照报告，再用真实模型测任务效果。
+
 `recheck --run-dir 路径` 可以指定原运行目录；默认使用最近一次运行。它核对保存的改动与工作区一致后，只重新运行外部验收，结果另存到该运行目录的 `rechecks/`，不会覆盖原报告或调用模型，也不会改变原运行的引擎终态。报告记录新旧验收脚本指纹，验收变更后的分数不能直接与旧分数比较。
 
 ## 怎么计分

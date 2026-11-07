@@ -39,6 +39,7 @@ class ShellOptions:
     additional_dirs: tuple = ()
     verify_command: list | None = None
     hooks: object = None
+    acceptance: object = None
 
 
 class Presenter:
@@ -404,7 +405,7 @@ class ShellDriver:
                 limits=self.options.limits, capabilities=self.options.capabilities, mode=self.options.mode,
                 auto_compact=self.options.auto_compact, compact_only=compact_only,
                 cancel_event=self.cancel_event, approver=approver, verify_command=self.options.verify_command,
-                hooks=self.options.hooks,
+                hooks=self.options.hooks, acceptance=self.options.acceptance,
                 extra_tools=self.mcp_manager.definitions if self.mcp_manager is not None else None,
                 extra_executor=self.mcp_manager.call if self.mcp_manager is not None else None,
             )

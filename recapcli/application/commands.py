@@ -91,7 +91,22 @@ def _show_subagent_event(ui, kind, entry, tasks, starts, finished):
 
 def _show_auto_verify(ui, kind, entry, tasks, starts, finished):
     result = "通过" if entry["success"] else f"失败（{entry['status']}，退出码 {entry['returncode']}）"
-    ui.info(f"自动验证 {' '.join(entry['command'])}：{result}")
+    record = f" · 命令 ID {entry['record_id']}" if entry.get("record_id") else ""
+    ui.info(f"自动验证 {' '.join(entry['command'])}：{result}{record}")
+
+
+def _show_requirements(ui, acceptance):
+    ui.info(f"需求验收 {acceptance['passed']}/{acceptance['total']} 通过，"
+            f"{acceptance['failed']} 项失败，{acceptance['not_run']} 项未运行")
+    if acceptance["attempt"] is not None:
+        ui.info(f"  当前证据来自第 {acceptance['attempt']} 轮")
+    labels = {"passed": "通过", "failed": "失败", "not_run": "未运行"}
+    for check in acceptance["checks"]:
+        record = f" · 命令 ID {check['record_id']}" if check.get("record_id") else ""
+        reason = f" · {check['reason']}" if check.get("reason") else ""
+        ui.info(f"  {check['id']} · {check['description']} · {labels[check['status']]}{record}{reason}")
+        if check.get("output"):
+            ui.info("    实际输出末尾：" + check["output"][-400:])
 
 
 def _show_hook(ui, kind, entry, tasks, starts, finished):
@@ -143,6 +158,8 @@ def show_tasks(ui, tasks, task_id=None, *, as_json=False):
             f"工作区：{task['workspace']}\n模式：{task['mode']} · 模型：{task['model']}\n"
             f"开始：{task['started_at']} · 结束：{task['ended_at'] or '未知'}\n"
             f"模型请求：{task['model_requests']} · 用量：{json.dumps(task['usage'], ensure_ascii=False)}")
+    if acceptance := task.get("requirement_acceptance"):
+        _show_requirements(ui, acceptance)
     starts = {}
     finished = set()
     for event in task["events"]:
