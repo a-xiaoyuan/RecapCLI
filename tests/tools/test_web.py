@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import random
 import socket
 import tempfile
 import threading
@@ -25,6 +26,101 @@ from recapcli.tools.registry import TOOL_REGISTRY
 
 
 PUBLIC = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
+
+
+def _mocked_call(name, arguments, response=None, error=None):
+    """走真实 read_url / web_search，只把套接字换成假连接。"""
+    connections = []
+
+    def factory(*args, **kwargs):
+        connection = MagicMock()
+        if error is not None:
+            connection.request.side_effect = error
+        else:
+            connection.getresponse.return_value = response
+        connections.append(connection)
+        return connection
+
+    with patch.object(web, "_public_addresses", return_value=PUBLIC), \
+            patch.object(web.http.client, "HTTPSConnection", side_effect=factory), \
+            patch.object(web.http.client, "HTTPConnection", side_effect=factory):
+        try:
+            result = execute_tool(name, arguments, Path.cwd(), capabilities={"read", "web"})
+        except Exception as failure:  # noqa: BLE001 — 量化要记下没有收成结构化结果的异常
+            return {"raised": type(failure).__name__}, connections
+    return result, connections
+
+
+def measure_web(seed=20261107, pages=24):
+    """合成网页和搜索响应上的解析、错误收尾和正文压缩。不访问网络。"""
+    rng = random.Random(seed)
+    parsed = 0
+    raw_bytes = extracted_bytes = 0
+    for index in range(pages):
+        marker = f"MARK{index:03d}"
+        noise = rng.randint(3, 10)
+        junk = ("<script>SECRET</script><style>SECRET</style>" * noise).encode()
+        html = (f"<html><title>T{index}</title>").encode() + junk + f"<p>{marker} 正文</p></html>".encode()
+        result, _ = _mocked_call("read_url", {"url": f"https://example.com/p{index}"}, Response(html))
+        if (not result.get("raised") and result.get("ok") and marker in result.get("content", "")
+                and "SECRET" not in result.get("content", "")):
+            parsed += 1
+            raw_bytes += len(html)
+            extracted_bytes += len(result["content"].encode("utf-8"))
+    errors = [
+        ("read_url", {"url": "https://example.com/timeout"}, TimeoutError("slow")),
+        ("read_url", {"url": "https://example.com/down"}, None),
+        ("web_search", {"query": "python"}, None),
+        ("read_url", {"url": "https://example.com/cut"}, http.client.IncompleteRead(b"partial")),
+    ]
+    # 第二项用 HTTP 500 响应，不走异常。
+    finished = 0
+    error_details = []
+    for name, arguments, error in (errors[0], errors[2], errors[3]):
+        env = {"TAVILY_API_KEY": "synthetic-key"} if name == "web_search" else {}
+        with patch.dict(os.environ, env, clear=False):
+            if name == "web_search":
+                result, _ = _mocked_call(name, arguments, Response(b"not-json", content_type="application/json"))
+            else:
+                result, _ = _mocked_call(name, arguments, error=error)
+        ok_finish = not result.get("raised") and result.get("ok") is False and bool(result.get("error"))
+        finished += int(ok_finish)
+        error_details.append(ok_finish)
+    down, _ = _mocked_call("read_url", {"url": "https://example.com/down"}, Response(b"secret", status=500))
+    down_ok = not down.get("raised") and down.get("ok") is False and "500" in down.get("error", "")
+    finished += int(down_ok)
+    error_details.append(down_ok)
+    # 工具失败后模型仍能给出收尾回答。
+    replies = [
+        {"id": "offline", "object": "chat.completion", "created": 0, "model": "test-model",
+         "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+             "role": "assistant", "content": None, "tool_calls": [{
+                 "id": "read", "type": "function", "function": {
+                     "name": "read_url", "arguments": json.dumps({"url": "https://example.com/slow"})}}]}}]},
+        {"id": "offline", "object": "chat.completion", "created": 0, "model": "test-model",
+         "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "网页没有读到，到此结束。"}}]},
+    ]
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx2.Response(200, json=replies[len(seen) - 1])
+
+    from recapcli.core.agent import run_agent
+    client = OpenAI(api_key="offline-test-key", base_url="https://offline.invalid/v1", max_retries=0,
+                    http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    with client, tempfile.TemporaryDirectory() as directory, \
+            patch.object(web, "_public_addresses", return_value=PUBLIC), \
+            patch.object(web.http.client, "HTTPSConnection") as factory:
+        factory.return_value.request.side_effect = TimeoutError("slow")
+        result = run_agent(client, "test-model", "读一下这个网页", Path(directory),
+                           capabilities=("read", "web"), on_event=lambda _message: None)
+    turn_finished = result.status == "returned" and result.answer == "网页没有读到，到此结束。"
+    tool_result = json.loads(next(message["content"] for message in seen[1]["messages"] if message["role"] == "tool"))
+    turn_finished = turn_finished and tool_result.get("ok") is False
+    return {"seed": seed, "pages": pages, "parsed": parsed, "raw_bytes": raw_bytes,
+            "extracted_bytes": extracted_bytes, "errors": len(error_details), "errors_finished": finished,
+            "turn_finished": turn_finished}
 
 
 class Response:
@@ -71,6 +167,14 @@ class NetworkTests(unittest.TestCase):
         for connection in connections:
             connection.close.assert_called_once()
             self.assertTrue(connection.getresponse.return_value.closed)
+
+    def test_measured_parse_errors_and_compression_stay_offline(self):
+        measured = measure_web()
+        self.assertEqual(measured["parsed"], measured["pages"])
+        self.assertEqual(measured["errors_finished"], measured["errors"])
+        self.assertTrue(measured["turn_finished"])
+        self.assertGreater(measured["raw_bytes"], measured["extracted_bytes"])
+        self.assertGreater(measured["extracted_bytes"], 0)
 
     def test_disabled_tools_hidden_and_dispatch_denied_without_request(self):
         self.assertFalse({"read_url", "web_search"} & {x["function"]["name"] for x in tool_definitions()})
