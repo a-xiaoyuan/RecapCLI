@@ -19,19 +19,35 @@ python -X utf8 evals/runner.py recheck              # 用新版验收离线重�
 
 工作区、模型回答和报告都写到 `evals/runs/`，不入库。
 
-### 对比运行时需求验收
+### 提示词对照
 
-用同一引擎、目标、用例、模型和预算分别准备两组。实验组在 `prepare` 加 `--agent-accept 路径`，保存验收配置的指纹；对照组用普通 `prepare`。运行时验收的命令与评测评分脚本分别维护，评分脚本继续保留在目标工作区之外。
+`prompt_comparison.py` 固定 `6b2392f` 的引擎源码、依赖、目标和 v3 评分。同一引擎交替运行 `control-1`、`candidate-1`、`control-2`、`candidate-2`。两组只差「改完要运行真实场景并看输出内容」这一行。先提交实验脚本并从干净工作区准备，再用一条小请求探测模型端点。通过后，从准备时的同一提交启动付费对照。
 
 ```sh
+python -X utf8 evals/prompt_comparison.py probe
+python -X utf8 evals/prompt_comparison.py prepare
+python -X utf8 evals/prompt_comparison.py run --real-model --run-dir RUN_DIR --probe PROBE_JSON
+python -X utf8 evals/prompt_comparison.py report --run-dir RUN_DIR
+```
+
+`probe` 输出证据文件路径，`prepare` 输出对照运行目录。四例约用 160 万至 190 万 tokens。开工前服务故障判无效时停止本轮。两组各有两次有效结果后，候选组的 `task_ok` 次数更多且 `engine_ok` 次数不少于对照组，才支持保留。`comparison.json` 保存计数与结论。
+
+### 对比运行时需求验收
+
+从干净提交用同一引擎、目标、用例、模型和预算准备两组。实验组在 `prepare` 加 `--agent-accept 路径`，保存验收配置的指纹；对照组用普通 `prepare`。公开验收用 CLI 任务详情检查两种工作区，一种有多个深层子目录提供有效规则，另一种只有超预算的子目录规则。v3 保留原有场景和断言，在目标工作区之外独立评分。
+
+```sh
+python -X utf8 evals/checks/bugfix_rule_summary.py --write-config evals/runs/bugfix-agent-accept.json
 python -X utf8 evals/runner.py prepare
-python -X utf8 evals/runner.py prepare --agent-accept /path/to/agent-acceptance.json
+python -X utf8 evals/runner.py prepare --agent-accept evals/runs/bugfix-agent-accept.json
 python -X utf8 evals/runner.py run --real-model --run-dir CONTROL_DIR --case bugfix-1
 python -X utf8 evals/runner.py run --real-model --run-dir EXPERIMENT_DIR --case bugfix-1
+python -X utf8 evals/runner.py run --real-model --run-dir CONTROL_DIR --case bugfix-2
+python -X utf8 evals/runner.py run --real-model --run-dir EXPERIMENT_DIR --case bugfix-2
 python -X utf8 evals/runner.py report --run-dir EXPERIMENT_DIR --compare CONTROL_DIR
 ```
 
-配置文件在运行前重新校验指纹。报告分别列出运行时需求验收、独立评测得分和请求数。先用离线夹具验证失败反馈和对照报告，再用真实模型测任务效果。
+配置文件在运行前重新校验指纹。报告分别列出运行时需求验收、独立评测得分和请求数。用 v3 得分观察 `bugfix` 在这组反馈下有没有改善。公开检查和评分覆盖同一产品需求，证据限于本任务和这次配置。
 
 `recheck --run-dir 路径` 可以指定原运行目录；默认使用最近一次运行。它核对保存的改动与工作区一致后，只重新运行外部验收，结果另存到该运行目录的 `rechecks/`，不会覆盖原报告或调用模型，也不会改变原运行的引擎终态。报告记录新旧验收脚本指纹，验收变更后的分数不能直接与旧分数比较。
 
@@ -46,7 +62,7 @@ python -X utf8 evals/runner.py report --run-dir EXPERIMENT_DIR --compare CONTROL
 
 分开是因为两者含义不同：基线里缺陷修复两次都 6/6 通过验收，却因为预算用完被判失败。收尾逻辑变好只会提高 `engine_ok`，不能算成解题能力的提升。
 
-项目理解任务靠人工核对：把结论写到运行目录的 `source-reviews.json`，格式是 `{"understanding-1": {"verdict": "passed"}}`。核对之前显示“待核对”，不算通过也不算失败。
+项目理解任务靠源码核对。把结论写到运行目录的 `source-reviews.json`，格式是 `{"understanding-1": {"verdict": "passed"}}`。AI 完成的核对加上 `"review_method": "ai_source_review"`，报告会标明来源。没有结论时显示「待核对」。[已有 AI 复核记录](baselines/2026-11-06-source-reviews-ai.json)
 
 如果模型服务以 HTTP 5xx 或连接错误（包括 TLS 握手失败）结束，且记录显示模型还没返回内容、调用工具或产生改动，该次运行显示为“无效”。`valid_runs` 是纳入计分的次数，`invalid_runs` 单列。无效运行不做验收，两项分数都留空，也不算待人工核对。报告仍记录实际请求、耗时和已知用量。开工后的故障按原规则计分。
 

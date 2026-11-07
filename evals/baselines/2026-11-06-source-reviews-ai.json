@@ -1,0 +1,68 @@
+{
+  "understanding-1": {
+    "verdict": "passed",
+    "reviewer": "Codex（AI 源码复核）",
+    "reviewed_at": "2026-11-06T23:12:39.630942-05:00",
+    "target_commit": "1923caeaa68da47cd96f199dacd8f01303ec4c55",
+    "checked_items": [
+      "配置与能力入口",
+      "先落任务再请求模型",
+      "工具能力与审批",
+      "失败事实恢复",
+      "任务与会话分别保存",
+      "模型返回/命令成功/人工验收的区别",
+      "命令进程权限边界",
+      "至少六处准确来源，且引用文件出现在读取记录中"
+    ],
+    "note": "按固定目标提交的实际源码和读取轨迹核对，主链路达到验收要求。通过结论包含以下勘误。",
+    "verified_references": [
+      "recapcli/cli.py:194",
+      "recapcli/cli.py:248",
+      "recapcli/cli.py:260",
+      "recapcli/application/runtime.py:46",
+      "recapcli/tools/registry.py:270",
+      "recapcli/core/recovery.py:17",
+      "recapcli/storage/tasks.py:274",
+      "recapcli/storage/session.py:164",
+      "recapcli/tools/processes.py:83"
+    ],
+    "corrections": [
+      "成功保存会话的 runtime.py:339 引用写错文件，应为 recapcli/cli.py:339。run_turn 成功时在 runtime.py:132-138 更新内存会话，再由 CLI 保存。"
+    ],
+    "review_method": "ai_source_review",
+    "source_run": "evals/runs/20261106-050050"
+  },
+  "understanding-2": {
+    "verdict": "passed",
+    "reviewer": "Codex（AI 源码复核）",
+    "reviewed_at": "2026-11-06T23:12:39.630942-05:00",
+    "target_commit": "1923caeaa68da47cd96f199dacd8f01303ec4c55",
+    "checked_items": [
+      "配置与能力入口",
+      "先落任务再请求模型",
+      "工具能力与审批",
+      "失败事实恢复",
+      "任务与会话分别保存",
+      "模型返回/命令成功/人工验收的区别",
+      "命令进程权限边界",
+      "至少六处准确来源，且引用文件出现在读取记录中"
+    ],
+    "note": "按固定目标提交的实际源码和读取轨迹核对，主链路达到验收要求。通过结论包含以下勘误。",
+    "verified_references": [
+      "recapcli/cli.py:22",
+      "recapcli/application/runtime.py:56",
+      "recapcli/core/agent.py:357",
+      "recapcli/core/recovery.py:17",
+      "recapcli/storage/tasks.py:218",
+      "recapcli/storage/tasks.py:274",
+      "recapcli/storage/session.py:164",
+      "recapcli/tools/processes.py:81"
+    ],
+    "corrections": [
+      "task_definitions 是笔误，应为 tool_definitions（registry.py:219）。",
+      "agent.py:199 的 using_access 用于准备附件。工具执行的访问上下文实际在 registry.py:272，工具审批在 registry.py:307-313。"
+    ],
+    "review_method": "ai_source_review",
+    "source_run": "evals/runs/20261106-050050"
+  }
+}

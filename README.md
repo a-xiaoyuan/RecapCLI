@@ -72,6 +72,14 @@ recapcli --allow-write --allow-exec
 recapcli --allow-write --verify-cmd "python -m unittest"
 ```
 
+**按需求逐项验收**
+
+```sh
+recapcli --allow-write --accept ./acceptance.json "修正项目规则摘要"
+```
+
+在 `react` 模式下，`--accept` 读取用户显式指定的 JSON，逐项检查真实命令的退出码和输出。失败项及输出节选交回模型，最多复验三轮。仍有失败或未运行项时，任务以未完成结束。每项的结论、命令 ID 和输出证据都可用 `/task ID` 查看。配置示例见[需求验收](docs/reference.md#需求验收)。
+
 **先规划再执行**
 
 ```sh
@@ -157,6 +165,19 @@ recapcli --profile backup
 从源码运行时，默认读取 RecapCLI 仓库根目录的 `.env` 和 `models.toml`，`RECAPCLI_CONFIG_DIR` 同样可覆盖。不会读取目标项目的同名配置。
 
 </details>
+
+## 失败案例与验证
+
+在 M2 的 `bugfix-2` 中，任务要求正确显示实际加载的 `pkg/AGENTS.md`。Agent 新增的测试全部通过，但断言只检查了「已加载」等关键词。任务详情仍把根目录的 `AGENTS.md` 显示为已加载，独立 v3 验收只有 **3/6**。依据是 `evals/runs/20261106-050050/results/bugfix-2/agent.log` 和同一运行目录下的 `rechecks/20261106-231245-472435/report.md`。
+
+逐项验收可以直接检查用户看到的 CLI 输出。在同一历史目标上做脚本化重放，关闭验收时独立评分为 **3/6**。开启后，错误摘要触发反馈，预设修复随后使评分达到 **6/6**。这是 `MockTransport` 流程演示，数据来自 `_testtmp/recapcli-acceptance-replay-6f14521d/report.md`。真实对照将用不同的公开检查场景和 v3 评分场景，观察失败反馈对这项任务的影响。评测分别记录产物是否做对 `task_ok` 和引擎是否正常结束 `engine_ok`。[评测方法](evals/README.md)
+
+项目理解两例均通过 AI 源码复核，第一例的引擎终态仍为 `incomplete`。复核依据是目标提交上的引用和实际读取轨迹，结论附有勘误。[复核记录](evals/baselines/2026-11-06-source-reviews-ai.json)
+
+| 真实运行 | `task_ok` | `engine_ok` | 证据 |
+| --- | --- | --- | --- |
+| 历史 M2，`515abe4`，按 v3 离线重评 | 3/6，含两例 AI 源码复核 | 1/6 | `evals/runs/20261106-050050/rechecks/20261106-231245-472435/report-ai-reviewed.md` |
+| 最终引擎的 M2 六例 | 待测 | 待测 | 运行完成后记录目录 |
 
 ## 安全与数据
 

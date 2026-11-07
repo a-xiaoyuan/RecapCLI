@@ -17,7 +17,7 @@ from openai import OpenAI
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from evals import acceptance as evaluator, runner  # noqa: E402
+from evals import acceptance as evaluator, prompt_comparison, runner  # noqa: E402
 from recapcli.core.agent import AgentLimits  # noqa: E402
 
 EVALUATOR = """import json, sys
@@ -237,8 +237,10 @@ class ReportTests(EvalCase):
         self.assertIn("待核对", runner.report(run_root, baseline_path=None))
         totals = runner.read_json(run_root / "summary.json")["totals"]
         self.assertEqual((totals["runs"], totals["task_ok"], totals["task_pending"]), (2, 1, 1))
-        runner.write_json(run_root / "source-reviews.json", {"read-1": {"verdict": "passed"}})
-        runner.report(run_root, baseline_path=None)
+        runner.write_json(run_root / "source-reviews.json", {"read-1": {
+            "verdict": "passed", "review_method": "ai_source_review",
+        }})
+        self.assertIn("是（AI 源码复核）", runner.report(run_root, baseline_path=None))
         totals = runner.read_json(run_root / "summary.json")["totals"]
         self.assertEqual((totals["task_ok"], totals["task_pending"], totals["both_ok"]), (2, 0, 2))
 
@@ -296,6 +298,25 @@ class ReportTests(EvalCase):
         (workspace / "app.txt").write_text("changed after evaluation", encoding="utf-8")
         with self.assertRaisesRegex(RuntimeError, "产物已变化"):
             runner.recheck(run_root, evaluator=self.evaluator, baseline_path=None)
+
+
+class PromptComparisonTests(unittest.TestCase):
+    def test_prepare_refuses_dirty_worktree(self):
+        with patch.object(runner, "git", return_value=b" M README.md\n"), patch.object(runner, "prepare") as prepare:
+            with self.assertRaisesRegex(ValueError, "干净工作区"):
+                prompt_comparison.prepare(None)
+        prepare.assert_not_called()
+
+    def test_failed_probe_cannot_start_paid_cases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            probe = root / "probe.json"
+            runner.write_json(root / "manifest.json", {"model": {"model": "offline"}})
+            runner.write_json(probe, {"ready": False, "error_type": "APIConnectionError"})
+            with patch.object(prompt_comparison, "ModelClient") as client:
+                with self.assertRaisesRegex(ValueError, "成功探测"):
+                    prompt_comparison.run(root, probe)
+            client.assert_not_called()
 
 
 class TokenUsageTests(unittest.TestCase):

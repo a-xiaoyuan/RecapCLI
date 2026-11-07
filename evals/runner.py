@@ -312,6 +312,8 @@ def score(result, review=None):
         return scored
     if result["kind"] == "review":
         scored["task_ok"] = None if review is None else review["verdict"] == "passed"
+        if review and review.get("review_method") == "ai_source_review":
+            scored["review_method"] = "ai_source_review"
         return scored
     parsed = (result["acceptance"] or {}).get("result")
     scored["task_ok"] = bool(parsed and parsed["passed"])
@@ -363,6 +365,8 @@ def render_report(manifest, results, totals, baseline=None):
         checks = f"{item['checks_passed']}/{item['checks_total']}" if item["checks_total"] else "-"
         reason = item.get("invalid_reason")
         task_mark = f"无效（{reason}）" if reason else _mark(item["task_ok"])
+        if item.get("review_method") == "ai_source_review":
+            task_mark += "（AI 源码复核）"
         engine_mark = "—" if reason else _mark(item["engine_ok"])
         lines.append(f"| {item['id']} | {task_mark} | {engine_mark} | {checks} | "
                      f"{item['agent_status']} | {item['model_requests']} / {item['tool_calls']} | "
