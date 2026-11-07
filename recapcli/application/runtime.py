@@ -176,3 +176,40 @@ def run_undo(store, ui, session, model, *, group_id=None, capabilities=("read",)
                                     {"role": "assistant", "content": "本地操作事实：" + json.dumps(result, ensure_ascii=False)}])
         save_session(store, session, ui)
     return result
+
+
+def run_rewind(store, ui, session, model, *, checkpoint_id=None, capabilities=("read",), approver=None):
+    """回到某一轮写文件前的检查点，不请求模型。"""
+    tasks = TaskStore(store.workspace)
+    prompt = "/rewind" + (" " + checkpoint_id if checkpoint_id else "")
+    task_id = tasks.start(session.get("id", ""), prompt, model, "rewind", {"capabilities": list(capabilities)})
+    ui.info(f"任务 ID：{task_id}（检查点回退，不请求模型）")
+    started = time.monotonic()
+    params = {"checkpoint_id": checkpoint_id} if checkpoint_id else {}
+    action = {"action_id": task_id, "call_id": "manual-rewind", "name": "rewind_checkpoint"}
+    try:
+        tasks.append(task_id, "project_version", project_version(Path(store.workspace).resolve()))
+        tasks.append(task_id, "tool_start", {**action, "arguments": json.dumps(params)})
+        _publish_task(tasks, task_id, ui)
+        result = execute_tool("rewind_checkpoint", params, store.workspace, capabilities=capabilities, approver=approver,
+                              access_policy=store.access,
+                              on_approval=lambda payload: tasks.append(task_id, "approval", {**action, **payload}))
+        tasks.append(task_id, "tool_result", {**action, "result": result})
+        tasks.finish(task_id, "returned" if result["ok"] else "blocked",
+                     result.get("error") or "检查点回退完成，未调用模型", answer=result.get("summary", ""),
+                     duration=time.monotonic() - started)
+    except BaseException as error:
+        try:
+            tasks.append(task_id, "tool_interrupted", {**action, "error_type": type(error).__name__, "outcome": "unknown"})
+            tasks.finish(task_id, "cancelled" if isinstance(error, KeyboardInterrupt) else "failed", str(error),
+                         duration=time.monotonic() - started)
+        except (OSError, ValueError) as record_error:
+            ui.error(f"回退任务 {task_id} 的终态未保存：{record_error}；请先核对文件和检查点。")
+        _publish_task(tasks, task_id, ui, show_changes=True)
+        raise
+    _publish_task(tasks, task_id, ui, show_changes=True)
+    if session.get("id"):
+        session["messages"].extend([{"role": "user", "content": prompt},
+                                    {"role": "assistant", "content": "本地操作事实：" + json.dumps(result, ensure_ascii=False)}])
+        save_session(store, session, ui)
+    return result

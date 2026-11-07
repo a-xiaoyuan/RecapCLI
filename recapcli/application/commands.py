@@ -7,7 +7,7 @@ from ..core.memory import active
 from ..core.project_rules import project_rules_description
 from ..core.skills import PROJECT_ROOTS, discover_skills, user_skills_dir
 from ..storage.tasks import TaskStore
-from .runtime import run_undo, save_session
+from .runtime import run_rewind, run_undo, save_session
 from .changes import show_changes
 from .help import help_text, config_help
 
@@ -251,9 +251,15 @@ def _cmd_changes(name, argument, ui, store, session, model, *, capabilities, app
         if name == "/diff":
             show_changes(ui, TaskStore(store.workspace, create=False), argument or None)
         else:
-            result = run_undo(store, ui, session, model, group_id=argument or None,
-                              capabilities=capabilities, approver=approver)
-            (ui.info if result["ok"] else ui.error)(result.get("error") or result.get("summary", "撤销未完成"))
+            if name == "/rewind":
+                result = run_rewind(store, ui, session, model, checkpoint_id=argument or None,
+                                    capabilities=capabilities, approver=approver)
+                done = "回退未完成"
+            else:
+                result = run_undo(store, ui, session, model, group_id=argument or None,
+                                  capabilities=capabilities, approver=approver)
+                done = "撤销未完成"
+            (ui.info if result["ok"] else ui.error)(result.get("error") or result.get("summary", done))
     except (OSError, ValueError, RuntimeError) as error:
         ui.error(f"命令执行失败：{error}")
     return session
@@ -417,6 +423,7 @@ _COMMANDS: dict[str, callable] = {
     "/config": _cmd_config,
     "/diff": _cmd_changes,
     "/undo": _cmd_changes,
+    "/rewind": _cmd_changes,
     "/save": _cmd_save,
     "/new": _cmd_new,
     "/session": _cmd_session,

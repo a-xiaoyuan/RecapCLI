@@ -167,6 +167,8 @@ def _commit_edit(workspace, planned, on_record=None, group_id=None):
     write_json(state_directory(workspace, "backups") / f"{backup_id}.json", backup)
     if on_record is not None:
         on_record("backup", backup_id)
+    from .checkpoints import note_before_write
+    note_before_write(relative, before)
     _replace_file(workspace, relative, before, after)
     return {"path": relative, "changed": True, "created": planned["created"], "replacements": planned["replacements"],
             "backup_id": backup_id, "diff": planned["diff"], "diff_truncated": planned["diff_truncated"],

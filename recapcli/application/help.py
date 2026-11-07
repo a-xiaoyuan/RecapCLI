@@ -30,6 +30,7 @@ COMMANDS = (
     ("/send", "命令ID 文本", "向交互会话输入一行，需要审批", "tasks"),
     ("/stop", "命令ID", "停止命令及其子进程", "tasks"),
     ("/undo", "[组ID|all]", "审批后撤销一组，或一次撤回全部未恢复的编辑，需要 --allow-write", "tasks"),
+    ("/rewind", "[检查点ID]", "审批后回到某一轮写文件前的检查点，需要 --allow-write", "tasks"),
     ("/task-verify", "ID passed|failed 命令ID 说明", "登记人工验收", "tasks"),
     ("/memory", "[search|update|expire|activate|candidates|propose|accept|reject ...]", "查看和管理长期记忆", "memory"),
     ("/remember", "[preference|fact] 文本", "添加偏好或项目事实", "memory"),

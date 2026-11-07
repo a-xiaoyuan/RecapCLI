@@ -7,6 +7,7 @@ from ..base.access import AccessDenied, PathAccess, using_access
 
 from .approval import authorize_action, fail_closed
 from .commands import run_command, command_status, command_input, stop_command
+from .checkpoints import rewind_checkpoint
 from .editing import edit_file, edit_files, restore_file, undo_edit
 from .filesystem import ToolError, find_files, list_directory, read_file, read_file_for_model, search_text
 from .retrieval import search_code_index, search_symbols
@@ -159,6 +160,13 @@ TOOL_REGISTRY = {
         "description": "按 group_id 撤销指定操作组；省略时撤销最近一组。group_id 为 all 时从最新一组开始一次撤回全部未恢复的编辑。先核对文件；有后续改动时停止且不覆盖。需一次人工审批。",
         "parameters": {"type": "object", "properties": {"group_id": {"type": "string", "description": "操作组 ID、单文件 backup_id，或 all"}},
                        "required": [], "additionalProperties": False},
+    },
+    "rewind_checkpoint": {
+        "handler": rewind_checkpoint, "capability": "write",
+        "description": "回到某一轮写文件前自动留下的检查点。省略 checkpoint_id 时回退最近一个尚未回退的检查点。文件已有后续变化时整次拒绝。执行前需要人工批准。",
+        "parameters": {"type": "object", "properties": {
+            "checkpoint_id": {"type": "string", "description": "检查点 ID；省略则回退最近一个"},
+        }, "required": [], "additionalProperties": False},
     },
     "restore_file": {
         "handler": restore_file,

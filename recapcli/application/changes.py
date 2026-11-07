@@ -101,7 +101,7 @@ def short_change_report(report):
     groups = [group for group in report["groups"] if group["undoable"]]
     lines = [f"本轮记录：{len(report['files'])} 个编辑 / 恢复文件，{len(report['commands'])} 条命令；/diff 查看差异与结果。"]
     if groups:
-        lines.append("撤销最近操作组：/undo；选择指定组：/undo 组ID。")
+        lines.append("撤销最近操作组：/undo；选择指定组：/undo 组ID；回到本轮写之前：/rewind。")
     return "\n".join(lines)
 
 

@@ -20,6 +20,7 @@ from .results import (TraceError, TurnResult, clear_old_tool_results, close_turn
                       fallback_answer, has_tool_results)
 from .todos import TodoList
 from .tool_batch import ToolBatch
+from ..tools.checkpoints import turn_checkpoint
 
 COMPACT_AT = 0.75          # 当前轮超过窗口的这个比例时，移出较早的工具结果
 FINAL_INSTRUCTION = ("本次是最后一次模型请求，不能调用工具。请基于已有事实直接给出最终答复；"
@@ -380,6 +381,13 @@ class TurnRunner:
         return self.handle_response(response, step, final_request, tools_allowed)
 
     def run(self):
+        with turn_checkpoint(self.ctx.workspace) as checkpoint:
+            result = self._run_turn()
+        if checkpoint.get("saved"):
+            self.trace("checkpoint", id=checkpoint["id"], files=sorted(checkpoint["files"]))
+        return result
+
+    def _run_turn(self):
         ctx = self.ctx
         if ctx.acceptance is not None:
             self.trace("acceptance_config", sha256=ctx.acceptance.sha256, checks=ctx.acceptance.catalog())

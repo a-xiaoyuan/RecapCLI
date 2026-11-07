@@ -18,6 +18,7 @@ import time
 
 from ..base.files import data_root
 from ..base.access import AccessDenied, register_directory_authorizer
+from .checkpoints import find_checkpoint
 from .editing import _hash, _plan_edit, _plan_edits, _read_bytes, _target, _undo_records, pending_backup_ids
 from .filesystem import ToolError, _relative
 
@@ -217,6 +218,11 @@ def collect_fingerprints(tool, workspace, params):
             return [_file_fingerprint(workspace, path if isinstance(path, str) else "")]
         if tool == "edit_files":
             return [_file_fingerprint(workspace, item.get("path", "")) for item in params.get("edits", [])]
+        if tool == "rewind_checkpoint":
+            data = find_checkpoint(workspace, params.get("checkpoint_id") or None)
+            if not data:
+                return [{"path": "checkpoint", "fingerprint": "absent"}]
+            return [_file_fingerprint(workspace, relative) for relative in data["files"]]
         if tool == "undo_edit":
             if params.get("group_id") == "all":
                 return [fingerprint for backup_id in pending_backup_ids(workspace)
@@ -276,6 +282,8 @@ def _action_hint(tool, workspace, params):
             return f"执行前检查未通过：{error}"
     if tool == "undo_edit":
         return "撤销指定操作组或最近一组未撤销编辑；文件已有后续变化时不会覆盖。"
+    if tool == "rewind_checkpoint":
+        return "回到本轮写文件前的检查点；文件已有后续变化时不会覆盖。"
     if tool == "restore_file":
         return "将按备份恢复目标文件；目标或备份已变化时不会覆盖。"
     if tool == "run_command":
