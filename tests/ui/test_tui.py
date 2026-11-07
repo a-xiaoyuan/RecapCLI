@@ -305,7 +305,6 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(options.max_steps, 4)
 
     def test_prompt_stays_on_cli_and_tty_without_prompt_opens_shell(self):
-        from recapcli.cli import build_parser
         with tempfile.TemporaryDirectory() as directory, \
                 patch("recapcli.tui.launch.cli_main", return_value=0) as cli, \
                 patch("recapcli.tui.launch.launch_shell", return_value=0) as shell, \
