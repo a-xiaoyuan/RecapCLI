@@ -1,0 +1,25 @@
+{
+  "guidance": "这是当前真实仓库的一次独立任务。只在当前工作区副本操作；不要访问父目录、其他副本或评测材料，不要联网、安装依赖、读取凭据、修改 Git 配置、提交或推送。需要执行 Python 时使用系统提示提供的解释器。独立验收由任务结束后的外部流程完成，你可以自行运行仓库现有检查，但不要声称独立验收已经通过。最终说明实际改动和验证。",
+  "tasks": [
+    {
+      "id": "outage-after-tool",
+      "kind": "acceptance",
+      "prompt": "编辑或命令已执行后，后续模型请求若在现有重试结束后仍报 HTTP 5xx 或连接失败，应保留工具结果及现有 tool_result 事件，并把任务以 incomplete 收尾。有请求预算时可以请求一次无工具的汇总；汇总也失败或没有额度时，用已有事实给出非空说明。保证工具不会重复执行，不超过模型请求预算。没有执行工具时沿用现有异常行为，HTTP 失败向调用方抛出保留状态码的 APIStatusError，连接错误也继续抛出。"
+    },
+    {
+      "id": "verification-gate",
+      "kind": "acceptance",
+      "prompt": "给行式 CLI 的 react 主代理提供 --verify-cmd，并让 run_agent 接受可选关键字参数 verify_command，值为命令的 argv 序列。编辑成功后、正常结束前运行用户显式指定的命令。失败的退出码和输出应反馈给模型。失败状态持续到复验通过，模型再次直接声称完成时不能绕过。三次失败或预算不足后应以 incomplete 结束；用户命令通过时可以正常返回。未执行编辑的只读回合无需运行该命令。"
+    },
+    {
+      "id": "skill-loading",
+      "kind": "acceptance",
+      "prompt": "让 react 主代理从项目 .agents/skills/*/SKILL.md 与 .claude/skills/*/SKILL.md 发现技能。文件以 --- 分隔的元数据头部提供 name 和 description，其后是 Markdown 正文；同名时 .agents 优先，格式损坏的文件跳过。初始系统提示只放技能目录的名称和说明。模型以 JSON 参数 {\"name\": \"技能名\"} 调用 load_skill 后，才回填含正文和 ok: true 的工具结果。未知技能返回 ok: false 和可读的 error。单轮入口从当前工作区自动发现。"
+    },
+    {
+      "id": "mcp-streamable",
+      "kind": "acceptance",
+      "prompt": "让现有 MCP 配置可通过 url 连接 Streamable HTTP 服务，同时保留 command 形式。支持 2025-06-18 的初始化、工具发现与调用，并读取 JSON 或 POST 的 SSE 响应。处理服务返回的会话标识。复用现有本地工具权限与审批，服务端自报只读不能跳过审批。连接中断或网关故障导致调用结果未知时，MCPManager.call 的结果返回 ok: false 和 status: \"unknown\"，并避免自动重发。"
+    }
+  ]
+}

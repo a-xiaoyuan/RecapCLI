@@ -19,6 +19,31 @@ python -X utf8 evals/runner.py recheck              # 用新版验收离线重�
 
 工作区、模型回答和报告都写到 `evals/runs/`，不入库。
 
+### 扩展套件
+
+扩展套件保留原来三题，再加入四道来自仓库历史需求的工程题。七道题各跑两次，共十四例。目标提交和单例预算与原套件一致。
+
+| 新题 | 独立验收的场景 |
+| --- | --- |
+| `outage-after-tool` | 编辑后遇到网关故障或断连，以未完成收尾，保留修改且不重复执行 |
+| `verification-gate` | 验证命令失败后仍约束结束，修复后可正常返回，只读回合跳过验证 |
+| `skill-loading` | 提示词只列目录，正文通过工具按需返回，同名优先级及损坏文件处理 |
+| `mcp-streamable` | 本机 HTTP 服务验证会话头、JSON 和 SSE、远程写审批及故障不重发 |
+
+```sh
+python -X utf8 evals/runner.py prepare --suite expanded
+python -X utf8 evals/runner.py run --real-model --run-dir RUN_DIR --case outage-after-tool-1
+python -X utf8 evals/runner.py report --run-dir RUN_DIR
+python -X utf8 evals/runner.py recheck --run-dir RUN_DIR
+```
+
+`RUN_DIR` 使用准备时输出的路径。扩展套件写入 `evals/runs/expanded/`，报告和重评读取该目录下的运行清单并选择对应的验收。新题的验收用模拟模型和本机服务检查产物，真实模型只在显式 `run --real-model` 时调用。扩展评分同时记录新验收和沿用的 v3 验收指纹。
+
+扩展报告单独记录，历史六例继续按原口径比较。汇报扩展结果时同时列出七道不同任务及每题两次运行的结果，并区分 `task_ok`、`engine_ok` 和无效运行。
+正式对照从干净的引擎提交准备，两次评测使用相同的目标、模型、预算和验收版本。
+
+首次使用扩展套件时，先逐个运行四道新题的 `-1` 用例。每题仍以 24 次模型请求和 300 秒为限。检查独立验收、耗时、已知用量和停止原因，判断题目难度是否合适，再决定是否跑全套。难度需要调整时，先固定新版题目和预算，再重新准备对照。
+
 ### 提示词对照
 
 `prompt_comparison.py` 固定 `6b2392f` 的引擎源码、依赖、目标和 v3 评分。同一引擎交替运行 `control-1`、`candidate-1`、`control-2`、`candidate-2`。两组只差「改完要运行真实场景并看输出内容」这一行。先提交实验脚本并从干净工作区准备，再用一条小请求探测模型端点。通过后，从准备时的同一提交启动付费对照。
@@ -96,4 +121,4 @@ python -X utf8 evals/runner.py rescore-baseline --run-dir 基线运行目录
 
 ## 这些数字能说明什么
 
-现在是 3 个任务各跑 2 次，只能当冒烟测试，不能写成通用成功率。
+历史 M2 是 3 个任务各跑 2 次。扩展套件覆盖 7 个任务，但两次重复执行仍属于同一道题。两套结果都只说明各自固定任务上的表现。

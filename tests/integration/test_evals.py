@@ -92,6 +92,25 @@ class EvalCase(unittest.TestCase):
 
 
 class PrepareTests(EvalCase):
+    def test_expanded_suite_retains_m2_tasks_and_separates_its_report(self):
+        original = runner.suite_spec("m2")
+        expanded = runner.suite_spec("expanded")
+        self.assertEqual(expanded["tasks"][:3], original["tasks"])
+        self.assertEqual(len(expanded["tasks"]) * expanded["repetitions"], 14)
+        self.assertEqual(expanded["target_commit"], original["target_commit"])
+        run_root, manifest = self.prepare(suite="expanded")
+        self.assertEqual(manifest["suite"], "expanded")
+        report = runner.report(run_root)
+        self.assertIn("扩展套件，2 道题，共计划 4 次运行", report)
+        self.assertNotIn("基线 2026-11-03", report)
+
+    def test_expanded_fingerprint_includes_delegated_m2_evaluator(self):
+        expanded = runner.EXPANDED_EVALUATOR
+        original = runner.evaluator_hash(expanded)
+        with patch.object(runner, "EVALUATOR", self.evaluator):
+            self.assertNotEqual(runner.evaluator_hash(expanded), original)
+            self.assertEqual(runner.evaluator_hash(self.evaluator), runner.file_hash(self.evaluator))
+
     def test_workspaces_come_from_target_not_engine_head(self):
         run_root, manifest = self.prepare()
         self.assertEqual([case["id"] for case in manifest["cases"]], ["fix-1", "fix-2", "read-1", "read-2"])
