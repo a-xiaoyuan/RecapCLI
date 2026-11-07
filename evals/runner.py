@@ -16,6 +16,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -27,7 +28,7 @@ EVALS = Path(__file__).resolve().parent
 REPO = EVALS.parent
 sys.path.insert(0, str(REPO))
 
-from openai import OpenAI  # noqa: E402
+from openai import APIStatusError, OpenAI  # noqa: E402
 from recapcli.application.runtime import run_turn  # noqa: E402
 from recapcli.config import load_config  # noqa: E402
 from recapcli.core.agent import AgentLimits  # noqa: E402
@@ -156,6 +157,7 @@ def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=EVALUATOR, model=None):
 class RunLog:
     def __init__(self, path):
         self.file = path.open("w", encoding="utf-8")
+        self.has_stream_output = False
 
     def info(self, value):
         self.file.write(str(value) + "\n")
@@ -168,6 +170,8 @@ class RunLog:
         pass
 
     def stream_update(self, kind, value):
+        if kind == "delta" and value:
+            self.has_stream_output = True
         if kind in {"start", "end", "abort"}:
             self.info(f"stream:{kind}")
 
@@ -185,6 +189,37 @@ def workspace_approver(workspace, approvals):
         approvals.append({"tool": request.tool, "outcome": outcome})
         return outcome
     return approver
+
+
+def invalid_run_reason(result, task):
+    """只排除有记录可证的开工前模型服务端故障。"""
+    if (task is None or result["agent_status"] != "failed" or result.get("has_stream_output")
+            or result.get("git_status") or result.get("tool_calls")):
+        return None
+    error = result.get("exception") or {}
+    events = {event["kind"] for event in task["events"]}
+    if "model_request" not in events or events.intersection({"model_response", "message", "tool_start"}):
+        return None
+    if error.get("type") == "APIConnectionError":
+        return "模型开始工作前连接失败"
+    status = error.get("status_code")
+    if status is None and error.get("type") == "InternalServerError":
+        # 旧结果只有 api_error_message 生成的摘要，没有独立状态码字段。
+        match = re.search(r" 返回 HTTP (5[0-9]{2})：模型服务暂时异常，请稍后重试。$", error.get("message", ""))
+        if match:
+            status = int(match[1])
+    if not isinstance(status, int) or not 500 <= status <= 599:
+        return None
+    return f"模型开始工作前 HTTP {status}"
+
+
+def read_result(path):
+    result = read_json(path)
+    task_path = path.with_name("task.json")
+    if task_path.exists():
+        task = read_json(task_path)
+        result.update(token_usage(task), invalid_reason=invalid_run_reason(result, task))
+    return result
 
 
 def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
@@ -214,6 +249,8 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
         message = (api_error_message(exception, model) if type(exception).__module__.startswith("openai")
                    else str(exception))
         error = {"type": type(exception).__name__, "message": message}
+        if isinstance(exception, APIStatusError):
+            error["status_code"] = exception.status_code
         (out / "exception.txt").write_text(traceback.format_exc(), encoding="utf-8")
     finally:
         close_commands(workspace)
@@ -225,33 +262,35 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
     task = tasks.get(found[0]["id"]) if found else None
     write_json(out / "task.json", task)
     events = task["events"] if task else []
-    if case["kind"] == "acceptance":
-        checked = acceptance(evaluator, case["task"], workspace)
-    else:
-        checked = None
     status = git(workspace, "status", "--porcelain=v1", "--untracked-files=all").decode("utf-8", "replace")
-    git(workspace, "add", "--intent-to-add", "--all")
-    (out / "changes.diff").write_bytes(git(workspace, "diff", "--binary", "HEAD"))
     result = {"id": identity, "task": case["task"], "kind": case["kind"], "repeat": case["repeat"],
               "task_id": task["id"] if task else None, "agent_status": task["status"] if task else None,
               "stop_reason": task["stop_reason"] if task else None, "exception": error,
               "seconds": round(elapsed, 3), "model_requests": task["model_requests"] if task else None,
               "tool_calls": sum(event["kind"] == "tool_start" for event in events),
               **token_usage(task),
-              "approvals": approvals, "git_status": status, "acceptance": checked,
-              "acceptance_unchanged": file_hash(evaluator) == manifest["acceptance_sha256"]}
+              "approvals": approvals, "git_status": status, "has_stream_output": log.has_stream_output}
+    result["invalid_reason"] = invalid_run_reason(result, task)
+    result["acceptance"] = (acceptance(evaluator, case["task"], workspace)
+                            if case["kind"] == "acceptance" and not result["invalid_reason"] else None)
+    result["acceptance_unchanged"] = file_hash(evaluator) == manifest["acceptance_sha256"]
+    git(workspace, "add", "--intent-to-add", "--all")
+    (out / "changes.diff").write_bytes(git(workspace, "diff", "--binary", "HEAD"))
     write_json(out / "result.json", result)
     return result
 
 
 def score(result, review=None):
-    """task_ok 为 None 表示还在等人工核对，不算通过也不算失败。"""
+    """task_ok 为 None 时，按 invalid_reason 区分无效和待人工核对。"""
     engine_ok = result["agent_status"] == "returned" and not result["exception"]
     scored = {key: result[key] for key in ("id", "task", "repeat", "agent_status", "stop_reason", "model_requests",
                                            "tool_calls", "seconds", "total_tokens")}
     scored.update(known_total_tokens=result.get("known_total_tokens", result["total_tokens"] or 0),
                   usage_missing_requests=result.get("usage_missing_requests", 0))
     scored.update(engine_ok=engine_ok, checks_passed=None, checks_total=None)
+    if reason := result.get("invalid_reason"):
+        scored.update(invalid_reason=reason, task_ok=None, engine_ok=None)
+        return scored
     if result["kind"] == "review":
         scored["task_ok"] = None if review is None else review["verdict"] == "passed"
         return scored
@@ -263,11 +302,13 @@ def score(result, review=None):
 
 
 def summarize(results):
+    valid = [item for item in results if not item.get("invalid_reason")]
     return {"runs": len(results),
-            "task_ok": sum(item["task_ok"] is True for item in results),
-            "task_pending": sum(item["task_ok"] is None for item in results),
-            "engine_ok": sum(item["engine_ok"] for item in results),
-            "both_ok": sum(item["task_ok"] is True and item["engine_ok"] for item in results),
+            "valid_runs": len(valid), "invalid_runs": len(results) - len(valid),
+            "task_ok": sum(item["task_ok"] is True for item in valid),
+            "task_pending": sum(item["task_ok"] is None for item in valid),
+            "engine_ok": sum(item["engine_ok"] for item in valid),
+            "both_ok": sum(item["task_ok"] is True and item["engine_ok"] for item in valid),
             "model_requests": sum(item["model_requests"] or 0 for item in results),
             "tool_calls": sum(item["tool_calls"] for item in results),
             "seconds": round(sum(item["seconds"] for item in results), 1),
@@ -301,10 +342,14 @@ def render_report(manifest, results, totals, baseline=None):
     lines += ["| 用例 | 任务做对 | 引擎正常结束 | 验收项 | 终态 | 请求 / 工具 | 耗时 | tokens |", "| --- | --- | --- | --- | --- | --- | --- | --- |"]
     for item in results:
         checks = f"{item['checks_passed']}/{item['checks_total']}" if item["checks_total"] else "-"
-        lines.append(f"| {item['id']} | {_mark(item['task_ok'])} | {_mark(item['engine_ok'])} | {checks} | "
+        reason = item.get("invalid_reason")
+        task_mark = f"无效（{reason}）" if reason else _mark(item["task_ok"])
+        engine_mark = "—" if reason else _mark(item["engine_ok"])
+        lines.append(f"| {item['id']} | {task_mark} | {engine_mark} | {checks} | "
                      f"{item['agent_status']} | {item['model_requests']} / {item['tool_calls']} | "
                      f"{item['seconds']:.1f}s | {_tokens(item)} |")
-    labels = (("runs", "运行次数"), ("task_ok", "任务做对"), ("task_pending", "待人工核对"), ("engine_ok", "引擎正常结束"),
+    labels = (("runs", "运行次数"), ("valid_runs", "纳入计分的运行"), ("invalid_runs", "无效运行"),
+              ("task_ok", "任务做对"), ("task_pending", "待人工核对"), ("engine_ok", "引擎正常结束"),
               ("both_ok", "两项都通过"), ("model_requests", "模型请求"), ("tool_calls", "工具调用"),
               ("seconds", "Agent 耗时（秒）"), ("total_tokens", "累计 tokens"))
     if baseline is None:
@@ -315,8 +360,12 @@ def render_report(manifest, results, totals, baseline=None):
         lines += ["", f"| 指标 | 基线 {baseline['date']} | 本次 |", "| --- | --- | --- |"]
         lines += [f"| {label} | {_tokens(before) if key == 'total_tokens' else before[key]} | "
                   f"{_tokens(totals) if key == 'total_tokens' else totals[key]} |" for key, label in labels]
+        before_ids = {item["id"] for item in baseline["results"] if not item.get("invalid_reason")}
+        current_ids = {item["id"] for item in results if not item.get("invalid_reason")}
+        if before_ids != current_ids:
+            lines += ["", "两侧纳入计分的用例集合不同，通过数量不能直接作为改善幅度。"]
         if {item["id"] for item in baseline["results"]} != {item["id"] for item in results}:
-            lines += ["", "两侧用例集合不同，累计用量、耗时和通过数量不能直接作为改善幅度。"]
+            lines += ["", "两侧实际运行的用例集合不同，累计用量和耗时不能直接作为改善幅度。"]
         if baseline["target_fingerprint"] != manifest["target_fingerprint"]:
             lines += ["", "**注意：目标工作区和基线不是同一份字节，对比要打折扣。**"]
         if baseline["acceptance_sha256"] != manifest["acceptance_sha256"]:
@@ -337,11 +386,7 @@ def report(run_root, *, baseline_path=BASELINE):
     for case in manifest["cases"]:
         path = run_root / "results" / case["id"] / "result.json"
         if path.exists():
-            result = read_json(path)
-            task_path = path.with_name("task.json")
-            if task_path.exists():
-                result.update(token_usage(read_json(task_path)))
-            results.append(score(result, reviews.get(case["id"])))
+            results.append(score(read_result(path), reviews.get(case["id"])))
     totals = summarize(results)
     baseline = read_json(baseline_path) if baseline_path is not None and Path(baseline_path).exists() else None
     text = render_report(manifest, results, totals, baseline)
@@ -367,14 +412,13 @@ def recheck(run_root, *, evaluator=EVALUATOR, baseline_path=BASELINE):
         source = run_root / "results" / case["id"]
         if not (source / "result.json").exists():
             continue
-        result = read_json(source / "result.json")
-        task_path = source / "task.json"
-        if task_path.exists():
-            result.update(token_usage(read_json(task_path)))
-        else:
+        result = read_result(source / "result.json")
+        if not (source / "task.json").exists():
             # 没有逐请求记录时无法纠正旧零值，明确保留未知。
             result.update(token_usage(None))
-        if case["kind"] == "acceptance":
+        if result.get("invalid_reason"):
+            result["acceptance"] = None
+        elif case["kind"] == "acceptance":
             workspace = Path(case["workspace"])
             saved_diff = (source / "changes.diff").read_bytes()
             if (git(workspace, "diff", "--binary", "HEAD") != saved_diff
@@ -438,7 +482,8 @@ def run_real(case_id=None):
         print(f"开始 {case['id']}", flush=True)
         with ModelClient(config, client_factory=OpenAI) as client:
             result = run_case(run_root, manifest, case, client, config.model)
-        print(f"结束 {case['id']}：{result['agent_status']}，{result['seconds']:.1f} 秒", flush=True)
+        status = f"无效（{result['invalid_reason']}）" if result.get("invalid_reason") else result["agent_status"]
+        print(f"结束 {case['id']}：{status}，{result['seconds']:.1f} 秒", flush=True)
 
 
 def build_parser():

@@ -133,8 +133,46 @@ class RunTests(EvalCase):
         run_root, manifest = self.prepare()
         result = self.run_case(run_root, manifest, "fix-1", [edit(), httpx2.Response(500, json={"error": {"message": "坏了"}})])
         scored = runner.score(result)
+        self.assertIsNone(result["invalid_reason"])
         self.assertTrue(scored["task_ok"])
         self.assertFalse(scored["engine_ok"])
+
+    def test_startup_server_error_is_excluded_in_run_report_and_legacy_recheck(self):
+        run_root, manifest = self.prepare()
+        error = httpx2.Response(502, json={"error": {"message": "gateway"}})
+        with patch.object(runner, "acceptance") as accept:
+            result = self.run_case(run_root, manifest, "fix-1", [error])
+        accept.assert_not_called()
+        self.assertEqual(result["agent_status"], "failed")
+        self.assertEqual(result["exception"]["status_code"], 502)
+        self.assertEqual(result["invalid_reason"], "模型开始工作前 HTTP 502")
+        self.assertIsNone(result["acceptance"])
+        self.run_case(run_root, manifest, "fix-2", [text("我没改")])
+        rendered = runner.report(run_root, baseline_path=None)
+        summary = runner.read_json(run_root / "summary.json")
+        totals = summary["totals"]
+        self.assertEqual((totals["runs"], totals["valid_runs"], totals["invalid_runs"]), (2, 1, 1))
+        self.assertEqual((totals["task_ok"], totals["task_pending"], totals["engine_ok"]), (0, 0, 1))
+        self.assertEqual(totals["model_requests"], 2)
+        self.assertIsNone(summary["results"][0]["task_ok"])
+        self.assertIsNone(summary["results"][0]["engine_ok"])
+        self.assertFalse(summary["results"][1]["task_ok"])
+        self.assertIn("无效（模型开始工作前 HTTP 502）", rendered)
+
+        # 模拟旧版结果：只有错误摘要，且当时仍运行了验收。
+        result.pop("invalid_reason")
+        result.pop("has_stream_output")
+        result["exception"].pop("status_code")
+        result["acceptance"] = {"result": {"passed": False, "checks": []}}
+        path = run_root / "results/fix-1/result.json"
+        runner.write_json(path, result)
+        before = path.read_bytes()
+        with patch.object(runner, "acceptance", wraps=runner.acceptance) as accept:
+            revised = runner.recheck(run_root, evaluator=self.evaluator, baseline_path=None)
+        accept.assert_called_once()
+        self.assertEqual(Path(accept.call_args.args[2]).name, "fix-2")
+        self.assertEqual(runner.read_json(revised / "summary.json")["totals"], totals)
+        self.assertEqual(path.read_bytes(), before)
 
     def test_engine_finished_but_task_wrong(self):
         run_root, manifest = self.prepare()
@@ -261,6 +299,29 @@ class TokenUsageTests(unittest.TestCase):
         self.assertIsNone(totals["total_tokens"])
         self.assertEqual(totals["known_total_tokens"], 30)
         self.assertEqual(totals["usage_missing_requests"], 1)
+
+
+class InvalidRunTests(unittest.TestCase):
+    def test_exclusion_requires_service_error_and_no_model_progress(self):
+        result = {"agent_status": "failed", "exception": {"type": "InternalServerError", "status_code": 503}}
+        initial = {"events": [{"kind": "model_request"}]}
+        self.assertEqual(runner.invalid_run_reason(result, initial), "模型开始工作前 HTTP 503")
+        for later in ("model_response", "message", "tool_start"):
+            with self.subTest(event=later):
+                started = {"events": [*initial["events"], {"kind": later}]}
+                self.assertIsNone(runner.invalid_run_reason(result, started))
+        self.assertIsNone(runner.invalid_run_reason({**result, "has_stream_output": True}, initial))
+        self.assertIsNone(runner.invalid_run_reason({**result, "git_status": " M app.txt"}, initial))
+        self.assertIsNone(runner.invalid_run_reason(result, None))
+        self.assertIsNone(runner.invalid_run_reason({**result, "exception": {"status_code": 401}}, initial))
+
+    def test_connection_failure_is_invalid_only_before_model_progress(self):
+        result = {"agent_status": "failed", "exception": {"type": "APIConnectionError"}}
+        initial = {"events": [{"kind": "model_request"}]}
+        self.assertEqual(runner.invalid_run_reason(result, initial), "模型开始工作前连接失败")
+        started = {"events": [*initial["events"], {"kind": "model_response"}]}
+        self.assertIsNone(runner.invalid_run_reason(result, started))
+        self.assertIsNone(runner.invalid_run_reason({**result, "has_stream_output": True}, initial))
 
 
 class RuleAcceptanceTests(unittest.TestCase):
