@@ -94,6 +94,37 @@ class OperationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual((self.workspace / "a.txt").read_text(), "alpha omega")
 
+    def test_one_undo_restores_every_archived_edit(self):
+        (self.workspace / "a.txt").write_text("one", encoding="utf-8")
+        (self.workspace / "b.txt").write_text("two", encoding="utf-8")
+        self.assertTrue(self.call("edit_file", path="a.txt", old_text="one", new_text="1")["ok"])
+        self.assertTrue(self.call("edit_file", path="b.txt", old_text="two", new_text="2")["ok"])
+        self.assertTrue(self.call("edit_file", path="a.txt", old_text="1", new_text="11")["ok"])
+        approvals = []
+
+        def approve(request):
+            approvals.append(request.tool)
+            self.assertIn("a.txt", request.summary)
+            return approve_all(request)
+
+        result = execute_tool("undo_edit", {"group_id": "all"}, self.workspace,
+                              capabilities={"read", "write"}, approver=approve)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(approvals, ["undo_edit"])
+        self.assertEqual(len(result["group_ids"]), 3)
+        self.assertEqual((self.workspace / "a.txt").read_text(encoding="utf-8"), "one")
+        self.assertEqual((self.workspace / "b.txt").read_text(encoding="utf-8"), "two")
+        self.assertFalse(self.call("undo_edit", group_id="all")["ok"])
+
+    def test_undo_all_stops_when_a_later_edit_is_no_longer_current(self):
+        (self.workspace / "a.txt").write_text("one", encoding="utf-8")
+        self.assertTrue(self.call("edit_file", path="a.txt", old_text="one", new_text="1")["ok"])
+        (self.workspace / "a.txt").write_text("manual", encoding="utf-8")
+        result = self.call("undo_edit", group_id="all")
+        self.assertFalse(result["ok"])
+        self.assertIn("后续变化", result["error"])
+        self.assertEqual((self.workspace / "a.txt").read_text(encoding="utf-8"), "manual")
+
     def test_capabilities_filter_definitions_and_enforce_dispatch(self):
         names = lambda capabilities: {item["function"]["name"] for item in tool_definitions(capabilities)}
         self.assertEqual(names({"read"}), {"read_file", "search_text", "list_directory", "find_files", "search_symbols", "search_code_index", "repository_map", "find_references", "command_status"})

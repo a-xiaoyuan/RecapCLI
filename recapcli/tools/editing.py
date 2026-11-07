@@ -218,26 +218,80 @@ def edit_files(workspace, edits, *, on_record=None):
             "summary": f"已编辑 {len(backups)} 个文件，操作组：{group_id}；undo_edit 可撤销本组。"}
 
 
-def _undo_records(workspace, group_id=None):
-    if group_id is not None and (not isinstance(group_id, str) or not re.fullmatch(r"[0-9a-f]{32}", group_id)):
-        raise ToolError("group_id 必须是完整的 32 位操作组 ID")
+def _read_backup_records(workspace):
     records = []
-    for path in (data_root(workspace) / "backups").glob("*.json"):
+    root = data_root(workspace) / "backups"
+    if not root.exists():
+        return records
+    for path in root.glob("*.json"):
         if path.is_symlink() or path.is_junction() or path.stat().st_size > MAX_EDIT_BYTES * 2:
             raise ToolError("备份文件类型或大小不正确")
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or not {"id", "path", "after_sha256", "created_at"} <= data.keys():
             raise ToolError(f"备份记录格式不正确：{path.name}")
-        if not data.get("restored_at") and (group_id is None or data.get("group_id", data["id"]) == group_id):
-            records.append(data)
+        records.append(data)
+    return records
+
+
+def pending_backup_ids(workspace):
+    """尚未恢复的备份。编辑前写入的原文都在这些记录里。"""
+    return [item["id"] for item in _read_backup_records(workspace) if not item.get("restored_at")]
+
+
+def _undo_records(workspace, group_id=None):
+    if group_id is not None and (not isinstance(group_id, str) or not re.fullmatch(r"[0-9a-f]{32}", group_id)):
+        raise ToolError("group_id 必须是完整的 32 位操作组 ID")
+    records = [item for item in _read_backup_records(workspace) if not item.get("restored_at")]
+    if group_id is not None:
+        records = [item for item in records if item.get("group_id", item["id"]) == group_id]
     if not records:
         raise ToolError("没有可撤销的编辑")
+    if group_id is not None:
+        return list(reversed(records))
     latest = max(records, key=lambda item: item["created_at"])
     group = latest.get("group_id", latest["id"])
     return [item for item in reversed(records) if item.get("group_id", item["id"]) == group]
 
 
+def _undo_all_groups(workspace):
+    """从最新一组开始逐组撤回，直到没有未恢复的编辑。"""
+    files, diffs, groups = [], [], []
+    while True:
+        try:
+            _undo_records(workspace, None)
+        except ToolError:
+            break
+        try:
+            outcome = undo_edit(workspace)
+        except ToolError as error:
+            diff = "\n".join(diffs).encode("utf-8")
+            return {"ok": False, "error": str(error), "files": files, "group_ids": groups,
+                    "diff": diff[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore"),
+                    "diff_truncated": len(diff) > MAX_DIFF_BYTES,
+                    "summary": f"已撤回 {len(groups)} 个操作组后停止：{error}"}
+        files.extend(outcome.get("files") or [])
+        if outcome.get("diff"):
+            diffs.append(outcome["diff"])
+        if outcome.get("group_id"):
+            groups.append(outcome["group_id"])
+        if outcome.get("error"):
+            diff = "\n".join(diffs).encode("utf-8")
+            return {"ok": False, "error": outcome["error"], "files": files, "group_ids": groups,
+                    "diff": diff[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore"),
+                    "diff_truncated": len(diff) > MAX_DIFF_BYTES or outcome.get("diff_truncated", False),
+                    "summary": f"撤回停在操作组 {groups[-1] if groups else ''}：{outcome['error']}"}
+    if not groups:
+        raise ToolError("没有可撤销的编辑")
+    diff = "\n".join(diffs).encode("utf-8")
+    return {"files": files, "group_ids": groups, "group_id": groups[-1],
+            "diff": diff[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore"),
+            "diff_truncated": len(diff) > MAX_DIFF_BYTES or any(item.get("diff_truncated") for item in files),
+            "summary": f"已一次撤回 {len(groups)} 个操作组、{len(files)} 个文件。"}
+
+
 def undo_edit(workspace, group_id=None):
+    if group_id == "all":
+        return _undo_all_groups(workspace)
     records = _undo_records(workspace, group_id)
     for item in records:
         target = _target(workspace, item["path"])

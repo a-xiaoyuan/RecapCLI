@@ -18,7 +18,7 @@ import time
 
 from ..base.files import data_root
 from ..base.access import AccessDenied, register_directory_authorizer
-from .editing import _hash, _plan_edit, _plan_edits, _read_bytes, _target, _undo_records
+from .editing import _hash, _plan_edit, _plan_edits, _read_bytes, _target, _undo_records, pending_backup_ids
 from .filesystem import ToolError, _relative
 
 APPROVED = "approved"
@@ -218,6 +218,9 @@ def collect_fingerprints(tool, workspace, params):
         if tool == "edit_files":
             return [_file_fingerprint(workspace, item.get("path", "")) for item in params.get("edits", [])]
         if tool == "undo_edit":
+            if params.get("group_id") == "all":
+                return [fingerprint for backup_id in pending_backup_ids(workspace)
+                        for fingerprint in _restore_fingerprints(workspace, {"backup_id": backup_id})]
             return [fingerprint for item in _undo_records(workspace, params.get("group_id"))
                     for fingerprint in _restore_fingerprints(workspace, {"backup_id": item["id"]})]
         if tool == "restore_file":
@@ -281,6 +284,8 @@ def _action_hint(tool, workspace, params):
         return "向正在运行的终端发送输入，可能触发命令或确认操作。"
     if tool == "stop_command":
         return "停止指定命令及其子进程。"
+    if tool == "confirm_plan":
+        return "确认后才会执行计划里的步骤；拒绝或取消则不调用工具。"
     return ""
 
 
