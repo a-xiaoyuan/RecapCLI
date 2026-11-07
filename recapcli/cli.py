@@ -141,7 +141,7 @@ def build_parser():
     parser.add_argument("--mcp-repo", action="store_true",
                         help="启动内置只读仓库 MCP 服务，并把读取工具提供给模型")
     parser.add_argument("--mcp-config", type=Path,
-                        help="显式启动此 JSON 配置中的 MCP 服务；配置内的启动命令需可信")
+                        help="连接此 JSON 配置中的 MCP 服务，支持本地命令和 Streamable HTTP URL")
     parser.add_argument("--mcp-tools", action="store_true",
                         help="列出已连接 MCP 服务的工具和权限后退出，无需模型配置")
     parser.add_argument("--verify-cmd", metavar="命令",

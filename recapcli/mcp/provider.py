@@ -8,6 +8,7 @@ import re
 import sys
 
 from .client import StdioMCPClient
+from .http_client import MCPHTTPError, StreamableHTTPMCPClient
 from ..tools.approval import authorize_action, fail_closed
 
 PREFIX = "mcp_repo_"
@@ -33,9 +34,11 @@ class MCPToolProvider:
 
     def __init__(self, workspace=None, *, command=None, cwd=None, prefix="repo",
                  timeout=10.0, max_result_bytes=DEFAULT_MAX_RESULT_BYTES, env=None,
-                 tool_permissions=None):
-        builtin = command is None
-        if command is None:
+                 tool_permissions=None, url=None, bearer_token_env=None):
+        if command is not None and url is not None:
+            raise ValueError("MCP 服务必须在启动命令和 URL 中选填一项")
+        builtin = command is None and url is None
+        if builtin:
             if workspace is None:
                 raise ValueError("MCP 工具需要一个工作区或启动命令")
             command = [sys.executable, "-m", "recapcli.mcp.repo_server",
@@ -43,7 +46,7 @@ class MCPToolProvider:
             workspace = Path(workspace).resolve()
         if isinstance(command, str):
             raise ValueError("MCP 启动命令必须是参数数组")
-        if not command:
+        if url is None and not command:
             raise ValueError("MCP 启动命令不能为空")
         if timeout <= 0:
             raise ValueError("MCP 超时必须是正数")
@@ -54,8 +57,12 @@ class MCPToolProvider:
         self._tool_permissions = dict(tool_permissions or {})
         self.tool_prefix = "mcp_" + safe_prefix(prefix) + "_"
         self.max_result_bytes = max_result_bytes
-        self._client = StdioMCPClient(list(command), cwd=str(cwd or Path(__file__).resolve().parents[2]),
-                                      timeout=float(timeout), env=env)
+        if url is None:
+            self._client = StdioMCPClient(list(command), cwd=str(cwd or Path(__file__).resolve().parents[2]),
+                                          timeout=float(timeout), env=env)
+        else:
+            self._client = StreamableHTTPMCPClient(url, timeout=timeout, max_result_bytes=max_result_bytes,
+                                                   bearer_token_env=bearer_token_env)
         self._tools = {}
         try:
             self._client.initialize()
@@ -125,12 +132,18 @@ class MCPToolProvider:
                 return denial
         if check is not None:
             time_remaining = check()
-        result = self._client.call_tool(remote_name, arguments, timeout=time_remaining)
+        try:
+            result = self._client.call_tool(remote_name, arguments, timeout=time_remaining)
+        except MCPHTTPError as error:
+            if error.unknown:
+                return {"ok": False, "status": "unknown",
+                        "error": f"{error}。远程执行结果未知，请先核对再决定是否重试"}
+            return {"ok": False, "error": str(error)}
         payload = result.get("structuredContent")
         payload = dict(payload) if isinstance(payload, dict) else {"content": result.get("content", [])}
         payload["ok"] = not bool(result.get("isError")) and bool(payload.get("ok", True))
         if not payload["ok"]:
-            text = "\n".join(item.get("text", "") for item in result.get("content", [])
+            text = "\n".join(str(item.get("text") or "") for item in result.get("content", [])
                              if item.get("type") == "text")
             payload["error"] = str(payload.get("error") or text or "MCP 工具执行失败")
         return self._limit(payload)

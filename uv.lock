@@ -498,6 +498,7 @@ name = "recapcli"
 version = "0.6.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx2" },
     { name = "openai" },
     { name = "pillow" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
@@ -513,13 +514,9 @@ tui = [
     { name = "textual" },
 ]
 
-[package.dev-dependencies]
-dev = [
-    { name = "httpx2" },
-]
-
 [package.metadata]
 requires-dist = [
+    { name = "httpx2", specifier = ">=2.12,<3" },
     { name = "openai", specifier = ">=3.35,<4" },
     { name = "pillow", specifier = ">=11,<14" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7,<1" },
@@ -531,9 +528,6 @@ requires-dist = [
     { name = "tree-sitter-language-pack", specifier = ">=0.13,<0.14" },
 ]
 provides-extras = ["tui"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "httpx2" }]
 
 [[package]]
 name = "rich"

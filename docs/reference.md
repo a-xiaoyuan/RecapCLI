@@ -83,7 +83,7 @@ recapcli --mcp-tools --mcp-config .\mcp-fetch.json
 
 会连接服务并打印每个工具的完整名称和说明（说明中带本地权限），随后直接退出；不需要模型配置、不创建会话，交互终端也不会打开界面。
 
-外部服务需要用 `--mcp-config 路径` 显式启动；仅使用 `--mcp-repo` 不会执行工作区 `mcp.json` 中的命令。例如接入官方 [Fetch MCP 服务](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)，让模型读取公开技术文档，无需额外 API Key。
+通过 `--mcp-config 路径` 显式配置外部服务。`--mcp-repo` 只启动内置仓库服务。下面用 stdio 接入 Fetch MCP，让模型读取公开技术文档，无需额外 API Key。[Fetch MCP 服务](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)
 
 已安装 uv 时，可将以下配置保存为 `mcp-fetch.json`。首次启动会下载服务；`--no-readability-js` 使用 Python 提取网页正文，不另外启动 Node.js：
 
@@ -112,11 +112,41 @@ recapcli --mcp-config .\mcp-fetch.json "用 mcp_fetch_fetch 读取 https://docs.
 
 `tool_permissions` 是你对可信工具的本地授权，可设为 `read`、`write` 或 `exec`；未声明的外部工具默认需要 `--allow-exec` 和审批。`write` 工具需要 `--allow-write` 和审批，不根据服务端自报的只读标签放行。
 
-外部服务以当前用户权限运行，没有操作系统沙箱；请先核对配置中的启动命令和工具用途。子进程不自动继承宿主凭据，需要的服务密钥在该服务的 `env` 中显式配置；含密钥的配置请保存在用户目录，不提交仓库。
+本地 MCP 子进程以当前用户权限运行，请先核对配置中的启动命令和工具用途。子进程需要的服务密钥在该服务的 `env` 中显式配置。含密钥的配置请保存在用户目录。
 
 ```powershell
 recapcli --mcp-repo --mcp-config .\mcp-fetch.json
 ```
+
+### 连接远程 MCP 服务
+
+用 Streamable HTTP 连接独立运行的 MCP 服务。每个服务在本地启动命令 `command` 和远程地址 `url` 中选填一项，同一配置文件可以登记两类服务。`cwd` 和 `env` 用于本地命令。
+
+将以下配置保存为 `mcp-remote.json`，把 `url` 和工具名替换成实际值。
+
+```json
+{
+  "servers": {
+    "catalog": {
+      "url": "https://mcp.example.com/mcp",
+      "bearer_token_env": "CATALOG_MCP_TOKEN",
+      "timeout": 15,
+      "max_result_bytes": 65536,
+      "tool_permissions": {"search": "read"}
+    }
+  }
+}
+```
+
+在环境中设置 `CATALOG_MCP_TOKEN` 后，用以下命令查看工具。`bearer_token_env` 填环境变量名。公开服务可以省略此字段。
+
+```powershell
+recapcli --mcp-tools --mcp-config .\mcp-remote.json
+```
+
+远程地址使用 HTTPS，本机回环地址可用 HTTP。工具仍遵守本地授权和审批。发送后遇到断线或超时会提示执行结果未知，需先核对服务端状态再决定是否重试。会话过期后会在下一次工具调用前重新连接。
+
+当前支持 `2025-06-18` 协议下同一端点的 JSON 响应和请求内 SSE 流。旧版 HTTP+SSE 的双端点兼容是后续项。[MCP 传输规范](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
 
 ## 计划、协作与混合检索
 

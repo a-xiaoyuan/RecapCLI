@@ -1,4 +1,4 @@
-"""最小 MCP stdio 客户端，供 RecapCLI 的可选只读服务接入使用。"""
+"""MCP 初始化流程和 stdio 客户端。"""
 
 from __future__ import annotations
 
@@ -12,8 +12,26 @@ from ..base.version import project_version
 from ..tools.commands import subprocess_environment
 
 
+PROTOCOL_VERSION = "2025-06-18"
+
+
 class MCPClientError(RuntimeError):
     pass
+
+
+def initialize_tools(request, notify):
+    result = request("initialize", {
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": "recapcli", "version": project_version() or "unknown"},
+    })
+    if result.get("protocolVersion") != PROTOCOL_VERSION:
+        raise MCPClientError(f"MCP 服务未协商到支持的协议版本 {PROTOCOL_VERSION}")
+    capabilities = result.get("capabilities")
+    if not isinstance(capabilities, dict) or "tools" not in capabilities:
+        raise MCPClientError("MCP 服务没有提供工具能力")
+    notify("notifications/initialized")
+    return result
 
 
 class StdioMCPClient:
@@ -85,17 +103,7 @@ class StdioMCPClient:
                 return response.get("result", {})
 
     def initialize(self):
-        result = self.request("initialize", {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "recapcli", "version": project_version() or "unknown"},
-        })
-        if result.get("protocolVersion") != "2025-06-18":
-            raise MCPClientError("MCP 服务未协商到支持的协议版本 2025-06-18")
-        if "tools" not in result.get("capabilities", {}):
-            raise MCPClientError("MCP 服务没有提供工具能力")
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        return result
+        return initialize_tools(self.request, lambda method: self._send({"jsonrpc": "2.0", "method": method}))
 
     def list_tools(self):
         return self.request("tools/list", {})["tools"]

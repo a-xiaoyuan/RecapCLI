@@ -27,16 +27,16 @@ class MCPManager:
                 providers.append(MCPToolProvider(workspace, cwd=cwd))
             configs = load_mcp_config(config_path, workspace=workspace) if config_path is not None else ()
             for name, config in configs:
-                server_cwd = config["cwd"]
+                server_cwd = config.get("cwd")
                 if server_cwd is None:
                     server_cwd = config["config_dir"]
                 elif not Path(server_cwd).is_absolute():
                     server_cwd = config["config_dir"] / server_cwd
                 providers.append(MCPToolProvider(
                     workspace=workspace,
-                    command=config["command"], cwd=server_cwd, prefix=config["prefix"],
+                    command=config.get("command"), cwd=server_cwd, prefix=config["prefix"],
                     timeout=config["timeout"], max_result_bytes=config["max_result_bytes"],
-                    env=config["env"],
+                    env=config.get("env"), url=config.get("url"), bearer_token_env=config.get("bearer_token_env"),
                     tool_permissions=config["tool_permissions"],
                 ))
             return cls(providers)
