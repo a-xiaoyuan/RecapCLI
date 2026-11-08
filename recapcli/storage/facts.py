@@ -1,5 +1,6 @@
 """项目事实的长期记忆：SQLite 保存词项，按查询词重合度召回。"""
 
+from contextlib import contextmanager
 from datetime import datetime
 import sqlite3
 import uuid
@@ -29,11 +30,17 @@ class FactStore:
         self.path = fact_database(self.workspace)
         self._ensure()
 
+    @contextmanager
     def _connect(self):
+        # sqlite3 的 with 只提交事务、不关连接；Windows 上未关闭的连接会锁住文件。
         connection = sqlite3.connect(self.path, timeout=5)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA temp_store=MEMORY")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA temp_store=MEMORY")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _ensure(self):
         with self._connect() as connection:
