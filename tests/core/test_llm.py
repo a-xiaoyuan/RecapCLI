@@ -73,6 +73,52 @@ class LLMTests(unittest.TestCase):
         self.assertEqual(requests[0][1]["messages"][-1]["tool_call_id"], "call-1")
         self.assertEqual(messages, before)
 
+    def test_chat_reasoning_content_returns_only_to_same_origin(self):
+        # DeepSeek 思考模式：带工具时必须把 reasoning_content 原样回传，否则服务端返回 400。
+        first_reply = {"id": "chat-1", "object": "chat.completion", "created": 1, "model": "model-test",
+                       "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                           "role": "assistant", "content": None, "reasoning_content": "先读 README",
+                           "tool_calls": [{"id": "call-1", "type": "function", "function": {
+                               "name": "read_file", "arguments": '{"path":"README.md"}'}}]}}]}
+        final = {"id": "chat-2", "object": "chat.completion", "created": 1, "model": "model-test",
+                 "choices": [{"index": 0, "finish_reason": "stop",
+                              "message": {"role": "assistant", "content": "完成"}}]}
+        sdk, requests = self.client([first_reply, final, final, final])
+        messages = [{"role": "user", "content": "读取"}]
+        first = complete(sdk, "chat_completions", model="model-test", messages=messages, tools=TOOLS, origin="one")
+        record = assistant_record(first.choices[0].message)
+        self.assertEqual(record["provider_state"], {"protocol": "chat_completions", "origin": "one",
+                                                    "reasoning_content": "先读 README"})
+        self.assertNotIn("reasoning_content", record)
+        validate_provider_state(record["provider_state"])
+        messages.extend([record, {"role": "tool", "tool_call_id": "call-1", "content": "源代码"}])
+        before = deepcopy(messages)
+        complete(sdk, "chat_completions", model="model-test", messages=messages, tools=TOOLS, origin="one")
+        self.assertEqual(requests[1][1]["messages"][1]["reasoning_content"], "先读 README")
+        self.assertNotIn("provider_state", json.dumps(requests[1][1]))
+        self.assertEqual(messages, before)
+        complete(sdk, "chat_completions", model="model-test", messages=messages, tools=TOOLS, origin="other")
+        self.assertNotIn("reasoning_content", requests[2][1]["messages"][1])
+        self.assertNotIn("先读", json.dumps(portable_messages(messages), ensure_ascii=False))
+        for bad in ({"protocol": "chat_completions", "origin": "one", "reasoning_content": ""},
+                    {"protocol": "chat_completions", "origin": "", "reasoning_content": "x"},
+                    {"protocol": "chat_completions", "origin": "one", "reasoning_content": "x", "extra": 1}):
+            with self.assertRaises(ValueError):
+                validate_provider_state(bad)
+
+    def test_chat_without_reasoning_or_origin_keeps_no_state(self):
+        reply = {"id": "chat-1", "object": "chat.completion", "created": 1, "model": "model-test",
+                 "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                     "role": "assistant", "content": "好", "reasoning_content": "想过"}}]}
+        sdk, _ = self.client([reply, {**reply, "choices": [{"index": 0, "finish_reason": "stop",
+                                                            "message": {"role": "assistant", "content": "好"}}]}])
+        record = assistant_record(complete(sdk, "chat_completions", model="model-test",
+                                           messages=[{"role": "user", "content": "问"}]).choices[0].message)
+        self.assertNotIn("provider_state", record)
+        record = assistant_record(complete(sdk, "chat_completions", model="model-test", origin="one",
+                                           messages=[{"role": "user", "content": "问"}]).choices[0].message)
+        self.assertNotIn("provider_state", record)
+
     def test_responses_roundtrip_reasoning_phase_usage_and_tool_result(self):
         sdk, requests = self.client([response_items(reasoning(), message("先读取", "commentary"), call()),
                                      response_items(message("完成", "final_answer"))])

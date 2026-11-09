@@ -16,7 +16,7 @@ class IncompleteStreamError(RuntimeError):
 
 
 def chat_stream(client, *, model, messages, options, timeout, on_delta, check):
-    texts, calls = [], {}
+    texts, reasonings, calls = [], [], {}
     usage, finish = None, None
     identifier, created, response_model = "stream", 0, model
     received = 0
@@ -32,6 +32,11 @@ def chat_stream(client, *, model, messages, options, timeout, on_delta, check):
                 if choice.index != 0:
                     raise ValueError("流式输出只支持一个候选回答")
                 delta = choice.delta
+                reasoning = getattr(delta, "reasoning_content", None)
+                if isinstance(reasoning, str) and reasoning:
+                    # 思考内容只用于回传给同一模型，不显示给用户。
+                    reasonings.append(reasoning)
+                    received += len(reasoning.encode("utf-8"))
                 if delta.content:
                     if finish is not None:
                         raise ValueError("模型在结束标记后继续输出正文")
@@ -69,12 +74,13 @@ def chat_stream(client, *, model, messages, options, timeout, on_delta, check):
                                     usage=usage, partial_text="".join(texts), interrupted=True)
     if calls and sorted(calls) != list(range(len(calls))):
         raise ValueError("流式工具调用序号不连续")
+    message = {"role": "assistant", "content": "".join(texts) or None,
+               "tool_calls": [calls[index] for index in sorted(calls)] or None}
+    if reasonings:
+        message["reasoning_content"] = "".join(reasonings)
     return ChatCompletion.model_validate({
         "id": identifier, "object": "chat.completion", "created": created, "model": response_model,
-        "usage": usage, "choices": [{"index": 0, "finish_reason": finish, "message": {
-            "role": "assistant", "content": "".join(texts) or None,
-            "tool_calls": [calls[index] for index in sorted(calls)] or None,
-        }}],
+        "usage": usage, "choices": [{"index": 0, "finish_reason": finish, "message": message}],
     })
 
 

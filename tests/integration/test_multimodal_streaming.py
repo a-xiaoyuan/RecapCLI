@@ -131,6 +131,29 @@ class MultimodalStreamingTests(unittest.TestCase):
         self.assertEqual([part["type"] for part in parts], ["input_text", "input_image"])
         self.assertEqual(result.messages[-1]["provider_state"]["items"][0]["encrypted_content"], "opaque")
 
+    def test_streamed_reasoning_is_replayed_but_never_shown(self):
+        (self.workspace / "README.md").write_text("hello", encoding="utf-8")
+
+        def thinking(text):
+            event = chunk()
+            event["choices"][0]["delta"]["reasoning_content"] = text
+            return event
+
+        fragments = [thinking("先看"), thinking(" README"),
+                     chunk(calls=[{"index": 0, "id": "call-one", "type": "function",
+                                   "function": {"name": "read_file", "arguments": '{"path":"README.md"}'}}]),
+                     chunk(finish="tool_calls")]
+        updates = []
+        with self.sdk([sse(fragments), sse(text_events("读取完成"))]) as client:
+            result = run_agent(client, "offline", "读 README", self.workspace, on_event=lambda text: None,
+                               on_stream=lambda kind, text: updates.append((kind, text)))
+        self.assertEqual(result.answer, "读取完成")
+        assistant = next(item for item in self.requests[1]["messages"] if item.get("tool_calls"))
+        self.assertEqual(assistant["reasoning_content"], "先看 README")
+        self.assertNotIn("先看", "".join(text for _, text in updates))
+        state = next(item for item in result.messages if item.get("tool_calls"))["provider_state"]
+        self.assertEqual((state["protocol"], state["reasoning_content"]), ("chat_completions", "先看 README"))
+
     def test_streamed_tool_arguments_are_complete_before_execution(self):
         (self.workspace / "README.md").write_text("hello", encoding="utf-8")
         fragments = [chunk(calls=[{"index": 0, "id": "call-one", "type": "function",

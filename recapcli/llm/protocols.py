@@ -83,6 +83,13 @@ def _output_item(item):
 
 
 def validate_provider_state(state):
+    if isinstance(state, dict) and state.get("protocol") == "chat_completions":
+        # DeepSeek 等思考模型要求带工具时原样回传明文 reasoning_content；只回给同一配置。
+        if (set(state) != {"protocol", "origin", "reasoning_content"}
+                or not isinstance(state.get("origin"), str) or not state["origin"]
+                or not isinstance(state.get("reasoning_content"), str) or not state["reasoning_content"]):
+            raise ValueError("模型私有状态格式不正确")
+        return
     if (not isinstance(state, dict) or set(state) != {"protocol", "origin", "items"}
             or state.get("protocol") != "responses"
             or not isinstance(state.get("origin"), str) or not state["origin"]
@@ -105,7 +112,8 @@ def assistant_record(message):
     return result
 
 
-def _chat_messages(messages):
+def _chat_messages(messages, origin=None):
+    """origin 为空时不回传任何推理内容，例如摘要和跨协议上下文。"""
     result = []
     for message in messages:
         role = message.get("role")
@@ -117,6 +125,11 @@ def _chat_messages(messages):
                                    "function": {"name": call["function"]["name"],
                                                 "arguments": call["function"]["arguments"]}}
                                   for call in message["tool_calls"]]
+        state = message.get("provider_state")
+        if (role == "assistant" and origin and isinstance(state, dict)
+                and state.get("protocol") == "chat_completions" and state.get("origin") == origin):
+            validate_provider_state(state)
+            item["reasoning_content"] = state["reasoning_content"]
         if role == "tool":
             item["tool_call_id"] = message["tool_call_id"]
         result.append(item)
@@ -143,7 +156,8 @@ def _responses_input(messages, origin):
         state = message.get("provider_state")
         if state is not None:
             validate_provider_state(state)
-        if role == "assistant" and state is not None and state["origin"] == origin:
+        if (role == "assistant" and state is not None and state["protocol"] == "responses"
+                and state["origin"] == origin):
             native_calls.update(item["call_id"] for item in state["items"] if item["type"] == "function_call")
             items.extend(deepcopy(state["items"]))
             continue
@@ -198,6 +212,18 @@ def _responses_completion(response, model, origin):
     })
 
 
+def _chat_completion(response, origin):
+    """把 Chat Completions 返回的 reasoning_content 收进协议私有状态，正文不变。"""
+    message = response.choices[0].message if response.choices else None
+    reasoning = getattr(message, "reasoning_content", None)
+    if not isinstance(reasoning, str) or not reasoning or not origin:
+        return response
+    raw = response.model_dump(exclude_none=True)
+    raw["choices"][0]["message"]["provider_state"] = {
+        "protocol": "chat_completions", "origin": origin, "reasoning_content": reasoning}
+    return ChatCompletion.model_validate(raw)
+
+
 def _check_context(messages, context_tokens):
     """最后一道防线：Agent 已按校准后的 token 控制大小，这里只拦截明显超出窗口的请求。"""
     if context_tokens is not None:
@@ -214,15 +240,17 @@ def complete(client, protocol, *, model, messages, tools=None, tools_allowed=Tru
         messages = wire_messages(messages, workspace)
         context_tokens = None
     if protocol == "chat_completions":
-        converted = _chat_messages(messages)
+        converted = _chat_messages(messages, origin)
         _check_context(converted, context_tokens)
         options = {} if tools_allowed else {"tool_choice": "none"}
         if tools:
             options["tools"] = deepcopy(tools)
         if on_delta is not None:
-            return chat_stream(client, model=model, messages=converted, options=options, timeout=timeout,
-                               on_delta=on_delta, check=check)
-        return client.chat.completions.create(model=model, messages=converted, timeout=timeout, **options)
+            response = chat_stream(client, model=model, messages=converted, options=options, timeout=timeout,
+                                   on_delta=on_delta, check=check)
+        else:
+            response = client.chat.completions.create(model=model, messages=converted, timeout=timeout, **options)
+        return _chat_completion(response, origin)
     if protocol != "responses":
         raise ValueError("不支持的模型协议")
     if not origin:
