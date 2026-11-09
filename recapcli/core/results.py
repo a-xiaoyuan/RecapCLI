@@ -12,6 +12,18 @@ CLEARED_PREFIX = '{"cleared":true'
 CONTEXT_OVERFLOW_MARKERS = ("context_length", "context length", "context window", "maximum context",
                             "prompt is too long", "input is too long", "too many tokens", "上下文")
 EDIT_TOOLS = frozenset({"edit_file", "edit_files", "restore_file", "undo_edit"})
+TOOL_CALL_TEXT_MARKERS = (
+    "<｜｜DSML｜｜", "<|DSML|", "<tool_calls>", "<tool_call>",
+    "<function_calls>", "<function_call>", "```tool_calls", "```function_call",
+)
+
+
+def is_tool_call_text(content):
+    """模型把工具调用写成文本时，不能把它当成最终答复。"""
+    if not isinstance(content, str):
+        return False
+    lowered = content.casefold()
+    return any(marker.casefold() in lowered for marker in TOOL_CALL_TEXT_MARKERS)
 
 
 @dataclass(frozen=True)

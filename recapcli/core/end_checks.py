@@ -101,7 +101,7 @@ class EndChecks:
                     return run.incomplete(answer, label)
                 return self._continue(f"{label}。请修复未通过项，再给出最终答复。\n{feedback}")
             acceptance_note = f"；{label}"
-        if final_request and run.forced_reason and run.local_tool_calls > 0:
+        if final_request and run.forced_reason and run.local_tool_calls > 0 and not run.read_summary_forced:
             return run.incomplete(answer, run.forced_reason)
         checked = "；自动验证通过" if self.verified else ""
         manual = "人工验收未登记" if acceptance_note else "任务验收未验证"

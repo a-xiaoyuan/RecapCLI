@@ -10,6 +10,10 @@ from .skills import SKILL_TOOL
 from .todos import TODO_TOOL
 
 PARALLEL_READ_TOOLS = frozenset({"read_file", "find_files", "list_directory", "search_text", "read_url", "web_search"})
+READ_ONLY_TOOLS = PARALLEL_READ_TOOLS | {
+    "search_symbols", "search_code_index", "repository_map", "find_references",
+    "load_skill", "todo_write", "command_status",
+}
 MAX_PARALLEL_READS = 4
 
 
@@ -218,3 +222,7 @@ class ToolBatch:
             result, tool_message = self.fit_into_turn(call, result, len(self.calls) - index - 1)
             self.report_outcome(result, skip_tool)
             ctx.turn.append(tool_message)
+        if all(call.function.name in READ_ONLY_TOOLS for call in self.calls):
+            run.read_rounds += 1
+        else:
+            run.read_rounds = 0

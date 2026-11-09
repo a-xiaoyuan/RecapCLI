@@ -17,14 +17,21 @@ from .end_checks import EndChecks
 from .model_call import COMPACT_RESERVE, request_model
 from .planning import PlanFormatError
 from .results import (TraceError, TurnResult, clear_old_tool_results, close_turn, context_overflow,
-                      fallback_answer, has_tool_results)
+                      fallback_answer, has_tool_results, is_tool_call_text)
 from .todos import TodoList
 from .tool_batch import ToolBatch
 from ..tools.checkpoints import turn_checkpoint
 
 COMPACT_AT = 0.75          # 当前轮超过窗口的这个比例时，移出较早的工具结果
+READ_SUMMARY_AT = 4        # 连续只读轮数达到这里时提醒模型先总结
+READ_FORCE_SUMMARY_AT = 8  # 连续只读轮数达到这里时强制进入收尾
 FINAL_INSTRUCTION = ("本次是最后一次模型请求，不能调用工具。请基于已有事实直接给出最终答复；"
                      "仍需更多信息或操作时，说明未完成项和原因。不要继续规划或输出工具调用标记。")
+TOOL_TEXT_CORRECTION = ("上一条输出是无效的工具调用文本。现在不能调用任何工具。"
+                        "请用自然语言直接回答；不要输出 DSML、XML、tool_calls、"
+                        "函数调用标记或工具参数。")
+FINAL_SUMMARY_INSTRUCTION = ("现在停止读取，不要调用任何工具。请直接基于已读内容和已有工具结果，"
+                             "用自然语言回答用户最初的问题。")
 PLANNER_FINAL_INSTRUCTION = "仅返回要求的计划 JSON，不调用工具，不执行计划。"
 
 
@@ -91,6 +98,7 @@ class TurnRunner:
         self.ctx = ctx
         self.requests_used = 0
         self.local_tool_calls = 0
+        self.read_rounds = 0        # 连续只读工具轮数；写入、命令或核对会清零
         self.edited = []
         self.end_checks = EndChecks(self)
         self.format_correction = None
@@ -100,6 +108,7 @@ class TurnRunner:
         self.summary = ctx.summary
         self.new_summary = None
         self.forced_reason = ""     # 非空表示因预算转入收尾
+        self.read_summary_forced = False  # 只读过多触发的收尾不是失败
         self.reminder = None
         self.system_text = ctx.system_text
         self.history_for_model = ctx.history
@@ -142,8 +151,8 @@ class TurnRunner:
         manual = "人工验收未登记" if self.ctx.acceptance is not None else "任务验收未验证"
         return TurnResult(answer, self.ctx.turn, "incomplete", f"{reason}；{manual}", self.new_summary)
 
-    def finish_incomplete(self, reason):
-        """预算用完：先尝试一次不带工具的汇总，失败则用事实拼结束说明。"""
+    def finish_incomplete(self, reason, correction=None):
+        """预算用完：先尝试不带工具的汇总；模型输出工具文本时再纠正一次，最后用事实兜底。"""
         ctx = self.ctx
         turn, planner = ctx.turn, ctx.planner
         close_turn(turn)
@@ -154,15 +163,29 @@ class TurnRunner:
             self.plan_snapshot()
         answer = None
         try:
-            if self.requests_used < ctx.max_steps:
+            for attempt in range(2):
+                if self.requests_used >= ctx.max_steps:
+                    break
                 system = self.system_message()
-                clear_old_tool_results(turn, lambda: self.meter.count([system, *turn, self.final_message]) <= self.window, keep=1)
-                messages = [system, *turn, self.final_message]
-                if self.meter.count(messages) <= self.window:
-                    response = request_model(self, messages, planner.phase if planner else "react", final=True)
-                    message = response.choices[0].message if response.choices else None
-                    if message is not None and message.content and message.content.strip():
-                        answer = message.content
+                final_nudge = ({"role": "user", "content": FINAL_SUMMARY_INSTRUCTION}
+                               if ctx.mode == "react" and ctx.role is None and ctx.planner is None
+                               else None)
+                closing = (([{"role": "system", "content": correction}] if correction else [])
+                           + [self.final_message] + ([final_nudge] if final_nudge is not None else []))
+                clear_old_tool_results(turn, lambda: self.meter.count([system, *turn, *closing]) <= self.window, keep=1)
+                messages = [system, *turn, *closing]
+                if self.meter.count(messages) > self.window:
+                    break
+                response = request_model(self, messages, planner.phase if planner else "react", final=True,
+                                         tools=self.final_tools(), tools_allowed=False)
+                message = response.choices[0].message if response.choices else None
+                content = message.content if message is not None else None
+                if content and content.strip() and not is_tool_call_text(content):
+                    answer = content
+                    break
+                if is_tool_call_text(content):
+                    self.trace("final_summary_tool_text", attempt=attempt + 1)
+                    correction = TOOL_TEXT_CORRECTION
         except (BudgetExhausted, APIError, RuntimeError, ValueError) as error:
             self.trace("final_summary_failed", error_type=type(error).__name__)
         if answer is None:
@@ -224,11 +247,25 @@ class TurnRunner:
         """判断这一步是否必须是收尾请求，并记录原因。"""
         ctx = self.ctx
         budget, planner = ctx.budget, ctx.planner
-        final_request = bool(self.forced_reason) or step == ctx.max_steps or budget.should_summarize(ctx.request_reserve)
+        read_stop = (ctx.mode == "react" and self.read_rounds >= READ_FORCE_SUMMARY_AT)
+        final_request = (bool(self.forced_reason) or read_stop or step == ctx.max_steps
+                         or budget.should_summarize(ctx.request_reserve))
         if final_request and not self.forced_reason:
-            self.forced_reason = ("模型请求次数用完" if step == ctx.max_steps or budget.requests >= budget.max_requests - ctx.request_reserve - 1
-                                  else "工具调用次数用完" if budget.tool_calls >= ctx.limits.max_tool_calls
-                                  else "执行时间即将用完")
+            self.forced_reason = (
+                f"连续读取 {self.read_rounds} 轮，转入总结" if read_stop
+                else "模型请求次数用完" if step == ctx.max_steps or budget.requests >= budget.max_requests - ctx.request_reserve - 1
+                else "工具调用次数用完" if budget.tool_calls >= ctx.limits.max_tool_calls
+                else "执行时间即将用完")
+            self.read_summary_forced = read_stop
+        if (not final_request and ctx.mode == "react" and self.reminder is None
+                and self.read_rounds >= READ_SUMMARY_AT):
+            self.reminder = {
+                "role": "system",
+                "content": (f"已连续读取 {self.read_rounds} 轮。先基于现有事实总结已确认内容、缺口和下一步；"
+                            "需要继续时只读最必要的文件，不要重复读取同一文件。"),
+            }
+            self.trace("read_summary_reminder", rounds=self.read_rounds)
+            ctx.on_event(f"[提醒] 已连续读取 {self.read_rounds} 轮，请先总结再继续")
         if planner is not None and final_request:
             planner.stop("模型请求或工具预算即将耗尽，保留本次请求汇总已有结果")
             self.plan_snapshot()
@@ -238,12 +275,19 @@ class TurnRunner:
         """按窗口组织本次请求；放不下时返回收尾结果。"""
         ctx = self.ctx
         turn = ctx.turn
+        final_nudge = ({"role": "user", "content": FINAL_SUMMARY_INSTRUCTION}
+                       if final_request and ctx.mode == "react" and ctx.role is None and ctx.planner is None
+                       else None)
         closing = (([self.format_correction] if self.format_correction is not None else [])
                    + ([self.reminder] if self.reminder is not None else [])
-                   + ([self.final_message] if final_request else []))
+                   + ([self.final_message] if final_request else [])
+                   + ([final_nudge] if final_nudge is not None else []))
         self.reminder = None
         system = self.system_message()
-        tool_tokens = 0 if final_request else self.definition_tokens
+        tool_tokens = (self.definition_tokens
+                       if (not final_request or (self.ctx.mode == "react" and self.ctx.role is None
+                                                 and self.ctx.planner is None))
+                       else 0)
 
         def turn_cost():
             return self.meter.count([system, *turn, *closing]) + tool_tokens
@@ -272,10 +316,16 @@ class TurnRunner:
     def tools_for_request(self, final_request):
         ctx = self.ctx
         if final_request:
+            # 保留工具定义并显式 tool_choice=none，DeepSeek 等模型更不容易把工具调用写成 XML 文本。
+            if ctx.mode == "react" and ctx.role is None and ctx.planner is None:
+                return ctx.definitions
             return None
         if ctx.planner is not None and ctx.planner.readonly_batch:
             return tool_definitions(ctx.capabilities & {"read", "web"}) + ctx.extra_definitions
         return ctx.definitions
+
+    def final_tools(self):
+        return self.tools_for_request(True)
 
     def handle_plan_reply(self, message, final_request):
         """计划模式的文本回复。返回结果表示本轮结束，None 表示继续下一步。"""
@@ -316,6 +366,18 @@ class TurnRunner:
         ctx = self.ctx
         if not message.content or not message.content.strip():
             raise RuntimeError("模型既没有返回正文，也没有请求工具")
+        if is_tool_call_text(message.content):
+            self.trace("tool_call_text", final=final_request)
+            if final_request:
+                return self.finish_incomplete("模型返回了工具调用文本，未给出最终答复",
+                                              correction=TOOL_TEXT_CORRECTION)
+            self.reminder = {
+                "role": "system",
+                "content": "上一条输出是工具调用标记，不是有效答复。不要输出 XML/DSML 工具调用；"
+                           "需要工具时使用原生 tool_calls，否则直接给出结论。",
+            }
+            ctx.on_event("[提醒] 模型输出了工具调用文本，已要求重新答复")
+            return None
         ctx.turn.append(assistant_record(message))
         self.trace("message", message=ctx.turn[-1])
         if ctx.planner is not None:
@@ -336,7 +398,8 @@ class TurnRunner:
         message = choice.message
         if message.tool_calls and final_request:
             # 服务忽略了 tool_choice=none：不执行工具，有正文就用正文收尾。
-            if message.content and message.content.strip() and ctx.planner is None:
+            if (message.content and message.content.strip() and ctx.planner is None
+                    and not is_tool_call_text(message.content)):
                 turn.append({"role": "assistant", "content": message.content})
                 self.trace("message", message=turn[-1])
                 return self.incomplete(message.content, self.forced_reason)

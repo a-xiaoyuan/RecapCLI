@@ -223,7 +223,7 @@ class AgentTests(unittest.TestCase):
                     patch("recapcli.core.tool_batch.execute_tool", return_value={"ok": True, "content": "file"}) as tool:
                 _, requests = self.run_with_replies([reply(calls=[tool_call()]), reply("根据文件总结")], **options)
             self.assertEqual(requests[-1]["tool_choice"], "none")
-            self.assertNotIn("tools", requests[-1])
+            self.assertIn("tools", requests[-1])
             self.assertEqual(tool.call_count, 1)
             self.assertEqual(self.last_result.status, "incomplete")
 

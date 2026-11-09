@@ -60,6 +60,20 @@ class ModelFailureFinishTests(unittest.TestCase):
     def executed_tools(self):
         return [data["name"] for kind, data in self.traces if kind == "tool_result"]
 
+    def test_tool_call_text_is_not_returned_as_answer(self):
+        marker = '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="read_file">\n</｜｜DSML｜｜tool_calls>'
+        result = self.run_turn(text(marker), max_steps=1)
+        self.assertEqual(result.status, "incomplete")
+        self.assertNotIn("DSML", result.answer)
+        self.assertIn("工具调用文本", result.stop_reason)
+
+    def test_consecutive_reads_force_early_summary(self):
+        result = self.run_turn(*([tool_call()] * 8), text("已根据读取结果总结。"))
+        self.assertEqual(result.status, "returned")
+        self.assertEqual(result.answer, "已根据读取结果总结。")
+        self.assertEqual(self.requests, 9)
+        self.assertTrue(any(kind == "read_summary_reminder" for kind, _ in self.traces))
+
     def test_context_overflow_after_tools_requests_final_summary(self):
         result = self.run_turn(tool_call(), OVERFLOW, text("目录已看完，分析未完成。"))
         self.assertEqual(result.status, "incomplete")
