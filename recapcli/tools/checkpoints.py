@@ -2,7 +2,7 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timezone
 import base64
 import hashlib
 import json
@@ -84,8 +84,20 @@ def _records(workspace):
     return records
 
 
+_NO_TIME = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _created(item):
+    try:
+        moment = datetime.fromisoformat(str(item.get("created_at") or ""))
+    except ValueError:
+        return _NO_TIME
+    return moment if moment.tzinfo is not None else moment.astimezone()
+
+
 def _order(item):
-    return (item.get("sequence") or 0, item.get("created_at") or "")
+    """先按时间；sequence 是进程内计数，重启后归零，只用来区分同一时刻。"""
+    return (_created(item), item.get("sequence") or 0)
 
 
 def latest_checkpoint(workspace):

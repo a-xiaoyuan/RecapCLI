@@ -143,6 +143,30 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual((self.workspace / "b.txt").read_text(encoding="utf-8"), "B0\n")
         self.assertIn("已回退检查点", output.getvalue())
 
+    def test_rewind_picks_the_newest_turn_across_restarts(self):
+        """sequence 是进程内计数，重启后从 1 开始；最新一轮要按时间判断。"""
+        from recapcli.tools import checkpoints
+        (self.workspace / "a.txt").write_text("A0\n", encoding="utf-8")
+        (self.workspace / "b.txt").write_text("B0\n", encoding="utf-8")
+        original = checkpoints._sequence
+        self.addCleanup(setattr, checkpoints, "_sequence", original)
+        checkpoints._sequence = 5          # 上一次启动已经跑过几轮
+        with turn_checkpoint(self.workspace):
+            self.assertTrue(execute_tool(
+                "edit_file", {"path": "a.txt", "old_text": "A0\n", "new_text": "A1\n"},
+                self.workspace, capabilities={"read", "write"}, approver=approve_all)["ok"])
+        time.sleep(0.01)
+        checkpoints._sequence = 0          # 重新启动
+        with turn_checkpoint(self.workspace):
+            self.assertTrue(execute_tool(
+                "edit_file", {"path": "b.txt", "old_text": "B0\n", "new_text": "B1\n"},
+                self.workspace, capabilities={"read", "write"}, approver=approve_all)["ok"])
+        self.assertEqual(sorted(checkpoints.latest_checkpoint(self.workspace)["files"]), ["b.txt"])
+        restored = rewind_checkpoint(self.workspace)
+        self.assertEqual([item["path"] for item in restored["files"]], ["b.txt"])
+        self.assertEqual((self.workspace / "a.txt").read_text(encoding="utf-8"), "A1\n")
+        self.assertEqual((self.workspace / "b.txt").read_text(encoding="utf-8"), "B0\n")
+
     def test_agent_turn_creates_a_checkpoint_before_the_write(self):
         (self.workspace / "app.py").write_text("print(1)\n", encoding="utf-8")
         arguments = json.dumps({"path": "app.py", "old_text": "print(1)\n", "new_text": "print(2)\n"})
