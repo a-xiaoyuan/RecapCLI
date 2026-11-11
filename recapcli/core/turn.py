@@ -23,8 +23,8 @@ from .tool_batch import ToolBatch
 from ..tools.checkpoints import turn_checkpoint
 
 COMPACT_AT = 0.75          # 当前轮超过窗口的这个比例时，移出较早的工具结果
-READ_SUMMARY_AT = 4        # 连续只读轮数达到这里时提醒模型先总结
-READ_FORCE_SUMMARY_AT = 8  # 连续只读轮数达到这里时强制进入收尾
+READ_SUMMARY_AT = 4        # 连续只读轮数达到这里时提醒模型先总结或开始修改
+READ_FORCE_SUMMARY_AT = 8  # 只读任务连续达到这里时强制收尾；可写任务在首次写入前不收掉工具
 FINAL_INSTRUCTION = ("本次是最后一次模型请求，不能调用工具。请基于已有事实直接给出最终答复；"
                      "仍需更多信息或操作时，说明未完成项和原因。不要继续规划或输出工具调用标记。")
 TOOL_TEXT_CORRECTION = ("上一条输出是无效的工具调用文本。现在不能调用任何工具。"
@@ -243,11 +243,16 @@ class TurnRunner:
         from .subagents import run_subagents
         return run_subagents(ctx.client, ctx.model, ctx.prompt, ctx.workspace, **shared)
 
+    def exploring_edit(self):
+        """有写入或执行能力，但本轮还没改过文件。连续读取只是在定位，不能收掉工具。"""
+        return bool(self.ctx.capabilities & {"write", "exec"}) and not self.edited
+
     def start_final_request(self, step):
         """判断这一步是否必须是收尾请求，并记录原因。"""
         ctx = self.ctx
         budget, planner = ctx.budget, ctx.planner
-        read_stop = (ctx.mode == "react" and self.read_rounds >= READ_FORCE_SUMMARY_AT)
+        exploring = self.exploring_edit()
+        read_stop = ctx.mode == "react" and self.read_rounds >= READ_FORCE_SUMMARY_AT and not exploring
         final_request = (bool(self.forced_reason) or read_stop or step == ctx.max_steps
                          or budget.should_summarize(ctx.request_reserve))
         if final_request and not self.forced_reason:
@@ -259,13 +264,18 @@ class TurnRunner:
             self.read_summary_forced = read_stop
         if (not final_request and ctx.mode == "react" and self.reminder is None
                 and self.read_rounds >= READ_SUMMARY_AT):
-            self.reminder = {
-                "role": "system",
-                "content": (f"已连续读取 {self.read_rounds} 轮。先基于现有事实总结已确认内容、缺口和下一步；"
-                            "需要继续时只读最必要的文件，不要重复读取同一文件。"),
-            }
+            if exploring:
+                content = (f"已连续读取 {self.read_rounds} 轮，尚未写入文件。"
+                           "请根据已读内容调用修改或验证工具完成用户要求的改动；"
+                           "不要重复读取同一文件。信息不够时再读最必要的片段。")
+                event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请开始修改"
+            else:
+                content = (f"已连续读取 {self.read_rounds} 轮。先基于现有事实总结已确认内容、缺口和下一步；"
+                           "需要继续时只读最必要的文件，不要重复读取同一文件。")
+                event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请先总结再继续"
+            self.reminder = {"role": "system", "content": content}
             self.trace("read_summary_reminder", rounds=self.read_rounds)
-            ctx.on_event(f"[提醒] 已连续读取 {self.read_rounds} 轮，请先总结再继续")
+            ctx.on_event(event)
         if planner is not None and final_request:
             planner.stop("模型请求或工具预算即将耗尽，保留本次请求汇总已有结果")
             self.plan_snapshot()
