@@ -236,6 +236,8 @@ uv build
 
 ## 更新与卸载
 
+本版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+
 ```sh
 uv tool upgrade recapcli
 uv tool uninstall recapcli
