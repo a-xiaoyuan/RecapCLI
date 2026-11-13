@@ -406,7 +406,7 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
                           max_steps=manifest["max_model_requests"], memory_enabled=False, limits=limits,
                           capabilities=tuple(manifest["capabilities"]), mode=manifest["mode"],
                           auto_compact=manifest["auto_compact"], approver=workspace_approver(workspace, approvals),
-                          acceptance=agent_acceptance)
+                          acceptance=agent_acceptance, allow_edit_phase=case["kind"] != "review")
         store.save(session)
     except Exception as exception:
         message = (api_error_message(exception, model) if type(exception).__module__.startswith("openai")

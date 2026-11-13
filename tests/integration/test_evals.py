@@ -292,6 +292,20 @@ class ReportTests(EvalCase):
         self.run_case(run_root, manifest, "read-1", [text("说明")])
         return run_root, manifest
 
+    def test_review_cases_do_not_enter_the_edit_phase(self):
+        self.spec["repetitions"] = 1
+        run_root, manifest = self.prepare()
+        seen = []
+
+        def fake_run_turn(*_args, **kwargs):
+            seen.append(kwargs.get("allow_edit_phase"))
+            return "说明"
+
+        with patch.object(runner, "run_turn", fake_run_turn):
+            self.run_case(run_root, manifest, "fix-1", [])
+            self.run_case(run_root, manifest, "read-1", [])
+        self.assertEqual(seen, [True, False])
+
     def test_review_task_stays_pending_until_reviewed(self):
         run_root, _ = self.finished_run()
         self.assertIn("待核对", runner.report(run_root, baseline_path=None))

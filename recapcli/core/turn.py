@@ -24,7 +24,14 @@ from ..tools.checkpoints import turn_checkpoint
 
 COMPACT_AT = 0.75          # 当前轮超过窗口的这个比例时，移出较早的工具结果
 READ_SUMMARY_AT = 4        # 连续只读轮数达到这里时提醒模型先总结或开始修改
-READ_FORCE_SUMMARY_AT = 8  # 只读任务连续达到这里时强制收尾；可写任务在首次写入前不收掉工具
+READ_FORCE_SUMMARY_AT = 8  # 只读任务连续达到这里时强制收尾；可写任务改为进入写入阶段
+EDIT_PHASE_RESERVE = 6     # 剩余请求不超过这个数且仍未写入时，也进入写入阶段
+# 写入阶段只留修改、执行、读文件和待办，不再提供仓库搜索。
+EDIT_PHASE_TOOLS = frozenset({
+    "edit_file", "edit_files", "undo_edit", "rewind_checkpoint", "restore_file",
+    "run_command", "command_status", "command_input", "stop_command",
+    "read_file", "todo_write",
+})
 FINAL_INSTRUCTION = ("本次是最后一次模型请求，不能调用工具。请基于已有事实直接给出最终答复；"
                      "仍需更多信息或操作时，说明未完成项和原因。不要继续规划或输出工具调用标记。")
 TOOL_TEXT_CORRECTION = ("上一条输出是无效的工具调用文本。现在不能调用任何工具。"
@@ -91,6 +98,8 @@ class TurnContext:
     hooks: Any = None
     skills: Any = None
     acceptance: Any = None
+    read_only: bool = False
+    allow_edit_phase: bool = True
 
 
 class TurnRunner:
@@ -100,6 +109,9 @@ class TurnRunner:
         self.local_tool_calls = 0
         self.read_rounds = 0        # 连续只读工具轮数；写入、命令或核对会清零
         self.edited = []
+        self.edit_phase = False     # 可写且尚未写入时，读满期限后收窄工具
+        self.notified_read_summary = False
+        self.notified_edit_deadline = False
         self.end_checks = EndChecks(self)
         self.format_correction = None
         self.corrected_phases = set()
@@ -244,14 +256,122 @@ class TurnRunner:
         return run_subagents(ctx.client, ctx.model, ctx.prompt, ctx.workspace, **shared)
 
     def exploring_edit(self):
-        """有写入或执行能力，但本轮还没改过文件。连续读取只是在定位，不能收掉工具。"""
+        """有写入或执行能力，调用方没有把任务标成只读，且本轮还没改过文件。
+
+        能力里只有 read 时这里为假，连续读取仍会在第 8 轮强制总结。
+        调用方也可以用 read_only 声明本任务只读，即使能力里带着 write/exec。
+        """
+        if self.ctx.read_only:
+            return False
         return bool(self.ctx.capabilities & {"write", "exec"}) and not self.edited
+
+    def _push_edit_phase(self):
+        """理解题可以关掉写入阶段，避免被收窄成只能改文件。"""
+        return self.exploring_edit() and self.ctx.allow_edit_phase
+
+    def _edit_phase_due(self):
+        if not self._push_edit_phase():
+            return False
+        remaining = self.ctx.max_steps - self.requests_used
+        return self.read_rounds >= READ_FORCE_SUMMARY_AT or remaining <= EDIT_PHASE_RESERVE
+
+    def _read_spans(self):
+        """已成功读到的文件和行段，供写入期限提醒列出来。"""
+        calls = {}
+        for message in self.ctx.turn:
+            for call in message.get("tool_calls") or ():
+                function = call.get("function") or {}
+                if function.get("name") == "read_file":
+                    calls[call.get("id")] = function.get("arguments") or ""
+        spans = []
+        seen = set()
+        for message in self.ctx.turn:
+            if message.get("role") != "tool" or message.get("tool_call_id") not in calls:
+                continue
+            reference = None
+            try:
+                payload = json.loads(message.get("content") or "")
+            except (ValueError, TypeError):
+                payload = None
+            if isinstance(payload, dict) and not payload.get("cleared") and payload.get("ok", True):
+                reference = payload.get("reference") or payload.get("path")
+            if not reference:
+                raw = calls[message.get("tool_call_id")]
+                try:
+                    arguments = json.loads(raw) if isinstance(raw, str) else raw
+                except (ValueError, TypeError):
+                    arguments = {}
+                if isinstance(arguments, dict) and arguments.get("path"):
+                    start = arguments.get("start_line") or arguments.get("next_start_line")
+                    end = arguments.get("end_line")
+                    if not start:
+                        reference = arguments["path"]
+                    elif not end or start == end:
+                        reference = f"{arguments['path']}:{start}"
+                    else:
+                        reference = f"{arguments['path']}:{start}-{end}"
+            if reference and reference not in seen:
+                seen.add(reference)
+                spans.append(reference)
+        return spans
+
+    def _set_read_reminder(self, content, event, kind):
+        self.reminder = {"role": "system", "content": content}
+        self.trace("read_summary_reminder", rounds=self.read_rounds, notice=kind)
+        self.ctx.on_event(event)
+
+    def _maybe_read_reminder(self, exploring):
+        """可写任务只在第 4 轮和第 8 轮各提醒一次；只读任务保持原来的重复提醒。"""
+        if self.read_rounds < READ_SUMMARY_AT:
+            return
+        if self._push_edit_phase():
+            if self.read_rounds == READ_SUMMARY_AT and not self.notified_read_summary:
+                self.notified_read_summary = True
+                self._set_read_reminder(
+                    (f"已连续读取 {self.read_rounds} 轮，尚未写入文件。"
+                     "请根据已读内容调用修改或验证工具完成用户要求的改动；"
+                     "不要重复读取同一文件。信息不够时再读最必要的片段。"),
+                    f"[提醒] 已连续读取 {self.read_rounds} 轮，请开始修改",
+                    "edit")
+                return
+            budget_due = self.edit_phase and self.ctx.max_steps - self.requests_used <= EDIT_PHASE_RESERVE
+            if (not self.notified_edit_deadline and self.read_rounds != READ_SUMMARY_AT
+                    and (self.read_rounds == READ_FORCE_SUMMARY_AT or budget_due)):
+                self.notified_edit_deadline = True
+                self.notified_read_summary = True
+                spans = self._read_spans()
+                listed = "\n".join(f"- {item}" for item in spans[:20])
+                if len(spans) > 20:
+                    listed += f"\n- 等 {len(spans)} 段"
+                if not listed:
+                    listed = "- （没有记录到已读行段）"
+                self._set_read_reminder(
+                    (f"已连续读取 {self.read_rounds} 轮，仍未写入文件。已读内容：\n{listed}\n"
+                     "下一步请调用 edit_file 或 edit_files 完成用户要求的修改。"
+                     "如果确实无法修改，直接说明原因并结束，不要再搜索或继续翻页。"),
+                    f"[提醒] 已连续读取 {self.read_rounds} 轮，请改为写入",
+                    "edit_deadline")
+            return
+        if exploring:
+            content = (f"已连续读取 {self.read_rounds} 轮，尚未写入文件。"
+                       "请根据已读内容调用修改或验证工具完成用户要求的改动；"
+                       "不要重复读取同一文件。信息不够时再读最必要的片段。")
+            event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请开始修改"
+        else:
+            content = (f"已连续读取 {self.read_rounds} 轮。先基于现有事实总结已确认内容、缺口和下一步；"
+                       "需要继续时只读最必要的文件，不要重复读取同一文件。")
+            event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请先总结再继续"
+        self._set_read_reminder(content, event, "read" if not exploring else "edit")
 
     def start_final_request(self, step):
         """判断这一步是否必须是收尾请求，并记录原因。"""
         ctx = self.ctx
         budget, planner = ctx.budget, ctx.planner
         exploring = self.exploring_edit()
+        if self._edit_phase_due():
+            self.edit_phase = True
+        elif not self._push_edit_phase():
+            self.edit_phase = False
         read_stop = ctx.mode == "react" and self.read_rounds >= READ_FORCE_SUMMARY_AT and not exploring
         final_request = (bool(self.forced_reason) or read_stop or step == ctx.max_steps
                          or budget.should_summarize(ctx.request_reserve))
@@ -262,20 +382,8 @@ class TurnRunner:
                 else "工具调用次数用完" if budget.tool_calls >= ctx.limits.max_tool_calls
                 else "执行时间即将用完")
             self.read_summary_forced = read_stop
-        if (not final_request and ctx.mode == "react" and self.reminder is None
-                and self.read_rounds >= READ_SUMMARY_AT):
-            if exploring:
-                content = (f"已连续读取 {self.read_rounds} 轮，尚未写入文件。"
-                           "请根据已读内容调用修改或验证工具完成用户要求的改动；"
-                           "不要重复读取同一文件。信息不够时再读最必要的片段。")
-                event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请开始修改"
-            else:
-                content = (f"已连续读取 {self.read_rounds} 轮。先基于现有事实总结已确认内容、缺口和下一步；"
-                           "需要继续时只读最必要的文件，不要重复读取同一文件。")
-                event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请先总结再继续"
-            self.reminder = {"role": "system", "content": content}
-            self.trace("read_summary_reminder", rounds=self.read_rounds)
-            ctx.on_event(event)
+        if not final_request and ctx.mode == "react" and self.reminder is None:
+            self._maybe_read_reminder(exploring)
         if planner is not None and final_request:
             planner.stop("模型请求或工具预算即将耗尽，保留本次请求汇总已有结果")
             self.plan_snapshot()
@@ -332,6 +440,9 @@ class TurnRunner:
             return None
         if ctx.planner is not None and ctx.planner.readonly_batch:
             return tool_definitions(ctx.capabilities & {"read", "web"}) + ctx.extra_definitions
+        if self.edit_phase:
+            # 不使用 tool_choice=required：模型确实无法修改时，仍可以用文字说明并结束。
+            return [item for item in ctx.definitions if item["function"]["name"] in EDIT_PHASE_TOOLS]
         return ctx.definitions
 
     def final_tools(self):
