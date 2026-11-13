@@ -80,7 +80,7 @@ TOOL_REGISTRY = {
     },
     "read_file": {
         "handler": read_file,
-        "description": "按行读取 UTF-8 文本，每次最多 160 行、原文最多 64 KiB。content 的每行格式为 行号 | 原文；引用使用真实行号，编辑时去掉行号前缀。先搜索定位，再指定起止行；has_more 表示文件还有后续，next_start_line 可继续读取。truncated 表示请求范围未读完。",
+        "description": "按行读取 UTF-8 文本，每次最多 160 行、原文最多 64 KiB。小于 80 行的请求会自动扩展到约 80 行（不超过文件结尾，且仍受 160 行上限约束）。content 的每行格式为 行号 | 原文；引用使用真实行号，编辑时去掉行号前缀。先搜索定位，再指定起止行；has_more 表示文件还有后续，next_start_line 可继续读取。truncated 表示请求范围未读完。",
         "parameters": {
             "type": "object",
             "properties": {

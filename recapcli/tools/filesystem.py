@@ -12,6 +12,7 @@ from ..base.access import local_path
 from ..base.paths import SKIP_DIRS, ToolError, checked_target as _checked_target, sensitive_path
 
 MAX_FILE_BYTES = 64 * 1024
+MIN_MODEL_READ_LINES = 80
 MAX_MODEL_READ_LINES = 160
 MAX_SEARCH_FILE_BYTES = 1024 * 1024
 MAX_SEARCH_RESULTS = 50
@@ -227,8 +228,23 @@ def read_file(path, workspace, start_line=None, end_line=None, *, max_lines=None
     return result
 
 
+def _model_end_line(start_line, end_line, next_start_line):
+    """小于 80 行的请求把结束行扩到 start + 79，仍不超过 160 行。未指定结束行时保持原分页。"""
+    if end_line is None:
+        return None
+    start = start_line if start_line is not None else next_start_line
+    if start is None:
+        start = 1
+    if end_line < start:
+        return end_line
+    if end_line - start + 1 >= MIN_MODEL_READ_LINES:
+        return min(end_line, start + MAX_MODEL_READ_LINES - 1)
+    return start + MIN_MODEL_READ_LINES - 1
+
+
 def read_file_for_model(path, workspace, start_line=None, end_line=None, *, next_start_line=None):
     """模型读取按行分页；原文 API 保留原有行为，不重复返回两份正文。"""
+    end_line = _model_end_line(start_line, end_line, next_start_line)
     result = read_file(path, workspace, start_line, end_line, max_lines=MAX_MODEL_READ_LINES,
                        next_start_line=next_start_line)
     start, end = result["start_line"], result["end_line"]

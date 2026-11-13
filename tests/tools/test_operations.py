@@ -204,18 +204,61 @@ class OperationTests(unittest.TestCase):
         self.assertTrue(alias["ok"], alias)
         self.assertEqual(alias["start_line"], 161)
 
-        segment = execute_tool("read_file", {"path": path.name, "start_line": 161, "end_line": 162},
+        segment = execute_tool("read_file", {"path": path.name, "start_line": 50, "end_line": 129},
                                self.workspace, for_model=True)
-        self.assertEqual(segment["content"], "161 | 第 161 行\n162 | 第 162 行")
+        self.assertEqual(segment["content"].split("\n")[0], "50 | 第 50 行")
+        self.assertEqual(segment["content"].split("\n")[-1], "129 | 第 129 行")
+        self.assertEqual(segment["content"].count("\n") + 1, 80)
         self.assertTrue(segment["has_more"])
         self.assertFalse(segment["truncated"])
+        self.assertEqual(segment["next_start_line"], 130)
 
         last = execute_tool("read_file", {"path": path.name, "start_line": segment["next_start_line"]},
                             self.workspace, for_model=True)
-        self.assertEqual(last["reference"], "paged.py:163-201")
+        self.assertEqual(last["reference"], "paged.py:130-201")
         self.assertTrue(last["content"].endswith("201 | 第 201 行"))
         self.assertFalse(last["has_more"])
         self.assertFalse(last["truncated"])
+
+    def test_model_read_expands_short_ranges_and_stops_at_eof(self):
+        lines = [f"第 {number} 行" for number in range(1, 201)]
+        path = self.workspace / "window.py"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        raw = self.call("read_file", path=path.name, start_line=1, end_line=5)
+        self.assertEqual(raw["content"], "\n".join(lines[:5]))
+        self.assertEqual((raw["start_line"], raw["end_line"]), (1, 5))
+        self.assertNotIn("has_more", raw)
+
+        expanded = execute_tool("read_file", {"path": path.name, "start_line": 1, "end_line": 5},
+                                self.workspace, for_model=True)
+        self.assertTrue(expanded["ok"], expanded)
+        self.assertGreaterEqual(expanded["end_line"] - expanded["start_line"] + 1, 80)
+        self.assertEqual((expanded["start_line"], expanded["end_line"]), (1, 80))
+        self.assertEqual(expanded["content"].count("\n") + 1, 80)
+        self.assertTrue(expanded["has_more"])
+        self.assertEqual(expanded["next_start_line"], 81)
+        self.assertFalse(expanded["truncated"])
+
+        tail = execute_tool("read_file", {"path": path.name, "start_line": 161, "end_line": 162},
+                            self.workspace, for_model=True)
+        self.assertTrue(tail["ok"], tail)
+        self.assertEqual((tail["start_line"], tail["end_line"]), (161, 200))
+        self.assertLessEqual(tail["end_line"], 200)
+        self.assertFalse(tail["has_more"])
+        self.assertNotIn("next_start_line", tail)
+        self.assertTrue(tail["content"].endswith("200 | 第 200 行"))
+
+        short = self.workspace / "short.py"
+        short.write_text("\n".join(f"行 {number}" for number in range(1, 31)) + "\n", encoding="utf-8")
+        ended = execute_tool("read_file", {"path": short.name, "start_line": 1, "end_line": 3},
+                             self.workspace, for_model=True)
+        self.assertEqual((ended["start_line"], ended["end_line"]), (1, 30))
+        self.assertFalse(ended["has_more"])
+        self.assertNotIn("next_start_line", ended)
+
+        description = next(item["function"]["description"] for item in tool_definitions(("read",))
+                           if item["function"]["name"] == "read_file")
+        self.assertIn("小于 80 行的请求会自动扩展", description)
 
     def test_text_search_reference_matches_file_line(self):
         (self.workspace / "file.py").write_text("one\nmarker\n", encoding="utf-8")
