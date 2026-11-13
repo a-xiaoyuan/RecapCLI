@@ -21,7 +21,9 @@ import subprocess
 import sys
 import tarfile
 import time
+import tomllib
 import traceback
+from importlib.metadata import PackageNotFoundError, version as distribution_version
 from urllib.parse import urlsplit
 
 EVALS = Path(__file__).resolve().parent
@@ -47,7 +49,11 @@ ORIGINAL_BASELINE = EVALS / "baselines" / "2026-11-03.json"
 BASELINE = EVALS / "baselines" / "2026-11-03-v3.json"
 LEGACY_EVALUATOR = EVALS / "baselines" / "acceptance-v1.py"
 ACCEPTANCE_TIMEOUT_SECONDS = 120
+WORKSPACE_TEST_TIMEOUT_SECONDS = 600
+WORKSPACE_TEST_KEY = "_workspace_tests"
 BOUNDARY = "这是少量固定任务的重复运行，只能说明这组任务上的变化，不能外推成通用成功率。"
+_FAILURE_LINE = re.compile(r"^(?:FAIL|ERROR): (?:.*\((?P<ident>[^)]+)\)|(?P<name>.+))$", re.MULTILINE)
+_RAN_LINE = re.compile(r"^Ran (\d+) test", re.MULTILINE)
 
 
 def write_json(path, value):
@@ -118,6 +124,104 @@ def create_workspace(repo, commit, destination):
         "commit", "-q", "--no-gpg-sign", "-m", "evaluation baseline")
 
 
+def installed_recapcli():
+    """当前解释器里的 recapcli 发行版版本；没安装时返回 None。"""
+    try:
+        return distribution_version("recapcli")
+    except PackageNotFoundError:
+        return None
+
+
+def workspace_project_version(workspace, name="recapcli"):
+    """工作区 pyproject 里同名项目的版本；不是这个项目时返回 None。"""
+    path = Path(workspace) / "pyproject.toml"
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as file:
+            project = tomllib.load(file).get("project") or {}
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    if project.get("name") != name:
+        return None
+    version = project.get("version")
+    return version if isinstance(version, str) else None
+
+
+def ensure_clean_interpreter(workspace):
+    """目标仓库自带 recapcli 时，解释器里不能再装一份发行版。
+
+    工作区的 project_version() 会优先读 importlib.metadata。解释器里若装着引擎的
+    recapcli，测试会看到引擎版本而不是工作区 pyproject.toml 的版本。
+    """
+    declared = workspace_project_version(workspace)
+    if declared is None:
+        return
+    installed = installed_recapcli()
+    if installed is None:
+        return
+    raise RuntimeError(
+        f"当前解释器已安装 recapcli {installed}（{sys.executable}），"
+        f"目标工作区的版本是 {declared}。工作区会优先读到这份发行版元数据，而不是自己的 pyproject.toml。"
+        "评测请改用未安装本项目的解释器：在引擎目录执行 `uv sync --no-install-project`，"
+        "再用 PYTHONPATH 指向引擎目录运行 `python -X utf8 evals/runner.py`。"
+    )
+
+
+def _task_results(precheck):
+    """验收结果不含工作区自带测试的附加记录。"""
+    return {key: value for key, value in precheck.items() if not str(key).startswith("_")}
+
+
+def run_workspace_tests(workspace):
+    """用当前解释器跑目标仓库自带测试，记下修改前就失败的用例。"""
+    workspace = Path(workspace)
+    interpreter = sys.executable
+    installed = installed_recapcli()
+    if not (workspace / "tests").is_dir():
+        return {"status": "skipped", "reason": "目标仓库没有 tests 目录",
+                "interpreter": interpreter, "installed_recapcli": installed}
+    command = [interpreter, "-X", "utf8", "-m", "unittest", "discover", "-s", "tests", "-t", "."]
+    try:
+        completed = subprocess.run(command, cwd=workspace, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", timeout=WORKSPACE_TEST_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        output = ((error.stdout or "") + "\n" + (error.stderr or "")) if isinstance(error.stdout, str) else ""
+        return {"status": "timeout", "interpreter": interpreter, "installed_recapcli": installed,
+                "command": command, "returncode": None, "tests_run": None, "failures": [],
+                "output_tail": output[-2000:], "reason": f"超过 {WORKSPACE_TEST_TIMEOUT_SECONDS} 秒"}
+    output = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    failures = []
+    for match in _FAILURE_LINE.finditer(output):
+        ident = (match.group("ident") or match.group("name") or "").strip()
+        if ident and ident not in failures:
+            failures.append(ident)
+    ran = _RAN_LINE.search(output)
+    if completed.returncode not in (0, None) and not failures:
+        tail = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), "")
+        if tail:
+            failures.append(tail[:300])
+    return {"status": "completed", "interpreter": interpreter, "installed_recapcli": installed,
+            "command": command, "returncode": completed.returncode,
+            "tests_run": int(ran.group(1)) if ran else None, "failures": failures,
+            "output_tail": output[-2000:]}
+
+
+def workspace_test_lines(record):
+    """报告里说明目标仓库在修改前的自带测试结果。"""
+    if not isinstance(record, dict) or record.get("status") == "skipped":
+        return []
+    failed = record.get("failures") or []
+    if record.get("status") == "timeout":
+        return [f"目标仓库自带测试在修改前超时（{record.get('reason')}），未能列全预先失败项。", ""]
+    if record.get("returncode") == 0 and not failed:
+        return ["目标仓库自带测试在修改前通过。", ""]
+    shown = failed[:15]
+    extra = f"（共 {len(failed)} 项）" if len(failed) > 15 else ""
+    body = "、".join(shown) if shown else f"退出码 {record.get('returncode')}"
+    return [f"目标仓库在修改前已有未通过的自带测试{extra}：{body}。这是预先存在的结果，不是本次模型改动引入的。", ""]
+
+
 def acceptance(evaluator, task, workspace):
     completed = subprocess.run([sys.executable, "-X", "utf8", "-I", str(evaluator), task, str(workspace)],
                                cwd=workspace, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -182,15 +286,25 @@ def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=None, model=None, agent_acc
     # 预检用单独的工作区：验收会留下文件，不能影响之后真实用例的得分。
     probe = run_root / "precheck-workspace"
     create_workspace(repo, spec["target_commit"], probe)
+    ensure_clean_interpreter(probe)
+    # 自带测试单独导出一份，避免验收脚本留下的文件影响“修改前”的结果。
+    selftest = run_root / "precheck-selftest"
+    if (probe / "tests").is_dir():
+        create_workspace(repo, spec["target_commit"], selftest)
+        workspace_tests = run_workspace_tests(selftest)
+    else:
+        workspace_tests = run_workspace_tests(probe)
     precheck = {task["id"]: acceptance(evaluator, task["id"], probe)
                 for task in spec["tasks"] if task["kind"] == "acceptance"}
+    precheck[WORKSPACE_TEST_KEY] = workspace_tests
     write_json(run_root / "precheck.json", precheck)
+    task_precheck = _task_results(precheck)
     if suite == "expanded":
-        invalid = [task for task, result in precheck.items() if result["returncode"] not in (0, 1)
+        invalid = [task for task, result in task_precheck.items() if result["returncode"] not in (0, 1)
                    or (result.get("result") or {}).get("category") != task]
         if invalid:
             raise RuntimeError("这些任务的验收预检未产生有效结果，请查看 precheck.json：" + "、".join(invalid))
-    already = [task for task, result in precheck.items() if result["returncode"] == 0]
+    already = [task for task, result in task_precheck.items() if result["returncode"] == 0]
     if already:
         raise RuntimeError("这些任务在模型开始前就已通过，评测没有意义：" + "、".join(already))
     (Path(runs) / "latest.txt").write_text(str(run_root), encoding="utf-8")
@@ -386,7 +500,7 @@ def _tokens(item):
     return f"≥{item.get('known_total_tokens', 0)}（{detail}）"
 
 
-def render_report(manifest, results, totals, baseline=None):
+def render_report(manifest, results, totals, baseline=None, workspace_tests=None):
     lines = ["# RecapCLI 评测报告", "", f"引擎提交：`{manifest['engine_commit']}`",
              f"目标提交：`{manifest['target_commit']}`", f"模型：`{manifest['model'].get('model', '未记录')}`", ""]
     lines += [f"验收脚本指纹：`{manifest['acceptance_sha256']}`", ""]
@@ -444,6 +558,9 @@ def render_report(manifest, results, totals, baseline=None):
             failed, not_run = (current["failed"], current["not_run"]) if current else ("—", "—")
             lines.append(f"| {item['id']} | {before} | {after} | {failed} | {not_run} |")
         lines += ["", "运行时需求验收单独记录，任务得分仍取自独立评测或人工核对。"]
+    note = workspace_test_lines(workspace_tests)
+    if note:
+        lines += ["", *note]
     lines += ["", BOUNDARY, ""]
     return "\n".join(lines)
 
@@ -481,13 +598,15 @@ def report(run_root, *, baseline_path=BASELINE, compare=None):
     manifest = read_json(run_root / "manifest.json")
     results = _scored_results(run_root, manifest)
     totals = summarize(results)
+    precheck_path = run_root / "precheck.json"
+    workspace_tests = read_json(precheck_path).get(WORKSPACE_TEST_KEY) if precheck_path.is_file() else None
     if compare is not None:
         baseline = _comparison(Path(compare), manifest, results)
     elif manifest.get("suite") == "expanded" and baseline_path == BASELINE:
         baseline = None
     else:
         baseline = read_json(baseline_path) if baseline_path is not None and Path(baseline_path).exists() else None
-    text = render_report(manifest, results, totals, baseline)
+    text = render_report(manifest, results, totals, baseline, workspace_tests=workspace_tests)
     write_json(run_root / "summary.json", {"totals": totals, "results": results})
     (run_root / "report.md").write_text(text, encoding="utf-8")
     return text

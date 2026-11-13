@@ -136,6 +136,47 @@ class PrepareTests(EvalCase):
         self.assertIn("later.txt", manifest["engine_status"])
         self.assertIn("未提交改动", runner.report(run_root, baseline_path=None))
 
+    def test_precheck_records_preexisting_workspace_test_failures(self):
+        tests = self.repo / "tests"
+        tests.mkdir()
+        (tests / "__init__.py").write_text("", encoding="utf-8")
+        (tests / "test_sample.py").write_text(
+            "import unittest\n"
+            "class Sample(unittest.TestCase):\n"
+            "    def test_ok(self):\n"
+            "        self.assertEqual(1, 1)\n"
+            "    def test_bad(self):\n"
+            "        self.fail('预先就坏')\n",
+            encoding="utf-8")
+        self.commit("带上自带测试")
+        self.spec["target_commit"] = self.git("rev-parse", "HEAD").strip()
+        run_root, _manifest = self.prepare()
+        precheck = runner.read_json(run_root / "precheck.json")
+        self.assertEqual(precheck["fix"]["returncode"], 1)
+        record = precheck["_workspace_tests"]
+        self.assertEqual(record["status"], "completed")
+        self.assertEqual(record["returncode"], 1)
+        self.assertEqual(record["installed_recapcli"], runner.installed_recapcli())
+        self.assertTrue(any("test_bad" in name for name in record["failures"]))
+        self.assertFalse(any("test_ok" in name for name in record["failures"]))
+        self.assertTrue((run_root / "precheck-selftest" / "tests" / "test_sample.py").is_file())
+        self.assertFalse((run_root / "precheck-workspace" / "tests" / "__pycache__").exists())
+        report = runner.report(run_root, baseline_path=None)
+        self.assertIn("test_bad", report)
+        self.assertIn("预先存在", report)
+
+    def test_prepare_rejects_interpreter_that_already_installs_recapcli(self):
+        (self.repo / "pyproject.toml").write_text(
+            '[project]\nname = "recapcli"\nversion = "0.6.0"\n', encoding="utf-8")
+        package = self.repo / "recapcli"
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        self.commit("带上同名项目")
+        self.spec["target_commit"] = self.git("rev-parse", "HEAD").strip()
+        with patch.object(runner, "installed_recapcli", return_value="0.7.0"), \
+                self.assertRaisesRegex(RuntimeError, "no-install-project"):
+            self.prepare()
+
 
 class RunTests(EvalCase):
     def test_requirement_acceptance_ablation_uses_independent_scoring(self):

@@ -19,6 +19,19 @@ python -X utf8 evals/runner.py recheck              # 用新版验收离线重�
 
 工作区、模型回答和报告都写到 `evals/runs/`，不入库。
 
+### 解释器
+
+评测进程和模型跑测试必须用**没有安装 recapcli 本体**的解释器。目标仓库的 `project_version()` 会优先读 `importlib.metadata`。如果解释器里装着引擎的 recapcli（例如 0.7.0），而目标工作区是更早的版本（例如 0.6.0），`tests.integration.test_package` 会在未改动的代码上失败，模型可能因此撤回一次有效修改。
+
+不改引擎里写给模型的 `sys.executable`：启动评测的解释器就是模型看到的解释器。依赖照常安装，只是不把本仓库装进该环境；引擎源码靠 `PYTHONPATH` 和 `evals/runner.py` 开头的路径插入来导入。
+
+```sh
+uv sync --no-install-project
+PYTHONPATH="$PWD" .venv/bin/python -X utf8 evals/runner.py prepare
+```
+
+`prepare` 发现当前解释器已经安装了 recapcli、而目标工作区也是这个项目时，会直接拒绝。它还会用同一解释器在单独的 `precheck-selftest` 里跑一遍目标仓库自带测试，把修改前就失败的用例记进 `precheck.json` 的 `_workspace_tests`。报告会注明这些失败不是本次模型改动引入的。验收预检仍用原来的 `precheck-workspace`，两份互不覆盖。
+
 ### 扩展套件
 
 扩展套件保留原来三题，再加入四道来自仓库历史需求的工程题。七道题各跑两次，共十四例。目标提交和单例预算与原套件一致。
