@@ -50,6 +50,19 @@ class ToolBatch:
         self.step = step
         self.allowed = self.ctx.budget.reserve_tools(len(self.calls))
 
+    def offered(self, call):
+        """只拦本轮被收窄掉的工具；本来就没有的工具交给原有的能力和未知工具检查，保留开放能力的提示。"""
+        offered = self.run.offered_tools
+        name = call.function.name
+        if offered is None or name in offered:
+            return True
+        return not any(item["function"]["name"] == name for item in self.ctx.definitions)
+
+    def not_offered_result(self, call):
+        names = "、".join(sorted(self.run.offered_tools)) or "无"
+        return {"ok": False, "status": "tool_not_offered",
+                "error": f"本次请求没有提供 {call.function.name}，未执行。当前可用工具：{names}"}
+
     def tool_time(self):
         return max(1.0, self.ctx.budget.working_time())
 
@@ -114,6 +127,8 @@ class ToolBatch:
         try:
             if skip_tool:
                 return SKIPPED_RESULT
+            if not self.offered(call):
+                return self.not_offered_result(call)
             if call.function.name == TODO_TOOL["function"]["name"] and run.todos is not None:
                 result = run.todos.update(call.function.arguments)
                 if result["ok"]:
@@ -190,7 +205,8 @@ class ToolBatch:
         budget, trace = ctx.budget, run.trace
         runnable = self.calls[:self.allowed] if not budget.time_low() else []
         # 工具前 Hook 要能挡住每次调用，所以有配置时不并行。
-        parallel = _can_parallel_reads(runnable) and not (ctx.hooks is not None and ctx.hooks.has("pre_tool"))
+        parallel = (_can_parallel_reads(runnable) and all(self.offered(call) for call in runnable)
+                    and not (ctx.hooks is not None and ctx.hooks.has("pre_tool")))
         parallel_results = self.run_parallel_reads(runnable) if parallel else {}
         for index, call in enumerate(self.calls):
             run.local_tool_calls += 1
@@ -213,7 +229,8 @@ class ToolBatch:
             changed = edited_paths(call.function.name, result)
             run.edited.extend(path for path in changed if path not in run.edited)
             run.end_checks.observe_tool(call.function.name, result, changed)
-            if ctx.hooks is not None and not skip_tool and result.get("status") != "blocked_by_hook":
+            if (ctx.hooks is not None and not skip_tool
+                    and result.get("status") not in {"blocked_by_hook", "tool_not_offered"}):
                 feedback = ctx.hooks.run(run, "post_tool", {"arguments": _arguments(call), "result": _hook_result(result)},
                                          tool=call.function.name)
                 if feedback is not None:

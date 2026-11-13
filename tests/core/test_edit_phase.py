@@ -149,18 +149,65 @@ class EditPhaseTests(unittest.TestCase):
                     if body.get("tool_choice") != "none" and "search_text" not in tool_names(body)]
         self.assertEqual(narrowed, [])
 
-    def test_callers_can_keep_understanding_tasks_on_the_full_toolset(self):
+    def test_understanding_tasks_keep_full_tools_and_summarize_without_edit_nags(self):
+        """关掉写入阶段的理解题按只读处理：不催促修改，工具不收窄，第 8 轮转入总结。"""
         def respond(body, index):
-            if index >= 10:
+            texts = "\n".join(system_texts(body))
+            if body.get("tool_choice") == "none" or "现在停止读取" in texts:
                 return deepseek("这是理解题，不修改文件。")
             return deepseek(None, [call(f"c{index}", "read_file", {"path": "app.py"})])
 
         result = self.run_turn(respond, allow_edit_phase=False)
         self.assertEqual(result.answer, "这是理解题，不修改文件。")
-        self.assertIn("search_text", tool_names(self.requests[8]))
-        self.assertNotEqual(self.requests[8].get("tool_choice"), "none")
-        self.assertFalse(any("下一步请调用 edit_file" in text for body in self.requests for text in system_texts(body)))
-        self.assertGreaterEqual(sum("请开始修改" in event for event in self.events), 2)
+        self.assertEqual(result.status, "returned")
+        self.assertEqual(len(self.requests), 9)
+        self.assertEqual(self.requests[-1].get("tool_choice"), "none")
+        for body in self.requests[:-1]:
+            self.assertIn("search_text", tool_names(body))
+        texts = [text for body in self.requests for text in system_texts(body)]
+        self.assertFalse(any("下一步请调用 edit_file" in text for text in texts))
+        self.assertFalse(any("尚未写入文件" in text for text in texts))
+        self.assertEqual([event for event in self.events if "请开始修改" in event], [])
+        self.assertIn("[提醒] 已连续读取 4 轮，请先总结再继续", self.events)
+
+    def tool_results(self):
+        """最后一次请求里每个工具调用 ID 对应的结果。"""
+        return {message["tool_call_id"]: json.loads(message["content"])
+                for message in self.requests[-1]["messages"] if message.get("role") == "tool"}
+
+    def test_tools_dropped_from_the_request_are_not_executed(self):
+        """收窄后模型仍调用列表外的搜索工具：不执行，回填错误并保持调用配对。"""
+        (self.workspace / "notes.txt").write_text("needle\n", encoding="utf-8")
+
+        def respond(body, index):
+            if index == 10:
+                return deepseek(None, [call("search", "search_text", {"query": "needle"}),
+                                       call("read", "read_file", {"path": "app.py"})])
+            if index > 10:
+                return deepseek("没有修改。")
+            return deepseek(None, [call(f"c{index}", "read_file", {"path": "app.py"})])
+
+        self.run_turn(respond)
+        self.assertNotIn("search_text", tool_names(self.requests[9]))
+        results = self.tool_results()
+        self.assertFalse(results["search"]["ok"])
+        self.assertEqual(results["search"]["status"], "tool_not_offered")
+        self.assertIn("search_text", results["search"]["error"])
+        self.assertNotIn("matches", results["search"])
+        self.assertTrue(results["read"].get("ok", True))
+        self.assertNotIn("tool_not_offered", json.dumps(results["read"], ensure_ascii=False))
+
+    def test_offered_tools_still_run_normally(self):
+        def respond(body, index):
+            if index == 1:
+                return deepseek(None, [call("search", "search_text", {"query": "value"})])
+            return deepseek("找到了。")
+
+        result = self.run_turn(respond)
+        self.assertEqual(result.status, "returned")
+        found = self.tool_results()["search"]
+        self.assertTrue(found["ok"])
+        self.assertNotEqual(found.get("status"), "tool_not_offered")
 
     def test_low_remaining_budget_narrows_before_round_eight(self):
         def respond(body, index):

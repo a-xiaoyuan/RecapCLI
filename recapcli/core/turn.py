@@ -110,6 +110,7 @@ class TurnRunner:
         self.read_rounds = 0        # 连续只读工具轮数；写入、命令或核对会清零
         self.edited = []
         self.edit_phase = False     # 可写且尚未写入时，读满期限后收窄工具
+        self.offered_tools = None   # 本次请求实际提供给模型的工具名；None 表示不限制
         self.notified_read_summary = False
         self.notified_edit_deadline = False
         self.end_checks = EndChecks(self)
@@ -320,16 +321,20 @@ class TurnRunner:
         self.trace("read_summary_reminder", rounds=self.read_rounds, notice=kind)
         self.ctx.on_event(event)
 
-    def _maybe_read_reminder(self, exploring):
-        """可写任务只在第 4 轮和第 8 轮各提醒一次；只读任务保持原来的重复提醒。"""
+    def _maybe_read_reminder(self, pushing_edits):
+        """推动写入的任务只在第 4 轮和第 8 轮各提醒一次；其余任务按只读处理，提醒先总结。
+
+        关掉写入阶段（例如理解题）时不再催促修改，第 8 轮照常转入总结。
+        """
         if self.read_rounds < READ_SUMMARY_AT:
             return
-        if self._push_edit_phase():
+        if pushing_edits:
             if self.read_rounds == READ_SUMMARY_AT and not self.notified_read_summary:
                 self.notified_read_summary = True
                 self._set_read_reminder(
                     (f"已连续读取 {self.read_rounds} 轮，尚未写入文件。"
-                     "请根据已读内容调用修改或验证工具完成用户要求的改动；"
+                     "如果用户要求修改，请根据已读内容调用修改或验证工具完成改动；"
+                     "如果用户只是提问、不需要修改，直接回答即可。"
                      "不要重复读取同一文件。信息不够时再读最必要的片段。"),
                     f"[提醒] 已连续读取 {self.read_rounds} 轮，请开始修改",
                     "edit")
@@ -347,32 +352,28 @@ class TurnRunner:
                     listed = "- （没有记录到已读行段）"
                 self._set_read_reminder(
                     (f"已连续读取 {self.read_rounds} 轮，仍未写入文件。已读内容：\n{listed}\n"
-                     "下一步请调用 edit_file 或 edit_files 完成用户要求的修改。"
-                     "如果确实无法修改，直接说明原因并结束，不要再搜索或继续翻页。"),
+                     "如果用户要求修改，下一步请调用 edit_file 或 edit_files 完成修改；"
+                     "如果用户只是提问，直接基于已读内容回答。"
+                     "确实无法修改时说明原因并结束，不要再搜索或继续翻页。"),
                     f"[提醒] 已连续读取 {self.read_rounds} 轮，请改为写入",
                     "edit_deadline")
             return
-        if exploring:
-            content = (f"已连续读取 {self.read_rounds} 轮，尚未写入文件。"
-                       "请根据已读内容调用修改或验证工具完成用户要求的改动；"
-                       "不要重复读取同一文件。信息不够时再读最必要的片段。")
-            event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请开始修改"
-        else:
-            content = (f"已连续读取 {self.read_rounds} 轮。先基于现有事实总结已确认内容、缺口和下一步；"
-                       "需要继续时只读最必要的文件，不要重复读取同一文件。")
-            event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请先总结再继续"
-        self._set_read_reminder(content, event, "read" if not exploring else "edit")
+        content = (f"已连续读取 {self.read_rounds} 轮。先基于现有事实总结已确认内容、缺口和下一步；"
+                   "需要继续时只读最必要的文件，不要重复读取同一文件。")
+        event = f"[提醒] 已连续读取 {self.read_rounds} 轮，请先总结再继续"
+        self._set_read_reminder(content, event, "read")
 
     def start_final_request(self, step):
         """判断这一步是否必须是收尾请求，并记录原因。"""
         ctx = self.ctx
         budget, planner = ctx.budget, ctx.planner
-        exploring = self.exploring_edit()
+        # 只有推动写入的任务才跳过第 8 轮强制总结；关掉写入阶段的任务按只读处理。
+        pushing_edits = self._push_edit_phase()
         if self._edit_phase_due():
             self.edit_phase = True
         elif not self._push_edit_phase():
             self.edit_phase = False
-        read_stop = ctx.mode == "react" and self.read_rounds >= READ_FORCE_SUMMARY_AT and not exploring
+        read_stop = ctx.mode == "react" and self.read_rounds >= READ_FORCE_SUMMARY_AT and not pushing_edits
         final_request = (bool(self.forced_reason) or read_stop or step == ctx.max_steps
                          or budget.should_summarize(ctx.request_reserve))
         if final_request and not self.forced_reason:
@@ -383,7 +384,7 @@ class TurnRunner:
                 else "执行时间即将用完")
             self.read_summary_forced = read_stop
         if not final_request and ctx.mode == "react" and self.reminder is None:
-            self._maybe_read_reminder(exploring)
+            self._maybe_read_reminder(pushing_edits)
         if planner is not None and final_request:
             planner.stop("模型请求或工具预算即将耗尽，保留本次请求汇总已有结果")
             self.plan_snapshot()
@@ -547,9 +548,13 @@ class TurnRunner:
         if isinstance(messages, TurnResult):
             return messages
         tools_allowed = ctx.tools_enabled and not final_request and (planner is None or planner.allows_tools)
+        tools = self.tools_for_request(final_request)
+        # 收窄工具只改列表不够：模型仍可能调用列表外的工具，执行前要按这份名单核对。
+        self.offered_tools = (None if tools is None
+                              else frozenset(item["function"]["name"] for item in tools))
         try:
             response = request_model(self, messages, planner.phase if planner else "react",
-                                     tools=self.tools_for_request(final_request), tools_allowed=tools_allowed,
+                                     tools=tools, tools_allowed=tools_allowed,
                                      history_messages=len(selected), final=final_request)
         except BudgetExhausted as error:
             if final_request:
