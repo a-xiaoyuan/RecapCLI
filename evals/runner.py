@@ -9,6 +9,7 @@
 """
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime
 import hashlib
@@ -171,6 +172,27 @@ def ensure_clean_interpreter(workspace):
 def _task_results(precheck):
     """验收结果不含工作区自带测试的附加记录。"""
     return {key: value for key, value in precheck.items() if not str(key).startswith("_")}
+
+
+@contextmanager
+def interpreter_activated():
+    """运行用例时模拟已激活评测解释器：它的目录排在 PATH 最前，模型执行裸 `python` 也用它。
+
+    不改写给模型的解释器路径，只让命令按 PATH 找到的 `python` 和系统提示里的是同一个。
+    """
+    directory = str(Path(sys.executable).parent)
+    saved = {key: os.environ.get(key) for key in ("PATH", "VIRTUAL_ENV")}
+    os.environ["PATH"] = directory + os.pathsep + (saved["PATH"] or "")
+    if sys.prefix != sys.base_prefix:
+        os.environ["VIRTUAL_ENV"] = sys.prefix
+    try:
+        yield directory
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def run_workspace_tests(workspace):
@@ -401,12 +423,14 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
     approvals = []
     started = time.monotonic()
     answer, error = "", None
+    command_path = None
     try:
-        answer = run_turn(client, model, workspace, store, log, session, prompt,
-                          max_steps=manifest["max_model_requests"], memory_enabled=False, limits=limits,
-                          capabilities=tuple(manifest["capabilities"]), mode=manifest["mode"],
-                          auto_compact=manifest["auto_compact"], approver=workspace_approver(workspace, approvals),
-                          acceptance=agent_acceptance, allow_edit_phase=case["kind"] != "review")
+        with interpreter_activated() as command_path:
+            answer = run_turn(client, model, workspace, store, log, session, prompt,
+                              max_steps=manifest["max_model_requests"], memory_enabled=False, limits=limits,
+                              capabilities=tuple(manifest["capabilities"]), mode=manifest["mode"],
+                              auto_compact=manifest["auto_compact"], approver=workspace_approver(workspace, approvals),
+                              acceptance=agent_acceptance, allow_edit_phase=case["kind"] != "review")
         store.save(session)
     except Exception as exception:
         message = (api_error_message(exception, model) if type(exception).__module__.startswith("openai")
@@ -432,7 +456,8 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
               "seconds": round(elapsed, 3), "model_requests": task["model_requests"] if task else None,
               "tool_calls": sum(event["kind"] == "tool_start" for event in events),
               **token_usage(task),
-              "approvals": approvals, "git_status": status, "has_stream_output": log.has_stream_output}
+              "approvals": approvals, "git_status": status, "has_stream_output": log.has_stream_output,
+              "command_path_first": command_path}
     result["invalid_reason"] = invalid_run_reason(result, task)
     if task and (requirements := task.get("requirement_acceptance")):
         result["requirement_acceptance"] = {key: requirements[key] for key in ("passed", "failed", "not_run", "total")}

@@ -6,19 +6,26 @@ import subprocess
 import sys
 
 
-_PIPE_GATE = """import os, subprocess, sys
+# Windows 的 CreateProcess 会先在门进程自己的目录里找程序。门进程是 RecapCLI 的解释器，
+# 不先按 PATH 解析，裸 `python` 就会落到它的基础解释器，而不是用户 PATH 里的那个。
+_RESOLVE = """argv = sys.argv[1:]
+found = shutil.which(argv[0])
+if found:
+    argv[0] = found
+"""
+_PIPE_GATE = """import os, shutil, subprocess, sys
 if os.read(sys.stdin.fileno(), 1) != b'1':
     raise SystemExit(125)
-try:
-    raise SystemExit(subprocess.call(sys.argv[1:]))
+""" + _RESOLVE + """try:
+    raise SystemExit(subprocess.call(argv))
 except OSError as error:
     print(str(error), file=sys.stderr)
     raise SystemExit(127)
 """
-_PTY_GATE = """import subprocess, sys
+_PTY_GATE = """import shutil, subprocess, sys
 sys.stdin.readline()
-try:
-    raise SystemExit(subprocess.call(sys.argv[1:]))
+""" + _RESOLVE + """try:
+    raise SystemExit(subprocess.call(argv))
 except OSError as error:
     print(str(error), file=sys.stderr)
     raise SystemExit(127)

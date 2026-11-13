@@ -30,6 +30,8 @@ uv sync --no-install-project
 PYTHONPATH="$PWD" .venv/bin/python -X utf8 evals/runner.py prepare
 ```
 
+运行每个用例时，评测解释器所在目录会临时排到 PATH 最前，相当于用户已激活这个虚拟环境：模型直接执行 `python` 时，拿到的也是这个装好依赖的解释器。结果的 `command_path_first` 记录了这个目录。2026-11-13 之前的运行没有这一步，模型执行裸 `python` 会落到没有依赖的解释器，验证命令因缺少模块失败，比较时要注意。
+
 `prepare` 发现当前解释器已经安装了 recapcli、而目标工作区也是这个项目时，会直接拒绝。它还会用同一解释器在单独的 `precheck-selftest` 里跑一遍目标仓库自带测试，把修改前就失败的用例记进 `precheck.json` 的 `_workspace_tests`。报告会注明这些失败不是本次模型改动引入的。验收预检仍用原来的 `precheck-workspace`，两份互不覆盖。
 
 ### 扩展套件

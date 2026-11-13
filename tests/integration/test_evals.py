@@ -3,6 +3,7 @@
 from contextlib import redirect_stderr
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -305,6 +306,24 @@ class ReportTests(EvalCase):
             self.run_case(run_root, manifest, "fix-1", [])
             self.run_case(run_root, manifest, "read-1", [])
         self.assertEqual(seen, [True, False])
+
+    def test_cases_run_with_the_eval_interpreter_first_on_path(self):
+        """模型执行裸 `python` 时要拿到评测解释器；运行结束后 PATH 恢复原样。"""
+        self.spec["repetitions"] = 1
+        run_root, manifest = self.prepare()
+        before = os.environ.get("PATH")
+        seen = []
+
+        def fake_run_turn(*_args, **_kwargs):
+            seen.append(os.environ["PATH"].split(os.pathsep)[0])
+            return "说明"
+
+        with patch.object(runner, "run_turn", fake_run_turn):
+            result = self.run_case(run_root, manifest, "read-1", [])
+        expected = str(Path(sys.executable).parent)
+        self.assertEqual(seen, [expected])
+        self.assertEqual(result["command_path_first"], expected)
+        self.assertEqual(os.environ.get("PATH"), before)
 
     def test_review_task_stays_pending_until_reviewed(self):
         run_root, _ = self.finished_run()

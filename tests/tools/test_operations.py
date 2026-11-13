@@ -379,6 +379,22 @@ class OperationTests(unittest.TestCase):
         record = self.workspace / ".recapcli/commands" / f"{result['record_id']}.json"
         self.assertEqual(json.loads(record.read_text(encoding="utf-8"))["status"], "finished")
 
+    def test_bare_command_name_follows_path_not_the_gate_interpreter(self):
+        """裸 `python` 要按 PATH 找，和用户终端一致；Windows 上不能落到 RecapCLI 解释器自己的目录。"""
+        shims = Path(tempfile.mkdtemp(dir=self.workspace))
+        if os.name == "nt":
+            (shims / "python.cmd").write_text("@echo PATH-PYTHON\r\n", encoding="ascii")
+        else:
+            shim = shims / "python"
+            shim.write_text("#!/bin/sh\necho PATH-PYTHON\n", encoding="ascii")
+            shim.chmod(0o755)
+        path = str(shims) + os.pathsep + os.environ.get("PATH", "")
+        with patch.dict(os.environ, {"PATH": path}):
+            result = self.call("run_command", argv=["python", "--version"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["returncode"], 0, result)
+        self.assertIn("PATH-PYTHON", result["output"])
+
     def test_command_nonzero_and_stderr_are_reported(self):
         result = self.call("run_command", argv=[sys.executable, "-c", "import sys; print('failure', file=sys.stderr); sys.exit(7)"])
         self.assertTrue(result["ok"])
