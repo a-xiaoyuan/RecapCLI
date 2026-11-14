@@ -1,7 +1,8 @@
 """一轮任务的主循环：组织上下文、请求模型、分发回复，并在预算用完时收尾。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
+import re
 from typing import Any, Callable
 
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
@@ -40,6 +41,9 @@ TOOL_TEXT_CORRECTION = ("上一条输出是无效的工具调用文本。现在�
 FINAL_SUMMARY_INSTRUCTION = ("现在停止读取，不要调用任何工具。请直接基于已读内容和已有工具结果，"
                              "用自然语言回答用户最初的问题。")
 PLANNER_FINAL_INSTRUCTION = "仅返回要求的计划 JSON，不调用工具，不执行计划。"
+# 回答里声称已经改好的说法；可写任务没写过文件时用来提示“改动并未写入”。
+CHANGE_CLAIM = re.compile(r"已(?:经)?(?:完成|修改|实现|修复|更新|添加|增加|改动|新增)|改动如下|修改如下")
+UNBACKED_CLAIM_NOTE = "> [核对] 本轮没有通过编辑工具修改任何文件，上面描述的改动并未写入工作区。"
 
 
 def model_failure_reason(error):
@@ -111,6 +115,7 @@ class TurnRunner:
         self.edited = []
         self.edit_phase = False     # 可写且尚未写入时，读满期限后收窄工具
         self.offered_tools = None   # 本次请求实际提供给模型的工具名；None 表示不限制
+        self.rejected_rounds = 0    # 连续整批调用本轮未提供工具的次数
         self.notified_read_summary = False
         self.notified_edit_deadline = False
         self.end_checks = EndChecks(self)
@@ -574,7 +579,18 @@ class TurnRunner:
             result = self._run_turn()
         if checkpoint.get("saved"):
             self.trace("checkpoint", id=checkpoint["id"], files=sorted(checkpoint["files"]))
-        return result
+        return self.mark_unbacked_claim(result)
+
+    def mark_unbacked_claim(self, result):
+        """可写任务的回答声称已改动，但本轮没有用编辑工具写过文件：如实标注，不改终态。"""
+        ctx = self.ctx
+        if (ctx.mode != "react" or ctx.role is not None or ctx.planner is not None or not self._push_edit_phase()
+                or not result.answer or not CHANGE_CLAIM.search(result.answer)):
+            return result
+        self.trace("unbacked_change_claim", status=result.status)
+        ctx.on_event("[核对] 回答声称已修改，但本轮没有通过编辑工具写入文件")
+        return replace(result, answer=result.answer.rstrip() + "\n\n" + UNBACKED_CLAIM_NOTE,
+                       stop_reason=result.stop_reason + "；回答声称已修改，但本轮未通过编辑工具写入文件")
 
     def _run_turn(self):
         ctx = self.ctx

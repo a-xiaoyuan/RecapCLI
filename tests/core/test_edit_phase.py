@@ -222,3 +222,65 @@ class EditPhaseTests(unittest.TestCase):
         self.assertNotIn("search_text", names)
         self.assertNotEqual(self.requests[2].get("tool_choice"), "required")
         self.assertNotEqual(self.requests[2].get("tool_choice"), "none")
+
+    # 重复调用被拒的工具要及时收尾；没写文件却声称改好了，要如实标注。
+
+    def test_repeated_rejected_calls_switch_to_final_summary(self):
+        def respond(body, index):
+            if body.get("tool_choice") == "none":
+                return deepseek("还没有修改。")
+            if index > 8:
+                return deepseek(None, [call(f"c{index}", "search_text", {"query": "value"})])
+            return deepseek(None, [call(f"c{index}", "read_file", {"path": "app.py"})])
+
+        result = self.run_turn(respond)
+        self.assertEqual(len(self.requests), 12)
+        self.assertEqual(self.requests[-1].get("tool_choice"), "none")
+        self.assertEqual(result.status, "incomplete")
+        self.assertIn("连续 3 次调用本轮未提供的工具", result.stop_reason)
+        self.assertIn("[收尾] 模型连续 3 次调用本轮未提供的工具，转入最终汇总", self.events)
+
+    def test_one_rejected_round_does_not_stop_the_turn(self):
+        def respond(body, index):
+            if index == 9:
+                return deepseek(None, [call("s", "search_text", {"query": "value"})])
+            if index == 10:
+                return deepseek(None, [call("e", "edit_file", {"path": "app.py", "old_text": "value = 1",
+                                                               "new_text": "value = 2"})])
+            if index > 10:
+                return deepseek("已修改 app.py。")
+            return deepseek(None, [call(f"c{index}", "read_file", {"path": "app.py"})])
+
+        result = self.run_turn(respond)
+        self.assertEqual(result.status, "returned")
+        self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "value = 2\n")
+        self.assertNotIn("[核对]", result.answer)
+        self.assertNotIn("未通过编辑工具写入", result.stop_reason)
+
+    def test_claimed_changes_without_writes_are_flagged(self):
+        def respond(body, index):
+            if index == 1:
+                return deepseek(None, [call("r", "read_file", {"path": "app.py"})])
+            return deepseek("已完成修改，改动如下：把 value 改成了 2。")
+
+        result = self.run_turn(respond)
+        self.assertEqual(result.status, "returned")
+        self.assertTrue(result.answer.startswith("已完成修改"))
+        self.assertTrue(result.answer.endswith("上面描述的改动并未写入工作区。"))
+        self.assertIn("回答声称已修改，但本轮未通过编辑工具写入文件", result.stop_reason)
+        self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "value = 1\n")
+
+    def test_plain_answers_and_understanding_tasks_are_not_flagged(self):
+        def respond(body, index):
+            return deepseek("value 当前是 1，不需要修改。")
+
+        self.assertNotIn("[核对]", self.run_turn(respond).answer)
+        self.requests.clear()
+
+        def claim(body, index):
+            return deepseek("已完成分析，链路如下。")
+
+        result = self.run_turn(claim, allow_edit_phase=False)
+        self.assertNotIn("[核对]", result.answer)
+        result = self.run_turn(claim, read_only=True)
+        self.assertNotIn("[核对]", result.answer)

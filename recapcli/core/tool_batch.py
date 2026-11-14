@@ -15,6 +15,7 @@ READ_ONLY_TOOLS = PARALLEL_READ_TOOLS | {
     "load_skill", "todo_write", "command_status",
 }
 MAX_PARALLEL_READS = 4
+MAX_REJECTED_ROUNDS = 3   # 连续这么多批调用都被拒（本轮未提供），就转入收尾
 
 
 def _can_parallel_reads(tool_calls):
@@ -243,3 +244,17 @@ class ToolBatch:
             run.read_rounds += 1
         else:
             run.read_rounds = 0
+        self.track_rejections()
+
+    def track_rejections(self):
+        """整批调用都是本轮未提供的工具时计一次；连续达到上限就转入收尾，不再空耗请求。"""
+        run = self.run
+        if all(not self.offered(call) for call in self.calls):
+            run.rejected_rounds += 1
+        else:
+            run.rejected_rounds = 0
+        if run.rejected_rounds >= MAX_REJECTED_ROUNDS and not run.forced_reason:
+            run.forced_reason = f"模型连续 {run.rejected_rounds} 次调用本轮未提供的工具"
+            run.trace("rejected_tool_stop", rounds=run.rejected_rounds,
+                      tools=sorted({call.function.name for call in self.calls}))
+            self.ctx.on_event(f"[收尾] {run.forced_reason}，转入最终汇总")
