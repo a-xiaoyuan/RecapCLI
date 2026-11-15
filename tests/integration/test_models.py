@@ -442,7 +442,7 @@ class ResponsesRuntimeTests(ModelTestCase):
             self.assertEqual([item["call_id"] for item in outputs], [f"call-{role}"])
             self.assertIn("multi", outputs[0]["output"])
         aggregate = next(item["body"] for item in self.requests if item["role"] == "aggregate")
-        self.assertEqual(aggregate["tool_choice"], "none")
+        self.assertNotIn("tool_choice", aggregate)
         self.assertNotIn("tools", aggregate)
         self.assertNotIn("opaque-", json.dumps(aggregate))
         self.assertEqual([item["role"] for item in self.session["messages"]], ["user", "assistant"])

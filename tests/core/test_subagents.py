@@ -174,7 +174,7 @@ class SubagentTests(unittest.TestCase):
         self.assertEqual(len({item["action_id"] for item in facts}), 2)
         self.assertEqual(sorted(data["index"] for kind, data in self.traces if kind == "model_request"), list(range(1, 6)))
         aggregate = next(data for role, data in self.requests if role == "aggregate")
-        self.assertEqual(aggregate["tool_choice"], "none")
+        self.assertNotIn("tool_choice", aggregate)
         self.assertNotIn("tools", aggregate)
         report = next(message["content"] for message in reversed(aggregate["messages"]) if message["role"] == "user")
         self.assertIn("analysis-only", report)

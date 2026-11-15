@@ -326,7 +326,8 @@ class PlanningTests(unittest.TestCase):
         self.assertTrue(result.answer.startswith("计划状态：未完成"))
         self.assertIn("0/2", result.answer)
         self.assertIn("预算", result.answer)
-        self.assertEqual(self.requests[-1]["tool_choice"], "none")
+        self.assertNotIn("tools", self.requests[-1])
+        self.assertNotIn("tool_choice", self.requests[-1])
         self.assertIn("当前阶段：汇总", self.requests[-1]["messages"][0]["content"])
 
     def test_tool_count_budget_does_not_reset_between_steps(self):

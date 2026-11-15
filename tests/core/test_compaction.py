@@ -83,7 +83,7 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual(self.session["messages"], original)
         self.assertEqual(self.session["summary"]["covered_messages"], 4)
         self.assertNotIn("tools", self.requests[0])
-        self.assertEqual(self.requests[0]["tool_choice"], "none")
+        self.assertNotIn("tool_choice", self.requests[0])
         self.store.save(self.session)
         self.session = self.store.load(self.session["id"])
         self.assertEqual(self.session["messages"], original)

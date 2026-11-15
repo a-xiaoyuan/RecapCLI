@@ -242,9 +242,12 @@ def complete(client, protocol, *, model, messages, tools=None, tools_allowed=Tru
     if protocol == "chat_completions":
         converted = _chat_messages(messages, origin)
         _check_context(converted, context_tokens)
-        options = {} if tools_allowed else {"tool_choice": "none"}
+        # 没带工具时不发 tool_choice：部分服务（如百炼）会因“有 tool_choice 没有 tools”直接拒绝请求。
+        options = {}
         if tools:
             options["tools"] = deepcopy(tools)
+            if not tools_allowed:
+                options["tool_choice"] = "none"
         if on_delta is not None:
             response = chat_stream(client, model=model, messages=converted, options=options, timeout=timeout,
                                    on_delta=on_delta, check=check)
@@ -263,9 +266,10 @@ def complete(client, protocol, *, model, messages, tools=None, tools_allowed=Tru
         response_tools.append({"type": "function", "name": spec["name"],
                                "description": spec.get("description", ""),
                                "parameters": deepcopy(spec["parameters"]), "strict": False})
-    options = {"tool_choice": "auto" if tools_allowed else "none"}
+    options = {}
     if response_tools:
         options["tools"] = response_tools
+        options["tool_choice"] = "auto" if tools_allowed else "none"
     converted = _responses_input(messages, origin)
     _check_context(converted, context_tokens)
     if on_delta is not None:

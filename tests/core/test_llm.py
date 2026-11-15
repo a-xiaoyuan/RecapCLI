@@ -201,6 +201,23 @@ class LLMTests(unittest.TestCase):
         self.assertIsNone(result.usage)
         self.assertNotIn("tools", requests[0][1])
 
+    def test_tool_choice_is_only_sent_with_tools(self):
+        """有 tool_choice 却没有 tools 会被百炼、OpenAI 等服务拒绝；不带工具的请求两样都不发。"""
+        chat_reply = {"id": "x", "object": "chat.completion", "created": 1, "model": "model-test",
+                      "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "好"}}]}
+        sdk, requests = self.client([chat_reply, chat_reply])
+        prompt = [{"role": "user", "content": "你好"}]
+        complete(sdk, "chat_completions", model="model-test", messages=prompt, tools=None, tools_allowed=False, origin="chat")
+        complete(sdk, "chat_completions", model="model-test", messages=prompt, tools=TOOLS, tools_allowed=False, origin="chat")
+        self.assertNotIn("tool_choice", requests[0][1])
+        self.assertNotIn("tools", requests[0][1])
+        self.assertEqual(requests[1][1]["tool_choice"], "none")
+        sdk, requests = self.client([response_items(message()), response_items(message())])
+        complete(sdk, "responses", model="model-test", messages=prompt, tools=None, tools_allowed=False, origin="one")
+        complete(sdk, "responses", model="model-test", messages=prompt, tools=TOOLS, tools_allowed=True, origin="one")
+        self.assertNotIn("tool_choice", requests[0][1])
+        self.assertEqual(requests[1][1]["tool_choice"], "auto")
+
     def test_summary_projection_and_state_validation(self):
         sdk, _ = self.client([response_items(reasoning(), message())])
         result = complete(sdk, "responses", model="model-test", messages=[{"role": "user", "content": "读"}], origin="one")
