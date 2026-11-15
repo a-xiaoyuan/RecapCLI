@@ -12,7 +12,7 @@ from openai import OpenAI
 from recapcli.application.commands import handle_command
 from recapcli.application.help import help_text
 from recapcli.core.learning import MAX_DIGEST_CHARS, failure_digest, parse_lesson
-from recapcli.storage.session import SessionStore
+from recapcli.storage.session import SessionStore, content_version
 from recapcli.storage.tasks import TaskStore
 from recapcli.ui.terminal_ui import TerminalUI
 
@@ -125,6 +125,22 @@ class LearnCommandTests(unittest.TestCase):
 
     def test_help_lists_memory_learn(self):
         self.assertIn("/memory learn", help_text("memory"))
+
+    def test_evaluation_is_bound_to_the_experience_text_version(self):
+        item = self.store.add_memory("改规则摘要时写出实际加载的文件", kind="experience", status="candidate")
+        version = content_version(item)
+        accepted = self.store.set_memory_status(item["id"], "active")
+        self.assertEqual(content_version(accepted), version)
+        evaluation = {"verdict": "passed", "content_version": version}
+        stored = self.store.record_memory_evaluation(item["id"], evaluation)
+        self.assertEqual(stored["evaluation"], evaluation)
+        self.assertEqual(content_version(stored), version)
+        self.store.update_memory(item["id"], "改过的正文")
+        with self.assertRaisesRegex(ValueError, "被修改过"):
+            self.store.record_memory_evaluation(item["id"], evaluation)
+        fact = self.store.add_memory("普通事实")
+        with self.assertRaisesRegex(ValueError, "只有经验"):
+            self.store.record_memory_evaluation(fact["id"], {"content_version": content_version(fact)})
 
 
 if __name__ == "__main__":

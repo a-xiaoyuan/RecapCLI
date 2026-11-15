@@ -89,6 +89,25 @@ python -X utf8 evals/runner.py report --run-dir EXPERIMENT_DIR --compare CONTROL
 
 配置文件在运行前重新校验指纹。报告分别列出运行时需求验收、独立评测得分和请求数。用 v3 得分观察 `bugfix` 在这组反馈下有没有改善。公开检查和评分覆盖同一产品需求，证据限于本任务和这次配置。
 
+### 经验对照（自进化门禁）
+
+检验一条经验候选（`/memory learn` 生成，或手工写的 experience）是否真的有用。同一个运行目录里成对准备**对照组**和**经验组**，两组都开启长期记忆检索，唯一区别是经验组的工作区记忆里预先写入这条经验。经验对照只用自动验收的任务，不能同时开启运行时需求验收。
+
+```sh
+python -X utf8 evals/runner.py prepare --task bugfix --experience 经验ID
+python -X utf8 evals/runner.py run --real-model --run-dir RUN_DIR
+python -X utf8 evals/runner.py gate --run-dir RUN_DIR
+```
+
+`--experience-workspace` 指定经验所在的工作区，默认是本仓库。用例按 `bugfix-1`、`bugfix-1-exp`、`bugfix-2`、`bugfix-2-exp` 交替排列。准备时会记下经验的正文版本和门槛：
+
+- 两组都全部有效，无效运行先重跑；
+- 经验组做对的次数不少于对照组；
+- 经验组的验收项通过总数比对照组至少多 1 项；
+- 经验组每一例都实际注入了这条经验（检索没选中就不算数）。
+
+`gate` 只读已有结果、不调用模型。结论写进运行目录的 `gate.json`，并写回那条经验的 `evaluation` 字段；经验正文在准备后改过时拒绝写回。`--no-write-back` 只写 `gate.json`。通过门槛不会自动启用经验，是否接纳仍由用户决定。每组样本很少，结论只说明这条经验在这几道题上的表现。
+
 `recheck --run-dir 路径` 可以指定原运行目录；默认使用最近一次运行。它核对保存的改动与工作区一致后，只重新运行外部验收，结果另存到该运行目录的 `rechecks/`，不会覆盖原报告或调用模型，也不会改变原运行的引擎终态。报告记录新旧验收脚本指纹，验收变更后的分数不能直接与旧分数比较。
 
 ## 怎么计分

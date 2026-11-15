@@ -37,7 +37,7 @@ from recapcli.config import load_config  # noqa: E402
 from recapcli.core.acceptance import load_acceptance  # noqa: E402
 from recapcli.core.agent import AgentLimits  # noqa: E402
 from recapcli.llm.client import ModelClient, api_error_message  # noqa: E402
-from recapcli.storage.session import SessionStore  # noqa: E402
+from recapcli.storage.session import SessionStore, content_version  # noqa: E402
 from recapcli.storage.tasks import TaskStore  # noqa: E402
 from recapcli.tools.commands import close_commands  # noqa: E402
 
@@ -52,6 +52,13 @@ LEGACY_EVALUATOR = EVALS / "baselines" / "acceptance-v1.py"
 ACCEPTANCE_TIMEOUT_SECONDS = 120
 WORKSPACE_TEST_TIMEOUT_SECONDS = 600
 WORKSPACE_TEST_KEY = "_workspace_tests"
+EXPERIENCE_SUFFIX = "-exp"
+# 经验对照的门槛，准备时写进运行清单，跑完后不能再改。
+EXPERIENCE_GATE = {
+    "rule": "两组都全部有效；经验组做对的次数不少于对照组，且验收项通过总数至少多 1 项；经验组每例都实际注入了这条经验",
+    "min_task_ok_delta": 0,
+    "min_checks_delta": 1,
+}
 BOUNDARY = "这是少量固定任务的重复运行，只能说明这组任务上的变化，不能外推成通用成功率。"
 _FAILURE_LINE = re.compile(r"^(?:FAIL|ERROR): (?:.*\((?P<ident>[^)]+)\)|(?P<name>.+))$", re.MULTILINE)
 _RAN_LINE = re.compile(r"^Ran (\d+) test", re.MULTILINE)
@@ -270,9 +277,36 @@ def token_usage(task):
             "usage_missing_requests": max(0, requests - len(known))}
 
 
-def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=None, model=None, agent_acceptance_path=None, suite="m2"):
-    """准备每一例的工作区，并在调用模型前确认验收确实不通过。"""
+def load_experience(workspace, item_id):
+    """从指定工作区的长期记忆里取出一条经验，记下正文版本，供对照组和经验组使用。"""
+    store = SessionStore(Path(workspace).resolve())
+    item = next((entry for entry in store.memory_items() if entry["id"] == item_id), None)
+    if item is None:
+        raise ValueError(f"{store.workspace} 的长期记忆里没有 {item_id}")
+    if item.get("kind") != "experience" or item.get("status") not in {"candidate", "active"}:
+        raise ValueError("只能对照状态为 candidate 或 active 的经验")
+    return {"id": item["id"], "text": item["text"], "status": item["status"],
+            "content_version": content_version(item), "source_workspace": str(store.workspace)}
+
+
+def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=None, model=None, agent_acceptance_path=None, suite="m2",
+            experience=None, task_ids=None):
+    """准备每一例的工作区，并在调用模型前确认验收确实不通过。
+
+    带 experience 时同一任务成对准备对照组和经验组，只差经验组的长期记忆里多这一条经验。
+    """
     evaluator = evaluator or suite_evaluator(suite)
+    tasks = [task for task in spec["tasks"] if not task_ids or task["id"] in task_ids]
+    if task_ids and {task["id"] for task in tasks} != set(task_ids):
+        raise ValueError("没有这些任务：" + "、".join(sorted(set(task_ids) - {task["id"] for task in tasks})))
+    if experience is not None:
+        # 理解题要人工核对，门槛没法在跑完后直接判定，所以经验对照只用自动验收的任务。
+        tasks = [task for task in tasks if task["kind"] == "acceptance"]
+        if not tasks:
+            raise ValueError("经验对照需要至少一道自动验收的任务")
+        if agent_acceptance_path is not None:
+            raise ValueError("经验对照不能同时开启运行时需求验收")
+    spec = {**spec, "tasks": tasks}
     agent_acceptance = None
     if agent_acceptance_path is not None:
         path = Path(agent_acceptance_path).resolve()
@@ -285,7 +319,7 @@ def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=None, model=None, agent_acc
                 "engine_commit": git(repo, "rev-parse", "HEAD").decode().strip(),
                 "engine_status": git(repo, "status", "--porcelain=v1").decode(),
                 "target_commit": spec["target_commit"], "model": model or {},
-                "mode": "react", "capabilities": ["read", "write", "exec"], "memory_enabled": False,
+                "mode": "react", "capabilities": ["read", "write", "exec"], "memory_enabled": experience is not None,
                 "auto_compact": False, "max_model_requests": spec["max_model_requests"],
                 "limits": asdict(AgentLimits(**spec["limits"])), "acceptance_sha256": evaluator_hash(evaluator),
                 "tasks": spec["tasks"], "cases": [], "target_fingerprint": None}
@@ -293,17 +327,26 @@ def prepare(spec, *, repo=REPO, runs=RUNS, evaluator=None, model=None, agent_acc
         manifest["suite"] = suite
     if agent_acceptance is not None:
         manifest["agent_acceptance"] = agent_acceptance
+    if experience is not None:
+        manifest["experience"] = experience
+        manifest["gate"] = EXPERIENCE_GATE
+    # 对照组和经验组交替排列，减少服务状态随时间变化带来的偏差。
+    arms = ("control", "experience") if experience is not None else (None,)
     for task in spec["tasks"]:
         for repeat in range(1, spec["repetitions"] + 1):
-            identity = f"{task['id']}-{repeat}"
-            workspace = run_root / "workspaces" / identity
-            create_workspace(repo, spec["target_commit"], workspace)
-            current = fingerprint(workspace)
-            manifest["target_fingerprint"] = manifest["target_fingerprint"] or current
-            if current != manifest["target_fingerprint"]:
-                raise RuntimeError("各例的初始工作区不一致")
-            manifest["cases"].append({"id": identity, "task": task["id"], "kind": task["kind"], "repeat": repeat,
-                                      "workspace": str(workspace)})
+            for arm in arms:
+                identity = f"{task['id']}-{repeat}" + (EXPERIENCE_SUFFIX if arm == "experience" else "")
+                workspace = run_root / "workspaces" / identity
+                create_workspace(repo, spec["target_commit"], workspace)
+                current = fingerprint(workspace)
+                manifest["target_fingerprint"] = manifest["target_fingerprint"] or current
+                if current != manifest["target_fingerprint"]:
+                    raise RuntimeError("各例的初始工作区不一致")
+                case = {"id": identity, "task": task["id"], "kind": task["kind"], "repeat": repeat,
+                        "workspace": str(workspace)}
+                if arm is not None:
+                    case["arm"] = arm
+                manifest["cases"].append(case)
     write_json(run_root / "manifest.json", manifest)
     # 预检用单独的工作区：验收会留下文件，不能影响之后真实用例的得分。
     probe = run_root / "precheck-workspace"
@@ -418,6 +461,12 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
     prompt = next(item["prompt"] for item in manifest["tasks"] if item["id"] == case["task"])
     limits = AgentLimits(**manifest["limits"])
     store = SessionStore(workspace)
+    seeded = None
+    if case.get("arm") == "experience":
+        experience = manifest["experience"]
+        seeded = store.add_memory(experience["text"], kind="experience", status="active", source={"type": "user"})
+        if content_version(seeded) != experience["content_version"]:
+            raise RuntimeError(f"{identity}：写入的经验和准备时的版本不一致")
     session = store.new_session(model)
     log = RunLog(out / "agent.log")
     approvals = []
@@ -427,7 +476,8 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
     try:
         with interpreter_activated() as command_path:
             answer = run_turn(client, model, workspace, store, log, session, prompt,
-                              max_steps=manifest["max_model_requests"], memory_enabled=False, limits=limits,
+                              max_steps=manifest["max_model_requests"],
+                              memory_enabled=manifest.get("memory_enabled", False), limits=limits,
                               capabilities=tuple(manifest["capabilities"]), mode=manifest["mode"],
                               auto_compact=manifest["auto_compact"], approver=workspace_approver(workspace, approvals),
                               acceptance=agent_acceptance, allow_edit_phase=case["kind"] != "review")
@@ -458,6 +508,10 @@ def run_case(run_root, manifest, case, client, model, *, evaluator=EVALUATOR):
               **token_usage(task),
               "approvals": approvals, "git_status": status, "has_stream_output": log.has_stream_output,
               "command_path_first": command_path}
+    if "arm" in case:
+        memory_ids = next((event["data"].get("memory_ids", []) for event in events if event["kind"] == "context"), [])
+        result.update(arm=case["arm"], memory_ids=memory_ids,
+                      experience_injected=None if seeded is None else seeded["id"] in memory_ids)
     result["invalid_reason"] = invalid_run_reason(result, task)
     if task and (requirements := task.get("requirement_acceptance")):
         result["requirement_acceptance"] = {key: requirements[key] for key in ("passed", "failed", "not_run", "total")}
@@ -637,6 +691,64 @@ def report(run_root, *, baseline_path=BASELINE, compare=None):
     return text
 
 
+def _arm_totals(scored, raw):
+    return {"runs": len(scored),
+            "task_ok": sum(item["task_ok"] is True for item in scored),
+            "checks_passed": sum(item["checks_passed"] or 0 for item in scored),
+            "checks_total": sum(item["checks_total"] or 0 for item in scored),
+            "engine_ok": sum(bool(item["engine_ok"]) for item in scored),
+            "known_total_tokens": sum(item["known_total_tokens"] for item in scored),
+            "injected": sum(item.get("experience_injected") is True for item in raw)}
+
+
+def gate(run_root, *, write_back=True):
+    """按准备时定好的门槛比较对照组和经验组；结论写进 gate.json，并写回那条经验。不调用模型。"""
+    run_root = Path(run_root)
+    manifest = read_json(run_root / "manifest.json")
+    experience, rule = manifest.get("experience"), manifest.get("gate")
+    if not experience or not rule:
+        raise ValueError("这个运行目录不是经验对照，准备时需要 --experience")
+    raw, missing = {}, []
+    for case in manifest["cases"]:
+        path = run_root / "results" / case["id"] / "result.json"
+        if path.exists():
+            raw[case["id"]] = read_result(path)
+        else:
+            missing.append(case["id"])
+    if missing:
+        raise ValueError("还有用例没有运行：" + "、".join(missing))
+    scored = {item["id"]: item for item in _scored_results(run_root, manifest)}
+    invalid = [identity for identity, item in scored.items() if item.get("invalid_reason")]
+    if invalid:
+        raise ValueError("这些用例无效，需重跑后再判定：" + "、".join(invalid))
+    arms = {}
+    for arm in ("control", "experience"):
+        ids = [case["id"] for case in manifest["cases"] if case.get("arm") == arm]
+        arms[arm] = _arm_totals([scored[identity] for identity in ids], [raw[identity] for identity in ids])
+    control, treated = arms["control"], arms["experience"]
+    reasons = []
+    if treated["injected"] < treated["runs"]:
+        reasons.append(f"经验组只有 {treated['injected']}/{treated['runs']} 例实际注入了这条经验")
+    if treated["task_ok"] - control["task_ok"] < rule["min_task_ok_delta"]:
+        reasons.append(f"做对次数 {treated['task_ok']} 少于对照组 {control['task_ok']}")
+    if treated["checks_passed"] - control["checks_passed"] < rule["min_checks_delta"]:
+        reasons.append(f"验收项通过 {treated['checks_passed']} 项，没有比对照组的 {control['checks_passed']} 项"
+                       f"至少多 {rule['min_checks_delta']} 项")
+    evaluation = {"verdict": "failed" if reasons else "passed", "reasons": reasons, "rule": rule["rule"],
+                  "content_version": experience["content_version"], "run_dir": str(run_root),
+                  "engine_commit": manifest["engine_commit"], "model": manifest["model"].get("model"),
+                  "tasks": [task["id"] for task in manifest["tasks"]], "control": control, "experience": treated,
+                  "evaluated_at": datetime.now().astimezone().isoformat()}
+    write_json(run_root / "gate.json", evaluation)
+    if write_back:
+        SessionStore(Path(experience["source_workspace"])).record_memory_evaluation(experience["id"], evaluation)
+    verdict = "通过" if not reasons else "不通过：" + "；".join(reasons)
+    return (f"经验 {experience['id']} 对照结论：{verdict}\n"
+            f"对照组 做对 {control['task_ok']}/{control['runs']}，验收项 {control['checks_passed']}/{control['checks_total']}\n"
+            f"经验组 做对 {treated['task_ok']}/{treated['runs']}，验收项 {treated['checks_passed']}/{treated['checks_total']}，"
+            f"注入 {treated['injected']}/{treated['runs']}\n门槛：{rule['rule']}")
+
+
 def recheck(run_root, *, evaluator=None, baseline_path=BASELINE):
     """用新版验收离线重评已有产物；单独存放结果，不覆写原始运行。"""
     run_root = Path(run_root).resolve()
@@ -738,6 +850,10 @@ def build_parser():
     prepare_parser = actions.add_parser("prepare", help="准备工作区，不调用模型")
     prepare_parser.add_argument("--suite", choices=("m2", "expanded"), default="m2", help="选择原版或扩展套件")
     prepare_parser.add_argument("--agent-accept", type=Path, help="实验组的运行时需求验收 JSON")
+    prepare_parser.add_argument("--task", action="append", dest="tasks", help="只准备这些任务，可重复，如 --task bugfix")
+    prepare_parser.add_argument("--experience", help="经验对照：长期记忆里的经验 ID，成对准备对照组和经验组")
+    prepare_parser.add_argument("--experience-workspace", type=Path, default=REPO,
+                                help="经验所在的工作区，默认是本仓库")
     run = actions.add_parser("run", help="调用真实模型运行，会产生费用")
     run.add_argument("--real-model", action="store_true", help="确认调用真实模型")
     run.add_argument("--case", help="只运行一例，如 bugfix-1")
@@ -747,6 +863,9 @@ def build_parser():
     report_parser.add_argument("--compare", type=Path, help="另一组对照运行目录")
     recheck_parser = actions.add_parser("recheck", help="离线重评已有产物，另存结果，不调用模型")
     recheck_parser.add_argument("--run-dir", type=Path, help="原运行目录，默认最近一次运行")
+    gate_parser = actions.add_parser("gate", help="按准备时的门槛判定经验对照，并写回经验，不调用模型")
+    gate_parser.add_argument("--run-dir", type=Path, help="经验对照的运行目录，默认最近一次运行")
+    gate_parser.add_argument("--no-write-back", action="store_true", help="只写 gate.json，不改长期记忆")
     rescore = actions.add_parser("rescore-baseline", help="用当前验收离线重评基线产物，不调用模型")
     rescore.add_argument("--run-dir", type=Path, required=True, help="基线运行目录")
     return parser
@@ -759,8 +878,10 @@ def main(argv=None):
     os.environ.update(RECAPCLI_EMBEDDING_MODEL="", RECAPCLI_EMBEDDING_BASE_URL="", PYTHONUTF8="1")
     if args.action == "prepare":
         runs = RUNS / "expanded" if args.suite == "expanded" else RUNS
+        experience = (load_experience(args.experience_workspace, args.experience)
+                      if args.experience else None)
         print(prepare(suite_spec(args.suite), runs=runs, suite=args.suite, model=model_identity(load_config()),
-                      agent_acceptance_path=args.agent_accept))
+                      agent_acceptance_path=args.agent_accept, experience=experience, task_ids=args.tasks))
     elif args.action == "run":
         if not args.real_model:
             parser.error("run 会调用真实模型并产生费用；确认后加 --real-model")
@@ -769,6 +890,8 @@ def main(argv=None):
         print(recheck(args.run_dir or latest_run()))
     elif args.action == "rescore-baseline":
         print(rescore_baseline(args.run_dir))
+    elif args.action == "gate":
+        print(gate(args.run_dir or latest_run(), write_back=not args.no_write_back))
     else:
         print(report(args.run_dir or latest_run(), compare=args.compare))
     return 0

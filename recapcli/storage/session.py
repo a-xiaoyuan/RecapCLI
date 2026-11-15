@@ -37,6 +37,12 @@ def _signature(data):
     return hashlib.sha256(content.encode("utf-8")).digest()
 
 
+def content_version(item):
+    """经验正文的版本：只看类型和正文，状态、时间和对照记录变化不算新版本。"""
+    text = " ".join(item["text"].split())
+    return hashlib.sha256(f"{item.get('kind', 'fact')}|{text}".encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class MemoryContext:
     text: str
@@ -322,6 +328,24 @@ class SessionStore:
             updated["expires_at"] = None
             if original.get("status") == "candidate":
                 updated["accepted_at"] = _now()
+        self._save_memory([item for item in items if item["id"] != key] + [updated])
+        return updated
+
+    def record_memory_evaluation(self, key, evaluation):
+        """把对照结论写到经验上；只认准备对照时的那个正文版本，正文改过就拒绝。"""
+        if not isinstance(evaluation, dict) or not isinstance(evaluation.get("content_version"), str):
+            raise ValueError("对照结论缺少经验版本")
+        if len(json.dumps(evaluation, ensure_ascii=False)) > 4096:
+            raise ValueError("对照结论过长")
+        items = self.memory_items()
+        original = next((item for item in items if item["id"] == key), None)
+        if original is None:
+            raise ValueError(f"没有找到记忆：{key}")
+        if original.get("kind") != "experience":
+            raise ValueError("只有经验可以记录对照结论")
+        if content_version(original) != evaluation["content_version"]:
+            raise ValueError("经验正文在准备对照后被修改过，这次结论不适用于当前版本")
+        updated = {**original, "evaluation": evaluation, "updated_at": _now()}
         self._save_memory([item for item in items if item["id"] != key] + [updated])
         return updated
 

@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from evals import acceptance as evaluator, prompt_comparison, runner  # noqa: E402
 from recapcli.core.agent import AgentLimits  # noqa: E402
+from recapcli.storage.session import SessionStore, content_version  # noqa: E402
 
 EVALUATOR = """import json, sys
 from pathlib import Path
@@ -391,6 +392,83 @@ class ReportTests(EvalCase):
         (workspace / "app.txt").write_text("changed after evaluation", encoding="utf-8")
         with self.assertRaisesRegex(RuntimeError, "产物已变化"):
             runner.recheck(run_root, evaluator=self.evaluator, baseline_path=None)
+
+
+class ExperienceGateTests(EvalCase):
+    """经验对照：对照组和经验组只差一条经验，按准备时定好的门槛判定，并写回那条经验。"""
+
+    def setUp(self):
+        super().setUp()
+        self.source = self.root / "source"
+        self.source.mkdir()
+        self.memory = SessionStore(self.source)
+        self.item = self.memory.add_memory("修复 app.txt 时把 broken 改成 fixed", kind="experience",
+                                           status="candidate")
+
+    def prepare_pair(self):
+        return self.prepare(experience=runner.load_experience(self.source, self.item["id"]))
+
+    def run_pair(self, run_root, manifest, control_replies, experience_replies):
+        for repeat in (1, 2):
+            self.run_case(run_root, manifest, f"fix-{repeat}", control_replies())
+            self.run_case(run_root, manifest, f"fix-{repeat}-exp", experience_replies())
+
+    def test_prepare_pairs_control_and_experience_cases(self):
+        run_root, manifest = self.prepare_pair()
+        self.assertEqual([case["id"] for case in manifest["cases"]], ["fix-1", "fix-1-exp", "fix-2", "fix-2-exp"])
+        self.assertEqual([case["arm"] for case in manifest["cases"]], ["control", "experience"] * 2)
+        self.assertEqual([task["id"] for task in manifest["tasks"]], ["fix"])
+        self.assertTrue(manifest["memory_enabled"])
+        self.assertEqual(manifest["experience"]["content_version"], content_version(self.item))
+        self.assertEqual(manifest["gate"], runner.EXPERIENCE_GATE)
+
+    def test_better_experience_arm_passes_and_is_written_back(self):
+        run_root, manifest = self.prepare_pair()
+        self.run_pair(run_root, manifest, lambda: [text("没改")], lambda: [edit(), text("改好了")])
+        control = runner.read_json(run_root / "results" / "fix-1" / "result.json")
+        treated = runner.read_json(run_root / "results" / "fix-1-exp" / "result.json")
+        self.assertEqual((control["memory_ids"], control["experience_injected"]), ([], None))
+        self.assertTrue(treated["experience_injected"])
+        message = runner.gate(run_root)
+        self.assertIn("通过", message)
+        evaluation = runner.read_json(run_root / "gate.json")
+        self.assertEqual(evaluation["verdict"], "passed")
+        self.assertEqual((evaluation["control"]["task_ok"], evaluation["experience"]["task_ok"]), (0, 2))
+        stored = next(item for item in self.memory.memory_items() if item["id"] == self.item["id"])
+        self.assertEqual(stored["evaluation"]["verdict"], "passed")
+        self.assertEqual(stored["status"], "candidate")
+
+    def test_no_improvement_fails_with_reasons(self):
+        run_root, manifest = self.prepare_pair()
+        self.run_pair(run_root, manifest, lambda: [edit(), text("改好了")], lambda: [edit(), text("改好了")])
+        self.assertIn("不通过", runner.gate(run_root))
+        evaluation = runner.read_json(run_root / "gate.json")
+        self.assertEqual(evaluation["verdict"], "failed")
+        self.assertTrue(any("验收项通过" in reason for reason in evaluation["reasons"]))
+        stored = next(item for item in self.memory.memory_items() if item["id"] == self.item["id"])
+        self.assertEqual(stored["evaluation"]["verdict"], "failed")
+
+    def test_gate_needs_every_case_and_the_same_experience_version(self):
+        run_root, manifest = self.prepare_pair()
+        self.run_case(run_root, manifest, "fix-1", [text("没改")])
+        with self.assertRaisesRegex(ValueError, "还有用例没有运行"):
+            runner.gate(run_root)
+        self.run_case(run_root, manifest, "fix-1-exp", [edit(), text("改好了")])
+        self.run_case(run_root, manifest, "fix-2", [text("没改")])
+        self.run_case(run_root, manifest, "fix-2-exp", [edit(), text("改好了")])
+        self.memory.update_memory(self.item["id"], "改过的经验正文")
+        with self.assertRaisesRegex(ValueError, "被修改过"):
+            runner.gate(run_root)
+        self.assertEqual(runner.read_json(run_root / "gate.json")["verdict"], "passed")
+
+    def test_only_experiences_can_be_compared(self):
+        fact = self.memory.add_memory("普通事实")
+        with self.assertRaisesRegex(ValueError, "candidate 或 active 的经验"):
+            runner.load_experience(self.source, fact["id"])
+        with self.assertRaisesRegex(ValueError, "没有"):
+            runner.load_experience(self.source, "missing")
+        with self.assertRaisesRegex(ValueError, "不是经验对照"):
+            runner.gate(self.prepare()[0])
 
 
 class PromptComparisonTests(unittest.TestCase):
