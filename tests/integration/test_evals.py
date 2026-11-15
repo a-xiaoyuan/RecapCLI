@@ -429,6 +429,10 @@ class ExperienceGateTests(EvalCase):
         treated = runner.read_json(run_root / "results" / "fix-1-exp" / "result.json")
         self.assertEqual((control["memory_ids"], control["experience_injected"]), ([], None))
         self.assertTrue(treated["experience_injected"])
+        task = runner.read_json(run_root / "results" / "fix-1-exp" / "task.json")
+        context = next(event["data"] for event in task["events"] if event["kind"] == "context")
+        self.assertEqual([entry["content_version"] for entry in context["experience_versions"]],
+                         [content_version(self.item)])
         message = runner.gate(run_root)
         self.assertIn("通过", message)
         evaluation = runner.read_json(run_root / "gate.json")

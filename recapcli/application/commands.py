@@ -10,6 +10,7 @@ from ..core.memory import active
 from ..core.project_rules import project_rules_description
 from ..core.skills import PROJECT_ROOTS, discover_skills, user_skills_dir
 from ..llm.client import api_error_message
+from ..storage.session import content_version, evaluation_passed
 from ..storage.tasks import TaskStore
 from .runtime import run_rewind, run_undo, save_session
 from .changes import show_changes
@@ -31,6 +32,21 @@ def show_history(ui, session):
         ui.info(f"  {role}: {preview}")
 
 
+def _evaluation_label(item):
+    evaluation = item.get("evaluation")
+    if evaluation_passed(item):
+        label = "通过"
+    elif evaluation and evaluation.get("content_version") != content_version(item):
+        label = "正文已改，旧结论作废，需要重新对照"
+    elif evaluation:
+        label = "不通过：" + "；".join(evaluation.get("reasons") or ["未说明原因"])
+    else:
+        label = "还没有对照"
+    if item.get("activated_without_evaluation"):
+        label += "（跳过对照启用）"
+    return label + (f" · {evaluation['run_dir']}" if evaluation and evaluation.get("run_dir") else "")
+
+
 def show_memory(ui, store, *, query=None, candidates=False):
     items = store.search_memory(query) if query is not None else store.memory_items()
     if candidates:
@@ -44,6 +60,8 @@ def show_memory(ui, store, *, query=None, candidates=False):
         if state == "active" and not active(item):
             state = "expired"
         ui.info(f"  {item['id']} · {item.get('kind', 'fact')} · {state} · {item['text']}")
+        if item.get("kind") == "experience":
+            ui.info(f"    对照：{_evaluation_label(item)}")
         ui.info("    来源：" + json.dumps(item.get("source", {"type": "legacy"}), ensure_ascii=False)
                 + f" · 更新：{item.get('updated_at', '未知')} · 失效时间：{item.get('expires_at') or '无'}")
 
@@ -113,6 +131,17 @@ def _show_requirements(ui, acceptance):
             ui.info("    实际输出末尾：" + check["output"][-400:])
 
 
+def _show_context(ui, kind, entry, tasks, starts, finished):
+    ids = entry.get("memory_ids") or []
+    if not ids:
+        return
+    ui.info(f"长期记忆：本轮选用 {len(ids)} 条（{'、'.join(ids)}）")
+    labels = {"passed": "已通过对照", "skipped": "跳过对照启用", "none": "没有对照记录"}
+    for version in entry.get("experience_versions") or ():
+        ui.info(f"  经验 {version['id']} · 版本 {version['content_version']} · "
+                f"{labels.get(version['evaluation'], version['evaluation'])}")
+
+
 def _show_hook(ui, kind, entry, tasks, starts, finished):
     target = f" {entry['tool']}" if entry.get("tool") else ""
     result = "已阻止" if entry["blocked"] else f"{entry['status']}，退出码 {entry['returncode']}"
@@ -120,6 +149,7 @@ def _show_hook(ui, kind, entry, tasks, starts, finished):
 
 
 _TASK_EVENT_PRINTERS = {
+    "context": _show_context,
     "project_version": _show_project_version,
     "project_rules": _show_project_rules,
     "tool_start": _show_tool_start,
@@ -369,12 +399,23 @@ def _cmd_memory_status(name, argument, ui, store, session, model, *, capabilitie
     try:
         status = {"/memory-expire": "expired", "/memory-activate": "active",
                   "/memory-accept": "active", "/memory-reject": "rejected"}[name]
+        words = argument.split()
+        force = "--force" in words
+        words = [word for word in words if word != "--force"]
+        if len(words) != 1 or (force and status != "active"):
+            raise ValueError(f"用法：/memory {name.removeprefix('/memory-')} ID"
+                             + (" [--force]" if status == "active" else ""))
+        key = words[0]
         if name == "/memory-accept":
-            candidate = next((item for item in store.memory_items() if item["id"] == argument), None)
+            candidate = next((item for item in store.memory_items() if item["id"] == key), None)
             if candidate is None or candidate.get("status") != "candidate":
                 raise ValueError("只能接纳存在的经验候选")
-        item = store.set_memory_status(argument, status)
+        item = store.set_memory_status(key, status, force=force)
         ui.info(f"记忆 {item['id']} 状态：{item['status']}；来源与验收范围保留。")
+        if item.get("activated_without_evaluation"):
+            ui.info("注意：这条经验没有通过对照就启用了，任务记录里会标为“跳过对照”。")
+        elif item.get("kind") == "experience" and status == "expired":
+            ui.info("这条经验已停用，下一轮起不再进入模型上下文；用 /memory activate ID 可以恢复。")
     except (OSError, ValueError) as error:
         ui.error(f"命令执行失败：{error}")
     return session

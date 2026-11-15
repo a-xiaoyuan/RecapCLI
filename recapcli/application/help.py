@@ -34,6 +34,7 @@ COMMANDS = (
     ("/task-verify", "ID passed|failed 命令ID 说明", "登记人工验收", "tasks"),
     ("/memory", "[search|update|expire|activate|candidates|propose|learn|accept|reject ...]", "查看和管理长期记忆", "memory"),
     ("/memory learn", "任务ID [补充依据]", "请模型从任务记录提炼一条经验候选，接纳前不生效", "memory"),
+    ("/memory accept", "ID [--force]", "启用经验候选；需先通过评测对照，--force 跳过并留下标记", "memory"),
     ("/remember", "[preference|fact] 文本", "添加偏好或项目事实", "memory"),
     ("/forget", "ID|all", "删除记忆", "memory"),
 )

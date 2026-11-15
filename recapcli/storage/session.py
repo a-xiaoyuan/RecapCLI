@@ -43,6 +43,12 @@ def content_version(item):
     return hashlib.sha256(f"{item.get('kind', 'fact')}|{text}".encode("utf-8")).hexdigest()[:16]
 
 
+def evaluation_passed(item):
+    """经验当前的正文版本有没有通过对照；正文改过后旧结论自动作废。"""
+    evaluation = item.get("evaluation") or {}
+    return evaluation.get("verdict") == "passed" and evaluation.get("content_version") == content_version(item)
+
+
 @dataclass(frozen=True)
 class MemoryContext:
     text: str
@@ -294,6 +300,11 @@ class SessionStore:
         updated = {**original, "text": text, "updated_at": _now()}
         if original.get("source", {}).get("type") == "task":
             updated["source"] = {**original["source"], "edited_by": "user"}
+        # 启用中的经验改了正文就是新版本，旧的对照结论不再适用，退回候选等重新对照。
+        if (original.get("kind") == "experience" and original.get("status", "active") == "active"
+                and content_version(updated) != content_version(original)):
+            updated["status"] = "candidate"
+            updated.pop("activated_without_evaluation", None)
         self._save_memory([item for item in items if item["id"] != key] + [updated])
         return updated
 
@@ -316,7 +327,8 @@ class SessionStore:
         return [{**item, "match_score": round(score, 3)}
                 for item, score in rank_memories(self.memory_items(), query, include_inactive=include_inactive)]
 
-    def set_memory_status(self, key, status):
+    def set_memory_status(self, key, status, *, force=False):
+        """改记忆状态。经验要从非启用变为启用，需要当前正文版本有通过的对照记录；force 跳过并留下标记。"""
         if not isinstance(status, str) or status not in STATUSES:
             raise ValueError("记忆状态不正确")
         items = self.memory_items()
@@ -326,6 +338,14 @@ class SessionStore:
         updated = {**original, "status": status, "updated_at": _now()}
         if status == "active":
             updated["expires_at"] = None
+            if original.get("kind") == "experience" and original.get("status", "active") != "active":
+                if evaluation_passed(original):
+                    updated.pop("activated_without_evaluation", None)
+                elif force:
+                    updated["activated_without_evaluation"] = True
+                else:
+                    raise ValueError(f"经验 {key} 当前版本还没有通过对照，不能启用。"
+                                     "先用 evals/runner.py 的 --experience 和 gate 做对照；确认要跳过就加 --force")
             if original.get("status") == "candidate":
                 updated["accepted_at"] = _now()
         self._save_memory([item for item in items if item["id"] != key] + [updated])
@@ -407,7 +427,13 @@ class SessionStore:
                 continue
             lines.append(line)
             selected.append(item["id"])
-            sources.append({"id": item["id"], "kind": item.get("kind", "fact"), "source": source,
-                            "updated_at": item.get("updated_at"), "version_hash": _signature(item).hex()})
+            entry = {"id": item["id"], "kind": item.get("kind", "fact"), "source": source,
+                     "updated_at": item.get("updated_at"), "version_hash": _signature(item).hex(),
+                     "content_version": content_version(item)}
+            if item.get("kind") == "experience":
+                # 任务记录里能查到这条经验用的是哪个版本、当时是否通过对照。
+                entry["evaluation"] = "passed" if evaluation_passed(item) else (
+                    "skipped" if item.get("activated_without_evaluation") else "none")
+            sources.append(entry)
             total += 1 + len(line)
         return MemoryContext("\n".join(lines) if selected else "", tuple(selected), len(items) - len(selected), tuple(sources))

@@ -129,7 +129,7 @@ class LearnCommandTests(unittest.TestCase):
     def test_evaluation_is_bound_to_the_experience_text_version(self):
         item = self.store.add_memory("改规则摘要时写出实际加载的文件", kind="experience", status="candidate")
         version = content_version(item)
-        accepted = self.store.set_memory_status(item["id"], "active")
+        accepted = self.store.set_memory_status(item["id"], "active", force=True)
         self.assertEqual(content_version(accepted), version)
         evaluation = {"verdict": "passed", "content_version": version}
         stored = self.store.record_memory_evaluation(item["id"], evaluation)
@@ -141,6 +141,97 @@ class LearnCommandTests(unittest.TestCase):
         fact = self.store.add_memory("普通事实")
         with self.assertRaisesRegex(ValueError, "只有经验"):
             self.store.record_memory_evaluation(fact["id"], {"content_version": content_version(fact)})
+
+
+class ExperienceLifecycleTests(unittest.TestCase):
+    """启用要有通过的对照；启用后被注入并记下版本；停用就不再注入；改正文要重新对照。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.workspace = Path(self.temp.name).resolve()
+        self.store = SessionStore(self.workspace)
+        self.session = self.store.new_session("test-model")
+        self.output, self.errors = io.StringIO(), io.StringIO()
+        self.ui = TerminalUI(self.output, self.errors, color="never")
+        self.item = self.store.add_memory("修复规则摘要时写出实际加载的子规则文件名", kind="experience",
+                                          status="candidate")
+
+    def command(self, text):
+        return handle_command(text, self.ui, self.store, self.session, "test-model")
+
+    def evaluate(self, verdict):
+        return self.store.record_memory_evaluation(self.item["id"], {
+            "verdict": verdict, "content_version": content_version(self.item), "reasons": ["样本不够"],
+            "run_dir": "evals/runs/example"})
+
+    def selected(self):
+        return self.store.memory_context(query="修复规则摘要").selected_ids
+
+    def test_accept_requires_a_passed_evaluation_of_the_current_text(self):
+        self.command(f"/memory accept {self.item['id']}")
+        self.evaluate("failed")
+        self.command(f"/memory accept {self.item['id']}")
+        self.assertEqual(self.errors.getvalue().count("还没有通过对照"), 2)
+        self.assertEqual(self.selected(), ())
+        self.command("/memory")
+        self.assertIn("对照：不通过：样本不够", self.output.getvalue())
+        self.evaluate("passed")
+        self.command(f"/memory accept {self.item['id']}")
+        [stored] = self.store.memory_items()
+        self.assertEqual(stored["status"], "active")
+        self.assertNotIn("activated_without_evaluation", stored)
+        self.assertEqual(self.selected(), (self.item["id"],))
+
+    def test_active_experience_is_recorded_with_its_version_and_expire_rolls_back(self):
+        self.evaluate("passed")
+        self.command(f"/memory accept {self.item['id']}")
+        [source] = self.store.memory_context(query="修复规则摘要").sources
+        self.assertEqual((source["content_version"], source["evaluation"]),
+                         (content_version(self.item), "passed"))
+        self.command(f"/memory expire {self.item['id']}")
+        self.assertIn("不再进入模型上下文", self.output.getvalue())
+        self.assertEqual(self.selected(), ())
+        self.command(f"/memory activate {self.item['id']}")
+        self.assertEqual(self.selected(), (self.item["id"],))
+
+    def test_force_marks_the_skip_and_editing_requires_a_new_evaluation(self):
+        self.command(f"/memory reject {self.item['id']} --force")
+        self.assertIn("用法：/memory reject ID", self.errors.getvalue())
+        self.command(f"/memory accept {self.item['id']} --force")
+        [stored] = self.store.memory_items()
+        self.assertTrue(stored["activated_without_evaluation"])
+        self.assertIn("跳过对照", self.output.getvalue())
+        [source] = self.store.memory_context(query="修复规则摘要").sources
+        self.assertEqual(source["evaluation"], "skipped")
+        edited = self.store.update_memory(self.item["id"], "修复规则摘要时写出实际加载的规则文件和字节数")
+        self.assertEqual(edited["status"], "candidate")
+        self.assertEqual(self.selected(), ())
+
+    def test_editing_an_evaluated_experience_voids_the_old_result(self):
+        self.evaluate("passed")
+        self.command(f"/memory accept {self.item['id']}")
+        self.store.update_memory(self.item["id"], "修复规则摘要时说明根规则没有加载")
+        self.command("/memory")
+        self.assertIn("正文已改，旧结论作废", self.output.getvalue())
+        self.command(f"/memory accept {self.item['id']}")
+        self.assertIn("还没有通过对照", self.errors.getvalue())
+
+    def test_task_detail_lists_the_experience_versions_used(self):
+        self.evaluate("passed")
+        self.command(f"/memory accept {self.item['id']}")
+        tasks = TaskStore(self.workspace)
+        task_id = tasks.start(self.session["id"], "修复规则摘要", "test-model", "react", {})
+        context = self.store.memory_context(query="修复规则摘要")
+        tasks.append(task_id, "context", {"memory_ids": list(context.selected_ids), "memory_text": context.text,
+                                          "memory_sources": list(context.sources),
+                                          "experience_versions": [{"id": self.item["id"],
+                                                                   "content_version": content_version(self.item),
+                                                                   "evaluation": "passed"}]})
+        tasks.finish(task_id, "returned", "模型返回")
+        self.command(f"/task {task_id}")
+        self.assertIn(f"经验 {self.item['id']} · 版本 {content_version(self.item)} · 已通过对照",
+                      self.output.getvalue())
 
 
 if __name__ == "__main__":
