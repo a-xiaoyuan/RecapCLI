@@ -2,10 +2,14 @@
 
 import json
 
+from openai import APIError
+
 from ..config import list_model_profiles
+from ..core.learning import distill_experience, lesson_text
 from ..core.memory import active
 from ..core.project_rules import project_rules_description
 from ..core.skills import PROJECT_ROOTS, discover_skills, user_skills_dir
+from ..llm.client import api_error_message
 from ..storage.tasks import TaskStore
 from .runtime import run_rewind, run_undo, save_session
 from .changes import show_changes
@@ -387,6 +391,30 @@ def _cmd_memory_propose(name, argument, ui, store, session, model, *, capabiliti
     return session
 
 
+def _cmd_memory_learn(name, argument, ui, store, session, model, *, capabilities, approver, client=None):
+    """请模型从结束的任务里提炼一条经验候选；候选默认不进入模型上下文。"""
+    task_id, _, note = argument.partition(" ")
+    if not task_id:
+        ui.error("用法：/memory learn 任务ID [补充依据]")
+        return session
+    if client is None:
+        ui.error("/memory learn 需要先配置模型（F3 或 /config）。")
+        return session
+    try:
+        task = TaskStore(store.workspace, create=False).get(task_id)
+        ui.info("正在请模型从任务记录提炼经验（一次请求，不调用工具）…")
+        lesson = distill_experience(client, model, task, note.strip() or None)
+        item = store.propose_task_memory(task, lesson_text(lesson), distilled={**lesson, "model": model})
+    except APIError as error:
+        ui.error(api_error_message(error, model))
+    except (OSError, ValueError, RuntimeError) as error:
+        ui.error(f"命令执行失败：{error}")
+    else:
+        ui.info(f"经验候选 {item['id']} 已保存，尚未进入模型上下文：\n{item['text']}\n"
+                f"确认后用 /memory accept {item['id']} 接纳，不需要就 /memory reject {item['id']}。")
+    return session
+
+
 def _cmd_memory_update(name, argument, ui, store, session, model, *, capabilities, approver):
     try:
         key, separator, text = argument.partition(" ")
@@ -442,16 +470,17 @@ _COMMANDS: dict[str, callable] = {
     "/memory-accept": _cmd_memory_status,
     "/memory-reject": _cmd_memory_status,
     "/memory-propose": _cmd_memory_propose,
+    "/memory-learn": _cmd_memory_learn,
     "/memory-update": _cmd_memory_update,
     "/forget": _cmd_forget,
 }
 
 
 # /memory 的子命令；原来的 /memory-xxx 写法继续可用，只是不再列入帮助。
-MEMORY_ACTIONS = {"search", "update", "expire", "activate", "candidates", "propose", "accept", "reject"}
+MEMORY_ACTIONS = {"search", "update", "expire", "activate", "candidates", "propose", "learn", "accept", "reject"}
 
 
-def handle_command(command, ui, store, session, model, *, capabilities=("read",), approver=None):
+def handle_command(command, ui, store, session, model, *, capabilities=("read",), approver=None, client=None):
     """处理会话命令；返回新的 session 或退出标记。"""
     parts = command.split(maxsplit=1)
     name = parts[0].lower()
@@ -459,13 +488,16 @@ def handle_command(command, ui, store, session, model, *, capabilities=("read",)
     if name == "/memory" and argument:
         action, _, rest = argument.partition(" ")
         if action.lower() not in MEMORY_ACTIONS:
-            ui.error("用法：/memory [search|update|expire|activate|candidates|propose|accept|reject] ...")
+            ui.error("用法：/memory [search|update|expire|activate|candidates|propose|learn|accept|reject] ...")
             return session
         name, argument = f"/memory-{action.lower()}", rest.strip()
     handler = _COMMANDS.get(name)
     if handler is None:
         ui.error(f"未知命令：{name}，输入 /help 查看命令。")
         return session
+    if name == "/memory-learn":
+        return handler(name, argument, ui, store, session, model, capabilities=capabilities, approver=approver,
+                       client=client)
     return handler(name, argument, ui, store, session, model, capabilities=capabilities, approver=approver)
 
 

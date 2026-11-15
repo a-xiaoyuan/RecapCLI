@@ -325,8 +325,11 @@ class SessionStore:
         self._save_memory([item for item in items if item["id"] != key] + [updated])
         return updated
 
-    def propose_task_memory(self, task, text=None):
-        """从事实生成候选，不调用模型、不把未验收任务提升为成功。"""
+    def propose_task_memory(self, task, text=None, *, distilled=None):
+        """从事实生成候选，不调用模型、不把未验收任务提升为成功。
+
+        distilled 是模型提炼的 trigger/lesson/evidence 和所用模型，保存在来源里，正文由调用方给出。
+        """
         if task["workspace"] != str(self.workspace) or task["status"] == "running":
             raise ValueError("只能提炼当前工作区已经结束的任务")
         verifications = [event["data"] for event in task["events"] if event["kind"] == "verification"]
@@ -341,6 +344,9 @@ class SessionStore:
         versions = [event["data"] for event in task["events"] if event["kind"] == "project_version"]
         if versions:
             source["project_version"] = versions[-1]
+        if distilled is not None:
+            source["method"] = "model_distilled"
+            source["distilled"] = distilled
         return self.add_memory(text, kind="experience", status="candidate", source=source)
 
     def add_fact(self, text):

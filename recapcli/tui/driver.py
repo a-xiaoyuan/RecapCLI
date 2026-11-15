@@ -20,6 +20,11 @@ from .state import _sessions
 
 _EOF = object()
 
+def _is_memory_learn(prompt):
+    parts = prompt.lower().split()
+    return parts[:1] == ["/memory-learn"] or parts[:2] == ["/memory", "learn"]
+
+
 @dataclass
 class ShellOptions:
     workspace: Path
@@ -310,7 +315,13 @@ class ShellDriver:
             self.presenter.error(f"命令执行失败：{error}")
             return None
         session = self.session if self.session is not None else {"id": "", "messages": [], "summary": None}
-        updated = handle_command(prompt, self.presenter, self.store, session, self.model or "")
+        client = None
+        if _is_memory_learn(prompt):
+            # 提炼经验要请求一次模型，和普通提问一样先确认已有模型配置。
+            if not self._require_client(sending=True):
+                return None
+            client = self.client
+        updated = handle_command(prompt, self.presenter, self.store, session, self.model or "", client=client)
         if updated is None:
             return "exit"
         if self.session is not None and isinstance(updated, dict):

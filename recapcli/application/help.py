@@ -32,7 +32,8 @@ COMMANDS = (
     ("/undo", "[组ID|all]", "审批后撤销一组，或一次撤回全部未恢复的编辑，需要 --allow-write", "tasks"),
     ("/rewind", "[检查点ID]", "审批后回到某一轮写文件前的检查点，需要 --allow-write", "tasks"),
     ("/task-verify", "ID passed|failed 命令ID 说明", "登记人工验收", "tasks"),
-    ("/memory", "[search|update|expire|activate|candidates|propose|accept|reject ...]", "查看和管理长期记忆", "memory"),
+    ("/memory", "[search|update|expire|activate|candidates|propose|learn|accept|reject ...]", "查看和管理长期记忆", "memory"),
+    ("/memory learn", "任务ID [补充依据]", "请模型从任务记录提炼一条经验候选，接纳前不生效", "memory"),
     ("/remember", "[preference|fact] 文本", "添加偏好或项目事实", "memory"),
     ("/forget", "ID|all", "删除记忆", "memory"),
 )
