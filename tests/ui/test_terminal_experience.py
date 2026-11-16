@@ -10,7 +10,7 @@ from unittest.mock import patch
 from recapcli.tui.app import RecapShell
 from recapcli.tui.state import ShellState, workspace_files
 from recapcli.tui.theme import render_approval, render_line
-from recapcli.tui.widgets import ToolProgress
+from recapcli.tui.widgets import FoldableLine, ToolProgress
 
 READY = [{"name": "default", "model": "demo-model", "protocol": "chat_completions", "default": True, "configured": True}]
 EDIT_SUMMARY = "\n".join([
@@ -33,7 +33,7 @@ class RenderingTests(unittest.TestCase):
         shown = render_approval(EDIT_SUMMARY).plain
         self.assertIn("需要批准  edit_file", shown)
         self.assertIn("a.py  +1 -1", shown)
-        self.assertIn("-x\n+y", shown)
+        self.assertIn("   1 -x\n   1 +y", shown)
         for hidden in ("deadbeef", "secret-place", "--- a/a.py", "请输入"):
             self.assertNotIn(hidden, shown)
 
@@ -49,6 +49,41 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(render_line("[操作] 已修改 a.py", "event").plain, "└ 已修改 a.py")
         self.assertEqual(render_line("[差异]\n--- a/a.py\n+++ b/a.py\n-x\n+y", "event").plain, "└ a.py  +1 -1\n-x\n+y")
         self.assertEqual(render_line("[命令输出]\nok", "event").plain, "ok")
+
+
+class DiffRenderingTests(unittest.TestCase):
+    def test_hunk_header_adds_line_numbers(self):
+        diff = "[差异]\n--- a/a.py\n+++ b/a.py\n@@ -3,2 +3,2 @@\n ctx\n-x\n+y"
+        self.assertEqual(render_line(diff, "event").plain.split("\n"),
+                         ["└ a.py  +1 -1", "@@ -3,2 +3,2 @@", "   3  ctx", "   4 -x", "   4 +y"])
+
+    def test_second_hunk_restarts_numbers(self):
+        diff = "[差异]\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-a\n+b\n@@ -20,1 +20,2 @@\n z\n+n"
+        lines = render_line(diff, "event").plain.split("\n")
+        self.assertEqual(lines[-2:], ["  20  z", "  21 +n"])
+
+    def test_long_output_is_folded_and_toggles(self):
+        with patch.object(FoldableLine, "update") as update:
+            block = FoldableLine("[命令输出]\n" + "\n".join(f"line {index}" for index in range(30)), "event")
+            self.assertTrue(block.foldable)
+            block.set_content(block.content_text)
+            folded = update.call_args.args[0].plain
+            self.assertIn("line 13", folded)
+            self.assertNotIn("line 14", folded)
+            self.assertIn("还有 16 行", folded)
+            block.toggle()
+            expanded = update.call_args.args[0].plain
+            self.assertIn("line 29", expanded)
+            self.assertIn("收起", expanded)
+            block.toggle()
+            self.assertNotIn("line 29", update.call_args.args[0].plain)
+
+    def test_short_output_is_not_folded(self):
+        with patch.object(FoldableLine, "update"):
+            block = FoldableLine("[命令输出]\nok", "event")
+            self.assertFalse(block.foldable)
+            block.toggle()
+            self.assertFalse(block.expanded)
 
 
 class ToolLinesTests(unittest.TestCase):

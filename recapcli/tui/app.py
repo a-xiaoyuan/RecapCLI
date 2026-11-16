@@ -24,7 +24,8 @@ from .driver import Presenter, ShellDriver, ShellOptions
 from .state import ShellState
 from .status import TaskStatus
 from .theme import PALETTE
-from .widgets import ApprovalMenu, CommandMenu, ConversationView, GlyphButton, GradientLogo, PromptInput, StatusScreen
+from .widgets import (ApprovalMenu, CommandMenu, ConversationView, FoldableLine, GlyphButton, GradientLogo,
+                      PromptInput, StatusScreen)
 from .settings import ModelConfigScreen, ModelPickerScreen
 from ..base.version import project_version
 from ..ui.terminal_ui import clean_output
@@ -95,6 +96,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
                 Binding("ctrl+c", "copy", "复制", show=False),
                 Binding("ctrl+g", "show_status", "详情", priority=True),
                 Binding("escape", "cancel_turn", "停止本轮", priority=True),
+                Binding("ctrl+o", "toggle_fold", "展开折叠", priority=True),
                 Binding("ctrl+end", "jump_latest", "回到底部", priority=True),
                 Binding("alt+pageup", "history_up", "上翻历史", priority=True),
                 Binding("alt+pagedown", "history_down", "下翻历史", priority=True),
@@ -450,6 +452,12 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
 
     def action_jump_latest(self):
         self._follow_latest(force=True)
+
+    def action_toggle_fold(self):
+        """展开或收起最近一个被折叠的长差异 / 命令输出。"""
+        blocks = [item for item in self.query(FoldableLine) if item.foldable]
+        if blocks:
+            blocks[-1].toggle()
 
 
     def action_history_up(self):

@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 
 from rich.box import ROUNDED
 from rich.markdown import BlockQuote, Heading, ListElement, Markdown
@@ -130,15 +131,20 @@ def render_answer(content, task=None):
     return GuidedAnswer(body, heading)
 
 
+_HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
 def _diff_text(lines):
-    """每个文件一行标题和增删统计，正文按增删着色。"""
+    """每个文件一行标题和增删统计，正文按增删着色；有 @@ 头时左侧显示行号（删除行用旧行号）。"""
     text = Text()
+    old = new = None
     for index, line in enumerate(lines):
         if line.startswith("--- "):
             continue
         if text:
             text.append("\n")
         if line.startswith("+++ "):
+            old = new = None
             rest = lines[index + 1:]
             end = next((i for i, item in enumerate(rest) if item.startswith("--- ")), len(rest))
             added = sum(item.startswith("+") for item in rest[:end])
@@ -146,9 +152,23 @@ def _diff_text(lines):
             text.append("└ " + line[4:].removeprefix("b/"), style=PALETTE["muted"])
             text.append(f"  +{added}", style=PALETTE["online"])
             text.append(f" -{removed}", style=PALETTE["error"])
-        elif line.startswith("@@"):
+            continue
+        hunk = _HUNK.match(line)
+        if hunk:
+            old, new = int(hunk.group(1)), int(hunk.group(2))
             text.append(line, style=PALETTE["muted"])
-        elif line.startswith("+"):
+            continue
+        number = ""
+        if old is not None and not line.startswith("\\"):
+            if line.startswith("-"):
+                number, old = old, old + 1
+            elif line.startswith("+"):
+                number, new = new, new + 1
+            else:
+                number, old, new = new, old + 1, new + 1
+        if old is not None:
+            text.append(f"{number:>4} ", style=PALETTE["faint"])
+        if line.startswith("+"):
             text.append(line, style=f"{PALETTE['online']} on {PALETTE['added']}")
         elif line.startswith("-"):
             text.append(line, style=f"{PALETTE['error']} on {PALETTE['removed']}")

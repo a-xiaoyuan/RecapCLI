@@ -60,7 +60,10 @@ class ConversationLine(Static):
             rendered = Text.assemble(("❯ ", "bold " + PALETTE["accent"]), shown, overflow="fold")
         else:
             rendered = render_line(shown, self.kind)
-        self.update(rendered)
+        self.update(self._present(rendered))
+
+    def _present(self, rendered):
+        return rendered
 
     def set_task(self, task):
         self.task_status = task
@@ -70,6 +73,38 @@ class ConversationLine(Static):
         if selection.start is None and selection.end is None:
             return self.content_text, "\n\n"
         return super().get_selection(selection)
+
+
+class FoldableLine(ConversationLine):
+    """长差异和长命令输出默认折叠成几行；点击或 Ctrl+O 展开，复制时仍是完整内容。"""
+
+    MAX_LINES = 14
+
+    def __init__(self, content, kind="event"):
+        self.expanded = False
+        self.foldable = False
+        super().__init__(content, kind)
+
+    def _present(self, rendered):
+        lines = rendered.split("\n", allow_blank=True)
+        self.foldable = len(lines) > self.MAX_LINES
+        if not self.foldable:
+            return rendered
+        if self.expanded:
+            shown, hint = rendered.copy(), "▾ 点击或 Ctrl+O 收起"
+        else:
+            shown = Text("\n").join(lines[:self.MAX_LINES])
+            hint = f"▸ 还有 {len(lines) - self.MAX_LINES} 行 · 点击或 Ctrl+O 展开"
+        shown.append("\n" + hint, style=PALETTE["faint"])
+        return shown
+
+    def toggle(self):
+        if self.foldable:
+            self.expanded = not self.expanded
+            self.set_content(self.content_text)
+
+    def on_click(self):
+        self.toggle()
 
 
 class PromptInput(TextArea):

@@ -22,6 +22,7 @@ from recapcli.tui.driver import ShellDriver, ShellOptions
 from recapcli.tui.launch import dispatch, shell_options
 from recapcli.tui.state import ShellState, load_shell_state
 from recapcli.tui.theme import PALETTE, render_line
+from recapcli.tui.widgets import FoldableLine
 
 HAS_TEXTUAL = importlib.util.find_spec("textual") is not None
 
@@ -733,6 +734,25 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("未发送给模型", transcript(app))
                 self.assertTrue(app.query_one("#welcome").display)
         turn.assert_not_called()
+
+    async def test_long_diff_event_is_folded_and_ctrl_o_expands(self):
+        from recapcli.core import events
+        app = self._app(self._state())
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app._lock()
+            body = "\n".join(f"+line {index}" for index in range(40))
+            app.event_update(events.diff(f"--- a/a.py\n+++ b/a.py\n@@ -0,0 +1,40 @@\n{body}"))
+            await pilot.pause()
+            blocks = list(app.query(FoldableLine))
+            self.assertEqual(len(blocks), 1)
+            self.assertTrue(blocks[0].foldable and not blocks[0].expanded)
+            self.assertIn("还有", rendered_text(blocks[0]))
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+            self.assertTrue(blocks[0].expanded)
+            self.assertIn("收起", rendered_text(blocks[0]))
+            app._unlock()
 
     async def test_todo_events_update_one_panel_per_turn(self):
         app = self._app(self._state())

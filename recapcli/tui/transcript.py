@@ -3,7 +3,7 @@
 
 from ..ui.terminal_ui import clean_output
 from .status import TaskStatus
-from .widgets import ConversationLine, ConversationView, GlyphButton, TodoPanel, ToolProgress
+from .widgets import ConversationLine, ConversationView, FoldableLine, GlyphButton, TodoPanel, ToolProgress
 
 
 
@@ -46,12 +46,18 @@ class TranscriptMixin:
         self._follow_latest(force=kind == "user")
 
     def event_update(self, message):
+        kind = getattr(message, "kind", "")  # UiEvent 带类型；普通字符串按前缀判断
         message = clean_output(message)
         prefix, separator, _ = message.partition("] ")
         name = prefix.removeprefix("[")
         role = name if separator and (name in {"analysis", "review", "aggregate", "planner", "reviewer", "team_summary"}
                                      or name.startswith("worker:")) else ""
         event = message.removeprefix(f"[{role}] ") if role else message
+        if kind in {"diff", "command_output"} or event.startswith(("[差异]\n", "[命令输出]\n")):
+            # 长差异和长命令输出折叠显示；子角色的也按同样样式，只是不再带前缀原文。
+            self.query_one("#transcript").mount(FoldableLine(event, "event"))
+            self._follow_latest()
+            return
         if event.startswith("[待办]\n"):
             if self._todo_widget is None:
                 self._todo_widget = TodoPanel()

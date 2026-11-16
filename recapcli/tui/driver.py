@@ -13,6 +13,7 @@ from ..application.commands import handle_command, show_models, show_tasks as sh
 from ..application.help import help_text
 from ..config import ConfigError, load_config
 from ..core.agent import AgentLimits, DEFAULT_STEPS
+from ..core.events import UiEvent
 from ..llm.client import ModelClient, api_error_message
 from ..storage.tasks import TaskStore
 from ..tools.approval import InteractiveApprover, approve_all
@@ -68,7 +69,8 @@ class Presenter:
         self._call(self.app.append_line, str(message), "error")
 
     def event(self, message):
-        self._call(self.app.event_update, str(message))
+        # UiEvent 本身是 str，原样传给界面，界面按 kind 决定怎么画。
+        self._call(self.app.event_update, message if isinstance(message, UiEvent) else str(message))
 
     def answer(self, message):
         self._call(self.app.finish_answer, str(message))
