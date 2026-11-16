@@ -8,6 +8,7 @@ from threading import RLock
 from openai import APIError
 
 from .budget import AgentCancelled
+from .events import tag_role
 
 
 ROLE_INSTRUCTIONS = {
@@ -49,7 +50,7 @@ def run_subagents(client, model, prompt, workspace, *, budget, limits, max_steps
 
     def event(role, text):
         with callback_lock:
-            on_event(f"[{role}] {text}")
+            on_event(tag_role(text, role))
 
     # 为汇总保留一次请求，并给两个角色各留机会，防止快角色耗尽慢角色的首轮预算。
     remaining = max_steps - budget.requests - 1

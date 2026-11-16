@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 
 from ..tools import execute_tool
+from . import events
 from .budget import SKIPPED_RESULT
 from .results import EDIT_TOOLS, clear_old_tool_results, edited_paths, fact_result, oversized_result
 from .skills import SKILL_TOOL
@@ -78,7 +79,7 @@ class ToolBatch:
 
     def announce(self, call):
         location = _tool_location(call)
-        self.ctx.on_event(f"[工具] {call.function.name}" + (f" · {location}" if location else ""))
+        self.ctx.on_event(events.tool_start(call.function.name, location))
 
     def run_parallel_reads(self, runnable):
         ctx, trace = self.ctx, self.run.trace
@@ -134,7 +135,7 @@ class ToolBatch:
                 result = run.todos.update(call.function.arguments)
                 if result["ok"]:
                     trace("todo", items=run.todos.items)
-                    ctx.on_event("[待办]\n" + run.todos.render())
+                    ctx.on_event(events.todo(run.todos.render(), run.todos.items))
                 return result
             if ctx.hooks is not None:
                 reason = ctx.hooks.run(run, "pre_tool", {"arguments": _arguments(call)}, tool=call.function.name)
@@ -164,13 +165,13 @@ class ToolBatch:
     def report(self, call, result):
         ctx = self.ctx
         if result.get("summary") and call.function.name != TODO_TOOL["function"]["name"]:
-            ctx.on_event(f"[操作] {result['summary']}")
+            ctx.on_event(events.operation(result["summary"]))
         if ctx.planner is not None:
             ctx.planner.observe_tool(call.function.name, result)
         if result.get("diff"):
-            ctx.on_event("[差异]\n" + result["diff"])
+            ctx.on_event(events.diff(result["diff"]))
         if result.get("output"):
-            ctx.on_event("[命令输出]\n" + result["output"])
+            ctx.on_event(events.command_output(result["output"]))
 
     def fit_into_turn(self, call, result, pending):
         """放入结果；放不下时先清理旧结果，再退回只保留收据。"""
@@ -193,13 +194,16 @@ class ToolBatch:
     def report_outcome(self, result, skip_tool):
         on_event = self.ctx.on_event
         if result.get("approval"):
-            on_event(f"[审批] {result['approval']}")
+            on_event(events.approval_notice(result["approval"]))
         if skip_tool:
-            on_event("[结果] 未执行：预算即将用完")
+            on_event(events.tool_result("[结果] 未执行：预算即将用完", ok=False, skipped=True))
         elif result.get("ok") and "returncode" in result:
-            on_event(f"[结果] 命令已结束，退出码 {result['returncode']}")
+            on_event(events.tool_result(f"[结果] 命令已结束，退出码 {result['returncode']}",
+                                        ok=True, returncode=result["returncode"]))
         else:
-            on_event(f"[结果] {'成功' if result.get('ok') else '失败：' + str(result.get('error') or result.get('note', ''))}")
+            error = "" if result.get("ok") else str(result.get("error") or result.get("note", ""))
+            on_event(events.tool_result(f"[结果] {'成功' if result.get('ok') else '失败：' + error}",
+                                        ok=bool(result.get("ok")), error=error))
 
     def execute(self):
         ctx, run = self.ctx, self.run

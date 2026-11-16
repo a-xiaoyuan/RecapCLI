@@ -9,6 +9,7 @@ from threading import RLock
 from openai import APIError
 
 from .budget import AgentCancelled
+from .events import tag_role
 from .planning import plan_instruction, _read_object, _read_steps, ready_batch
 
 MAX_SENDBACKS = 2
@@ -39,7 +40,7 @@ def run_team(client, model, prompt, workspace, *, budget, limits, max_steps, cap
 
     def event(role, text):
         with lock:
-            on_event(f"[{role}] {text}")
+            on_event(tag_role(text, role))
 
     def invoke(role, instruction, quota, granted=(), reserve=1):
         message = deepcopy(user_message)
