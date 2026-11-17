@@ -46,6 +46,7 @@ class ShellOptions:
     verify_command: list | None = None
     hooks: object = None
     acceptance: object = None
+    theme: str | None = None  # “名称[:light|dark]”；None 时用上次保存的选择
 
 
 class Presenter:

@@ -382,8 +382,9 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app.query_one("#task-inspector").display)
             self.assertEqual(app.query_one("#prompt").size.height, 1)
             # 不铺底色：背景是终端自己的颜色。
-            from recapcli.tui.app import TERMINAL_THEME
-            self.assertTrue(TERMINAL_THEME.ansi)
+            from recapcli.tui.app import terminal_theme
+            self.assertTrue(terminal_theme().ansi)
+            self.assertTrue(app.current_theme.ansi)
             self.assertEqual(app.screen.styles.background.ansi, -1)  # ansi_default
             welcome = app.query_one("#welcome")
             self.assertIn("RecapCLI", welcome.border_title)

@@ -4,6 +4,7 @@
 不读取目标工作区的配置。
 """
 
+import json
 import os
 from pathlib import Path
 import re
@@ -32,6 +33,7 @@ def _default_config_dir():
 CONFIG_DIR = _default_config_dir()
 ENV_FILE = CONFIG_DIR / ".env"
 MODELS_FILE = CONFIG_DIR / "models.toml"
+UI_FILE = CONFIG_DIR / "ui.json"  # 界面偏好（主题），不含密钥
 PROTOCOLS = {"chat_completions", "responses"}
 DEFAULT_CONTEXT_TOKENS = 128_000
 
@@ -149,6 +151,22 @@ def list_model_profiles():
              "base_url": spec.get("base_url") or "", "api_key_env": spec.get("api_key_env", "OPENAI_API_KEY"),
              "key_source": "环境变量" if os.environ.get(spec.get("api_key_env", "OPENAI_API_KEY")) else ".env"}
             for name, spec in profiles.items()]
+
+
+def load_ui_settings():
+    """读取界面偏好；文件不存在或损坏时返回空字典，不影响启动。"""
+    try:
+        data = json.loads(UI_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_ui_settings(**changes):
+    """合并写入界面偏好。只存主题这类无敏感信息的选项。"""
+    data = {**load_ui_settings(), **changes}
+    UI_FILE.parent.mkdir(parents=True, exist_ok=True)
+    UI_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def save_model_profile(name, *, model, protocol, base_url="", api_key_env="OPENAI_API_KEY", api_key="",

@@ -1,6 +1,8 @@
 """终端主题与对话排版。
 
-不铺底色：背景和正文颜色跟随用户的终端（包括背景图），紫色作强调色。
+不铺底色：背景和正文颜色跟随用户的终端（包括背景图）。配色有六个家族，各有深浅两版；
+PALETTE / GRADIENT 是当前生效的一套，切换主题时原地更新，渲染时实时读取。
+recap.tcss 通过 $recap-* 变量取同一套颜色（见 css_variables）。
 """
 
 import json
@@ -15,13 +17,103 @@ from rich.text import Text
 
 from ..ui.terminal_ui import clean_output
 
-# Rich 样式里的颜色；"default" 即终端自身的前景色。与 recap.tcss 手写同步。
-PALETTE = {
-    "text": "default", "muted": "#a6adc8", "faint": "#6c7086",
-    "accent": "#cba6f7", "online": "#a6e3a1", "error": "#f38ba8", "warning": "#fab387",
-    "info": "#89b4fa", "surface": "#2a2740", "added": "#1f3329", "removed": "#3a2230",
+def _scheme(muted, faint, accent, online, error, warning, info, surface, added, removed, code, gradient):
+    return {"muted": muted, "faint": faint, "accent": accent, "online": online, "error": error,
+            "warning": warning, "info": info, "surface": surface, "added": added, "removed": removed,
+            "code": code, "gradient": gradient}
+
+
+# 各家族官方的日夜两版取色；surface 是用户消息底色，added / removed 是差异行底色，code 是行内代码字色。
+THEMES = {
+    "catppuccin": ("Catppuccin", {
+        "dark": _scheme("#a6adc8", "#6c7086", "#cba6f7", "#a6e3a1", "#f38ba8", "#fab387", "#89b4fa",
+                        "#2a2740", "#1f3329", "#3a2230", "#ddb6f2", ("#f5c2e7", "#cba6f7", "#89b4fa", "#94e2d5")),
+        "light": _scheme("#6c6f85", "#9ca0b0", "#8839ef", "#40a02b", "#d20f39", "#fe640b", "#1e66f5",
+                         "#e6e9ef", "#d5ecd4", "#f5d3da", "#8839ef", ("#ea76cb", "#8839ef", "#1e66f5", "#179299")),
+    }),
+    "kanagawa": ("神奈川", {
+        "dark": _scheme("#a6a69c", "#727169", "#7e9cd8", "#98bb6c", "#e46876", "#ffa066", "#7fb4ca",
+                        "#2a2a37", "#2b3328", "#43242b", "#e6c384", ("#7e9cd8", "#957fb8", "#d27e99", "#e6c384")),
+        "light": _scheme("#716e61", "#8a8980", "#4d699b", "#6f894e", "#c84053", "#cc6d00", "#4e8ca2",
+                         "#e5ddb0", "#dde8cf", "#f3d6d6", "#624c83", ("#4d699b", "#624c83", "#b35b79", "#cc6d00")),
+    }),
+    "rose-pine": ("Rosé Pine", {
+        "dark": _scheme("#908caa", "#6e6a86", "#c4a7e7", "#9ccfd8", "#eb6f92", "#f6c177", "#9ccfd8",
+                        "#26233a", "#1f2d2f", "#3a2232", "#ebbcba", ("#ebbcba", "#c4a7e7", "#9ccfd8")),
+        "light": _scheme("#797593", "#9893a5", "#907aa9", "#56949f", "#b4637a", "#ea9d34", "#286983",
+                         "#f2e9e1", "#e3efee", "#f4dde1", "#d7827e", ("#d7827e", "#907aa9", "#56949f")),
+    }),
+    "tokyo-night": ("Tokyo Night", {
+        "dark": _scheme("#a9b1d6", "#565f89", "#7aa2f7", "#9ece6a", "#f7768e", "#e0af68", "#7dcfff",
+                        "#24283b", "#20303b", "#37222c", "#bb9af7", ("#7aa2f7", "#bb9af7", "#f7768e")),
+        "light": _scheme("#6172b0", "#8990b3", "#2e7de9", "#587539", "#f52a65", "#8c6c3e", "#007197",
+                         "#d0d5e3", "#d6e3d0", "#f0d4dc", "#9854f1", ("#2e7de9", "#9854f1", "#f52a65")),
+    }),
+    "gruvbox": ("Gruvbox", {
+        "dark": _scheme("#bdae93", "#928374", "#83a598", "#b8bb26", "#fb4934", "#fe8019", "#8ec07c",
+                        "#3c3836", "#32361a", "#3c1f1e", "#fabd2f", ("#fb4934", "#fe8019", "#fabd2f", "#b8bb26")),
+        "light": _scheme("#665c54", "#928374", "#076678", "#79740e", "#9d0006", "#af3a03", "#427b58",
+                         "#ebdbb2", "#e6e4b8", "#f2d5c8", "#b57614", ("#9d0006", "#af3a03", "#b57614", "#79740e")),
+    }),
+    "github": ("GitHub", {
+        "dark": _scheme("#9ea7b3", "#7d8590", "#2f81f7", "#3fb950", "#f85149", "#d29922", "#58a6ff",
+                        "#161b22", "#12261e", "#2d1517", "#a371f7", ("#2f81f7", "#a371f7", "#db61a2")),
+        "light": _scheme("#57606a", "#8c959f", "#0969da", "#1a7f37", "#cf222e", "#9a6700", "#0550ae",
+                         "#f6f8fa", "#dafbe1", "#ffebe9", "#8250df", ("#0969da", "#8250df", "#bf3989")),
+    }),
 }
-GRADIENT = ("#f5c2e7", "#cba6f7", "#89b4fa", "#94e2d5")
+MODES = {"light": "浅色", "dark": "深色"}
+DEFAULT_THEME = ("catppuccin", "light")
+
+# 当前生效的配色。Rich 样式里 "default" 即终端自身的前景色。
+PALETTE = {}
+GRADIENT = ()
+CURRENT_THEME = DEFAULT_THEME
+
+
+def parse_theme(value):
+    """“名称”或“名称:light|dark”；只写名称时用浅色。返回 (家族, 模式)。"""
+    name, _, mode = str(value or "").strip().lower().partition(":")
+    if name not in THEMES:
+        raise ValueError(f"未知主题：{value}。可选：{'、'.join(THEMES)}")
+    mode = mode or DEFAULT_THEME[1]
+    if mode not in MODES:
+        raise ValueError("主题模式只能是 light 或 dark，例如 catppuccin:dark")
+    return name, mode
+
+
+def initial_theme(value=None):
+    """启动时的主题：--theme 参数优先，其次是上次 /theme 保存的选择，都没有就用默认。"""
+    if value:
+        return parse_theme(value)
+    from ..config import load_ui_settings
+    try:
+        saved = load_ui_settings().get("theme")
+        return parse_theme(saved) if saved else DEFAULT_THEME
+    except ValueError:
+        return DEFAULT_THEME  # 保存的值坏了不阻止启动，用默认主题
+
+
+def theme_label(family, mode):
+    return f"{THEMES[family][0]} · {MODES[mode]}"
+
+
+def apply_palette(family, mode):
+    """原地替换 PALETTE 和 GRADIENT；已经画出来的内容需要调用方重新渲染。"""
+    global GRADIENT, CURRENT_THEME
+    scheme = dict(THEMES[family][1][mode])
+    GRADIENT = tuple(scheme.pop("gradient"))
+    PALETTE.clear()
+    PALETTE.update({"text": "default", **scheme})
+    CURRENT_THEME = (family, mode)
+
+
+def css_variables():
+    """给 recap.tcss 用的 $recap-* 变量。"""
+    return {f"recap-{key}": value for key, value in PALETTE.items() if key not in {"text", "added", "removed", "code"}}
+
+
+apply_palette(*DEFAULT_THEME)
 
 
 def _rgb(value):

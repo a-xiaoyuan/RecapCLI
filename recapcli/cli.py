@@ -110,6 +110,9 @@ def build_parser():
     parser.add_argument("prompt", nargs="?", help="本次问题；省略则进入多轮对话")
     parser.add_argument("--version", action="version", version=title())
     parser.add_argument("--demo", action="store_true", help="离线界面演示，不请求模型")
+    parser.add_argument("--theme", metavar="名称[:light|dark]",
+                        help="终端界面配色：catppuccin、kanagawa、rose-pine、tokyo-night、gruvbox、github；"
+                             "默认沿用上次 /theme 的选择，首次为 catppuccin 浅色。行式 CLI 不使用")
     parser.add_argument("--profile", metavar="名称", help="选择 models.toml 中的模型配置；恢复会话时默认沿用上次配置")
     parser.add_argument("--models", nargs="?", const="*", metavar="筛选词", help="紧凑列出模型配置，可按名称或模型筛选；不请求接口")
     parser.add_argument("--workspace", type=Path, default=Path.cwd(), help="默认工作区与运行记录目录")

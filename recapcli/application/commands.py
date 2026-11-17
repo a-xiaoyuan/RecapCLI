@@ -280,6 +280,11 @@ def _cmd_config(name, argument, ui, store, session, model, *, capabilities, appr
     return session
 
 
+def _cmd_theme(name, argument, ui, store, session, model, *, capabilities, approver):
+    ui.info("配色只在终端界面（TUI）里生效：在 TUI 输入 /theme，或启动时加 --theme 名称[:light|dark]。")
+    return session
+
+
 def _cmd_changes(name, argument, ui, store, session, model, *, capabilities, approver):
     try:
         if name == "/diff":
@@ -490,6 +495,7 @@ _COMMANDS: dict[str, callable] = {
     "/send": _cmd_jobs,
     "/stop": _cmd_jobs,
     "/config": _cmd_config,
+    "/theme": _cmd_theme,
     "/diff": _cmd_changes,
     "/undo": _cmd_changes,
     "/rewind": _cmd_changes,

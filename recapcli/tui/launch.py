@@ -23,7 +23,14 @@ def shell_options(args):
         raise ValueError("--workspace 必须是存在的目录")
     max_steps = max_steps_from(args)
     limits = limits_from(args)
+    theme = getattr(args, "theme", None)
+    if theme:
+        # 主题名单在 tui 层，这里校验；只有终端界面用得到这个参数。
+        from .theme import parse_theme
+        family, mode = parse_theme(theme)
+        theme = f"{family}:{mode}"
     return ShellOptions(
+        theme=theme,
         workspace=workspace.resolve(), mode=args.mode, capabilities=tuple(sorted(capabilities_from(args))),
         additional_dirs=tuple(args.add_dir),
         max_steps=max_steps, limits=limits, profile=args.profile, session_id=args.session,

@@ -41,3 +41,6 @@ Desktop.ini
 
 # Evaluation runs: workspaces and model transcripts stay local
 evals/runs/
+
+# Local UI preferences written by /theme
+ui.json

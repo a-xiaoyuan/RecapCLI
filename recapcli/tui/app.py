@@ -23,24 +23,27 @@ from .clipboard import ClipboardMixin
 from .driver import Presenter, ShellDriver, ShellOptions
 from .state import ShellState
 from .status import TaskStatus
-from .theme import PALETTE
-from .widgets import (ApprovalMenu, CommandMenu, ConversationView, FoldableLine, GlyphButton, GradientLogo,
-                      PromptInput, StatusScreen)
+from . import theme as theme_module
+from .theme import (PALETTE, THEMES, apply_palette, css_variables, initial_theme, parse_theme, theme_label)
+from .widgets import (ApprovalMenu, CommandMenu, ConversationLine, ConversationView, FoldableLine, GlyphButton,
+                      GradientLogo, PromptInput, StatusScreen, TodoPanel, ToolProgress)
 from .palette import CommandPaletteScreen, palette_entries
 from .settings import ModelConfigScreen, ModelPickerScreen
 from ..base.version import project_version
 from ..ui.terminal_ui import clean_output
-from ..config import ConfigError, list_model_profiles
+from ..config import ConfigError, list_model_profiles, save_ui_settings
 from ..tools.approval import interpret_approval_line
 
 
-# 跟随终端：背景和前景都用终端自己的颜色，只有强调色固定。
-TERMINAL_THEME = Theme(
-    name="recap-terminal", primary=PALETTE["accent"], secondary="ansi_bright_black",
+def terminal_theme():
+    """跟随终端：背景和前景都用终端自己的颜色，强调色取当前主题。"""
+    family, mode = theme_module.CURRENT_THEME
+    return Theme(
+    name=f"recap-{family}-{mode}", primary=PALETTE["accent"], secondary="ansi_bright_black",
     accent=PALETTE["accent"], foreground="ansi_default", background="ansi_default",
     surface="ansi_default", panel="ansi_default", success="ansi_green",
     warning="ansi_yellow", error="ansi_red", boost="ansi_default",
-    dark=True, ansi=True,
+    dark=mode == "dark", ansi=True,
     variables={
         "ansi-background": "ansi_default", "ansi-foreground": "ansi_default",
         "border": "ansi_bright_black", "border-blurred": "ansi_bright_black",
@@ -54,8 +57,21 @@ TERMINAL_THEME = Theme(
         "scrollbar-background": "ansi_default", "scrollbar-background-hover": "ansi_default",
         "scrollbar-background-active": "ansi_default", "scrollbar-corner-color": "ansi_default",
         "footer-background": "ansi_default",
+        **css_variables(),
     },
-)
+    )
+
+
+def rich_theme():
+    return RichTheme({
+        **{f"markdown.h{level}": "bold" for level in range(1, 7)},
+        "markdown.code": f"bold {PALETTE['code']} on {PALETTE['surface']}",
+        "markdown.block_quote": PALETTE["muted"],
+        "markdown.item.bullet": PALETTE["muted"],
+        "markdown.item.number": PALETTE["muted"],
+        "markdown.link": "underline " + PALETTE["accent"],
+        "markdown.link_url": PALETTE["muted"],
+    })
 DEMO_NOTE = "这是界面演示，输入未发送给模型。"
 DEMO_PROMPT = "梳理项目入口，说明启动和执行流程。"
 DEMO_TODO = "☑ 定位启动入口\n◐ 梳理会话调度\n☐ 说明 Agent 执行循环"
@@ -105,19 +121,12 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
                 Binding("ctrl+q", "quit", "退出", priority=True)]
 
     def __init__(self, state: ShellState, *, demo=False, options: ShellOptions | None = None, client_factory=None):
+        self.options = options or ShellOptions(workspace=state.workspace)
+        apply_palette(*initial_theme(self.options.theme))
         super().__init__(ansi_color=True)
-        self.console.push_theme(RichTheme({
-            **{f"markdown.h{level}": "bold" for level in range(1, 7)},
-            "markdown.code": "bold #ddb6f2 on #26233a",
-            "markdown.block_quote": PALETTE["muted"],
-            "markdown.item.bullet": PALETTE["muted"],
-            "markdown.item.number": PALETTE["muted"],
-            "markdown.link": "underline " + PALETTE["accent"],
-            "markdown.link_url": PALETTE["muted"],
-        }))
+        self.console.push_theme(rich_theme())
         self.state = state
         self.demo = demo
-        self.options = options or ShellOptions(workspace=state.workspace)
         self.client_factory = client_factory
         self._busy = False
         self._busy_since = None
@@ -211,8 +220,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
     async def on_mount(self):
         self.query_one("#welcome").border_title = "RecapCLI " + version_label()
         self.ui_thread = threading.get_ident()
-        self.register_theme(TERMINAL_THEME)
-        self.theme = "recap-terminal"
+        self._use_terminal_theme()
         self._apply_width(self.size.width)
         self.set_interval(1, self._tick_status)
         self.set_interval(0.1, self._flow_status)
@@ -320,6 +328,9 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
                 self._show_commands(argument or "common")
             else:
                 self.action_configure_model()
+            return
+        if not self._approval and head.lower() == "/theme":
+            self._theme_command(argument.strip())
             return
         if not self._approval and head.lower() in {"/model", "/models"} and not argument:
             self.action_choose_model()
@@ -454,6 +465,54 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
 
     def action_jump_latest(self):
         self._follow_latest(force=True)
+
+    def get_css_variables(self):
+        # $recap-* 始终有值：样式表在主题注册之前就会解析。
+        return {**super().get_css_variables(), **css_variables()}
+
+    def _use_terminal_theme(self):
+        theme = terminal_theme()
+        self.register_theme(theme)
+        self.theme = theme.name
+
+    def apply_theme(self, family, mode):
+        """切换配色并重画已显示的内容。"""
+        apply_palette(family, mode)
+        self.console.push_theme(rich_theme())
+        self._use_terminal_theme()
+        self.refresh_css()
+        for widget in self.query(ConversationLine):
+            widget.set_content(widget.content_text)
+        for widget in self.query(ToolProgress):
+            widget._redraw()
+        for widget in self.query(TodoPanel):
+            widget.show(widget.content_text)
+        for widget in self.query(GradientLogo):
+            widget._draw()
+        self.query_one("#welcome-tips", Static).update(self._welcome_tips())
+        self._refresh_status()
+
+    def _theme_command(self, argument):
+        current = theme_module.CURRENT_THEME
+        if not argument:
+            lines = [f"当前主题：{theme_label(*current)}", "可选（名称 或 名称:light / 名称:dark）："]
+            lines += [f"  {name:<12} {label}" for name, (label, _) in THEMES.items()]
+            lines.append("示例：/theme catppuccin:dark · 启动时可用 --theme 指定")
+            self.append_line("\n".join(lines), "info")
+            return
+        try:
+            family, mode = parse_theme(argument)
+        except ValueError as error:
+            self.append_line(str(error), "error")
+            return
+        self.apply_theme(family, mode)
+        note = ""
+        if not self.demo:
+            try:
+                save_ui_settings(theme=f"{family}:{mode}")
+            except OSError as error:
+                note = f"（未能保存，下次启动仍用原主题：{error}）"
+        self.append_line(f"已切换主题：{theme_label(family, mode)}{note}", "info")
 
     def action_command_palette(self):
         if len(self.screen_stack) > 1 or self._busy or self._approval:
