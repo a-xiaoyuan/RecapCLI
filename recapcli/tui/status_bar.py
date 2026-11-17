@@ -8,7 +8,7 @@ from ..application.changes import change_report, commands_summary, files_summary
 from ..core.agent import AgentLimits
 from ..core.project_rules import project_rules_description
 from ..ui.terminal_ui import clean_output
-from .status import TaskStatus, budget_text, task_text, usage_text
+from .status import TaskStatus, duration_text, task_text, usage_text
 from .theme import PALETTE, gradient_text, progress_bar
 from .widgets import StatusScreen
 
@@ -103,19 +103,14 @@ class StatusBarMixin:
         agent.append(" · " + self.options.mode + " · " + mode)
         self.query_one("#welcome-agent", Static).update(agent)
         self._model_label = agent.plain.split(" · ")[0]
-        self._refresh_inspector(mode)
+        self._refresh_top_bar()
         self._refresh_hints()
         if isinstance(self.screen, StatusScreen) and self.screen.query("#status-body"):
             self.screen.query_one("#status-body", Static).update(self._status_details())
 
-    def _refresh_inspector(self, mode):
-        if not self.query("#task-inspector"):  # 退出时界面可能已经卸载。
-            return
+    def _top_bar_text(self, width):
+        """顶部一行：品牌、模型与模式、请求 / 工具 / 时间预算、Token。窗口窄时依次去掉进度条和次要项。"""
         task = self._task_status
-        files = list(task.modified_files)
-        file_text = "\n".join(files[:6]) if files else "暂无本轮编辑"
-        if len(files) > 6:
-            file_text += f"\n还有 {len(files) - 6} 个 · Ctrl+G 查看"
         requests, tools = task.requests, 0
         rows = self._turn_rows()
         if rows:
@@ -127,27 +122,39 @@ class StatusBarMixin:
         else:
             elapsed = task.duration or 0
         started = bool(task.task_id or requests)
-        body = Text()
-        for title, content, used, limit in (
-            ("本轮任务", task_text(task, busy=self._busy, approval=self._approval), None, None),
-            ("执行模式", self.options.mode + " · " + mode, None, None),
-            ("模型请求", budget_text(requests, self.options.max_steps) if started else "尚未开始",
-             requests, self.options.max_steps),
-            ("工具调用", budget_text(tools, limits.max_tool_calls) if started else "尚未开始",
-             tools, limits.max_tool_calls),
-            ("执行时间", budget_text(elapsed, limits.max_seconds, seconds=True) if started else "尚未开始",
-             elapsed, limits.max_seconds),
-            ("Token 用量", usage_text(task) if task.task_id else "尚无任务用量", None, None),
-            ("本轮编辑", file_text, None, None),
-        ):
-            body.append(title + "\n", style="bold " + PALETTE["accent"])
-            body.append(clean_output(content) + "\n", style=PALETTE["muted"])
-            if limit:
-                body.append_text(progress_bar(used if started else 0, limit, 24))
-                body.append("\n")
-            body.append("\n")
-        body.append("Ctrl+G 查看完整详情", style=PALETTE["faint"])
-        self.query_one("#task-inspector", Static).update(body)
+        bars = width >= 110
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append("◆ ", style=PALETTE["accent"])
+        text.append_text(gradient_text("RecapCLI"))
+        text.append("  " + self._model_label, style=PALETTE["muted"])
+        if width >= 80:
+            text.append(" · " + self.options.mode, style=PALETTE["faint"])
+        if not started:
+            text.append("   " + ("就绪" if self._model_ready else "未配置模型"), style=PALETTE["faint"])
+        else:
+            for label, used, limit in (("请求", requests, self.options.max_steps),
+                                       ("工具", tools, limits.max_tool_calls)):
+                if label == "工具" and width < 64:
+                    break
+                text.append(f"   {label} ", style=PALETTE["faint"])
+                if bars:
+                    text.append_text(progress_bar(used, limit, 8))
+                    text.append(" ")
+                text.append(f"{used}/{limit}", style=PALETTE["muted"])
+            if width >= 72:
+                text.append("   " + duration_text(elapsed), style=PALETTE["accent"])
+            total = (task.usage or {}).get("total_tokens")
+            if width >= 96 and isinstance(total, int) and not isinstance(total, bool):
+                text.append(f"   {total:,} tokens", style=PALETTE["faint"])
+        if width >= 120:
+            text.append("   Ctrl+G 详情", style=PALETTE["faint"])
+        return text
+
+    def _refresh_top_bar(self):
+        if not self.query("#top-bar"):  # 退出时界面可能已经卸载。
+            return
+        bar = self.query_one("#top-bar", Static)
+        bar.update(self._top_bar_text(bar.size.width or self.size.width))
 
     def _refresh_hints(self):
         if not self.query("#key-hints"):

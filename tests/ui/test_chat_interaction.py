@@ -147,7 +147,7 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("[操作]", transcript(app))
             app._refresh_status()
             await pilot.pause()
-            self.assertIn("3 / 100 次", rendered_text(app.query_one("#task-inspector")))
+            self.assertIn("3/100", str(app.query_one("#top-bar").render()))
             app._unlock()
 
     async def test_tool_progress_distinguishes_success_failure_and_unknown_outcomes(self):

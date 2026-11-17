@@ -146,6 +146,8 @@ def gradient_text(content, phase=0.0, span=None):
 def progress_bar(done, total, width=14):
     """渐变进度条；total 无效时返回空条。"""
     filled = 0 if total <= 0 else min(width, round(width * done / total))
+    if done > 0 and total > 0:
+        filled = max(1, filled)  # 用了一点也要看得出来，不能四舍五入成空条
     text = Text(no_wrap=True)
     for index in range(width):
         if index < filled:

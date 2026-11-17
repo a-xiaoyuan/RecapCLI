@@ -179,6 +179,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
     def compose(self) -> ComposeResult:
         with Horizontal(id="shell"):
             with Vertical(id="stage"):
+                yield Static("", id="top-bar", markup=False)
                 with ConversationView(id="conversation"):
                     with Vertical(id="history"):
                         with Vertical(id="welcome"):
@@ -205,7 +206,6 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
                         yield PromptInput(placeholder=placeholder, id="prompt")
                         yield Static("↵", id="input-enter", markup=False)
                     yield Static("", id="key-hints", markup=False)
-            yield Static("", id="task-inspector", markup=False)
 
     def _welcome_tips(self):
         text = Text()
@@ -263,11 +263,11 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
         self._apply_width(event.size.width)
 
     def _apply_width(self, width):
-        self.query_one("#task-inspector").display = width >= 100
         self.query_one("#welcome-logo").display = width >= 52
         if self.screen_stack:
             self.screen_stack[0].set_class(width < 72, "-narrow")
         self.call_after_refresh(self._refresh_hints)
+        self.call_after_refresh(self._refresh_top_bar)
 
     def _workspace_caption(self):
         path = clean_output(str(self.state.workspace))

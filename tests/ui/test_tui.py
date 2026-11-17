@@ -379,7 +379,8 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             history, footer = app.query_one("#history"), app.query_one("#footer")
             self.assertEqual(footer.region.x + 2, history.region.x)
             self.assertGreater(app.query_one("#composer").region.width, 100)
-            self.assertTrue(app.query_one("#task-inspector").display)
+            self.assertFalse(app.query("#task-inspector"))  # 右侧面板已换成顶部状态栏
+            self.assertIn("RecapCLI", str(app.query_one("#top-bar").render()))
             self.assertEqual(app.query_one("#prompt").size.height, 1)
             # 不铺底色：背景是终端自己的颜色。
             from recapcli.tui.app import terminal_theme
@@ -762,12 +763,12 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(app.screen_stack), 1)  # 运行中不打开
             app._unlock()
 
-    async def test_inspector_shows_tool_and_time_budget(self):
+    async def test_top_bar_shows_request_and_tool_budget(self):
         from recapcli.core import events
         app = self._app(self._state())
         async with app.run_test(size=(144, 40)) as pilot:
             await pilot.pause()
-            self.assertIn("尚未开始", rendered_text(app.query_one("#task-inspector")))
+            self.assertIn("就绪", str(app.query_one("#top-bar").render()))
             app._lock()
             app.event_update("[模型] 请求模型")
             for index in range(3):
@@ -775,11 +776,11 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             app._refresh_status()
             await pilot.pause()
-            shown = rendered_text(app.query_one("#task-inspector"))
-            self.assertIn("工具调用", shown)
-            self.assertIn("3 / 100 次", shown)
-            self.assertIn("执行时间", shown)
-            self.assertIn("/ 30m00s", shown)
+            shown = str(app.query_one("#top-bar").render())
+            self.assertIn("请求 ", shown)
+            self.assertIn("工具 ", shown)
+            self.assertIn("3/100", shown)
+            self.assertIn("▰", shown)  # 144 列够宽，带进度条
             app._unlock()
 
     async def test_long_diff_event_is_folded_and_ctrl_o_expands(self):
