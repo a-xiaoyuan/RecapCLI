@@ -143,6 +143,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
         self._response_widget = None
         self._turn_answer_widget = None
         self._progress_widget = None
+        self._turn_steps = []  # 本轮时间线的各段，按出现顺序
         self._todo_widget = None
         self._status_message = ""
         self._response_text = ""
@@ -287,6 +288,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
         self._turn_answer_widget = None
         self._task_status = TaskStatus()
         self._progress_widget = None
+        self._turn_steps = []
         self._todo_widget = None
         self._busy = True
         self._busy_since = time.monotonic()
@@ -297,8 +299,8 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
         self._refresh_status()
 
     def _unlock(self):
-        if self._progress_widget is not None:
-            self._progress_widget.finish()
+        for step in self._turn_steps:
+            step.finish()
         self._busy = False
         self._busy_since = None
         self._activity = ""

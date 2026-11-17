@@ -794,11 +794,13 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
             blocks = list(app.query(FoldableLine))
             self.assertEqual(len(blocks), 1)
             self.assertTrue(blocks[0].foldable and not blocks[0].expanded)
-            self.assertIn("还有", rendered_text(blocks[0]))
+            # 差异带细框，按控件内容取文字，不按屏幕区域截（边框会挤掉末尾的提示行）。
+            self.assertIn("diff-block", blocks[0].classes)
+            self.assertIn("还有", str(blocks[0].render()))
             await pilot.press("ctrl+o")
             await pilot.pause()
             self.assertTrue(blocks[0].expanded)
-            self.assertIn("收起", rendered_text(blocks[0]))
+            self.assertIn("收起", str(blocks[0].render()))
             app._unlock()
 
     async def test_todo_events_update_one_panel_per_turn(self):

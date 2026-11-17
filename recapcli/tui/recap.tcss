@@ -28,8 +28,12 @@ Screen { background: ansi_default; color: ansi_default; }
 .turn { height: auto; margin-bottom: 1; background: ansi_default; }
 .user-turn { color: ansi_default; background: $recap-surface; padding: 0 1; }
 .assistant-turn { width: 100%; }
-.progress-turn, .todo-turn { padding-left: 2; }
+/* 时间线：步骤贴左，"┊" 串起一轮；差异用细框，命令输出左侧一条虚线。 */
+.progress-turn { padding-left: 0; margin-bottom: 0; }
+.todo-turn { padding-left: 2; }
 .info-turn, .event-turn { color: $recap-muted; padding-left: 2; }
+.event-turn.diff-block { margin: 0 0 0 2; padding: 0 1; border: round $recap-faint; }
+.event-turn.output-block { margin-bottom: 0; padding-left: 3; border-left: dashed $recap-faint; }
 .error-turn { color: ansi_red; padding-left: 2; }
 .approval-turn { margin-left: 2; padding: 0 1; border: round $recap-warning; }
 

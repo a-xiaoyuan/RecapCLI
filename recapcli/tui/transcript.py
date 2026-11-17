@@ -9,6 +9,13 @@ from .widgets import ConversationLine, ConversationView, FoldableLine, GlyphButt
 
 
 
+def _diff_stat(event):
+    lines = event.split("\n")[1:]
+    added = sum(line.startswith("+") and not line.startswith("+++ ") for line in lines)
+    removed = sum(line.startswith("-") and not line.startswith("--- ") for line in lines)
+    return added, removed
+
+
 class TranscriptMixin:
     def _static(self, content, kind):
         return ConversationLine(content, kind)
@@ -53,15 +60,26 @@ class TranscriptMixin:
         role = name if separator and (name in {"analysis", "review", "aggregate", "planner", "reviewer", "team_summary"}
                                      or name.startswith("worker:")) else ""
         event = message.removeprefix(f"[{role}] ") if role else message
-        if kind in {"diff", "command_output"} or event.startswith(("[差异]\n", "[命令输出]\n")):
-            # 长差异和长命令输出折叠显示；子角色的也按同样样式，只是不再带前缀原文。
-            self.query_one("#transcript").mount(FoldableLine(event, "event"))
+        is_diff = kind == "diff" or event.startswith("[差异]\n")
+        if is_diff or kind == "command_output" or event.startswith("[命令输出]\n"):
+            if is_diff:
+                self._annotate(role, stat=_diff_stat(event))
+            # 长差异和长命令输出折叠显示，挂在时间线上；之后的工具另起一段，保持发生顺序。
+            block = FoldableLine(event, "event")
+            block.add_class("diff-block" if is_diff else "output-block")
+            self.query_one("#transcript").mount(block)
+            self._progress_widget = None
             self._follow_latest()
             return
+        if kind == "operation" or event.startswith("[操作] "):
+            # “已修改 a.py”挂到正在运行的工具下面，不单独占一行。
+            if self._annotate(role, detail=event.removeprefix("[操作] ")):
+                return
         if event.startswith("[待办]\n"):
             if self._todo_widget is None:
                 self._todo_widget = TodoPanel()
                 self.query_one("#transcript").mount(self._todo_widget)
+                self._progress_widget = None
             self._todo_widget.show(event.removeprefix("[待办]\n"))
             self._follow_latest()
             return
@@ -73,11 +91,24 @@ class TranscriptMixin:
             self.set_activity("工具 · " + event.removeprefix("[工具]").strip())
         if event.startswith(("[模型]", "[工具]")) and self._progress_widget is None:
             self._progress_widget = ToolProgress()
+            self._turn_steps.append(self._progress_widget)
             self.query_one("#transcript").mount(self._progress_widget)
-        if self._progress_widget is not None and self._progress_widget.observe(message, role):
+        # 结果可能晚于差异或命令输出到达，那时它所属的工具在更早的一段里。
+        step = self._step_running(role) if event.startswith("[结果]") else self._progress_widget
+        if step is not None and step.observe(message, role):
             self._follow_latest()
         else:
             self.append_line(message, "event")
+
+    def _step_running(self, role):
+        return next((step for step in reversed(self._turn_steps) if step.running_tool(role) is not None), None)
+
+    def _annotate(self, role, **changes):
+        step = self._step_running(role)
+        return step is not None and step.annotate(role, **changes)
+
+    def _turn_rows(self):
+        return [row for step in self._turn_steps for row in step.rows]
 
     def stream_update(self, kind, text):
         if kind == "start":
@@ -94,8 +125,8 @@ class TranscriptMixin:
                 self._response_widget.set_content(self._response_text)
             self._follow_latest()
         elif kind == "end":
-            if self._progress_widget is not None:
-                self._progress_widget.complete_request()
+            for step in self._turn_steps:
+                step.complete_request()
         elif kind == "abort":
             if self._response_widget is not None:
                 self._response_widget.set_content("[回答未完成]\n" + self._response_text, "error")
@@ -103,9 +134,9 @@ class TranscriptMixin:
             self._response_text = ""
 
     def finish_answer(self, answer):
-        if self._progress_widget is not None:
-            for role in {row["role"] for row in self._progress_widget.rows}:
-                self._progress_widget.complete_request(role)
+        for step in self._turn_steps:
+            for role in {row["role"] for row in step.rows}:
+                step.complete_request(role)
         if self._response_widget is not None:
             self._response_widget.set_content(answer)
             self._turn_answer_widget = self._response_widget
@@ -122,6 +153,7 @@ class TranscriptMixin:
         self._turn_answer_widget = None
         self._response_text = ""
         self._progress_widget = None
+        self._turn_steps = []
         self._todo_widget = None
         await self.query_one("#transcript").remove_children()
         self._follow_latest(force=True)
@@ -133,6 +165,7 @@ class TranscriptMixin:
         self._turn_answer_widget = None
         self._response_text = ""
         self._progress_widget = None
+        self._turn_steps = []
         self._todo_widget = None
         transcript = self.query_one("#transcript")
         await transcript.remove_children()

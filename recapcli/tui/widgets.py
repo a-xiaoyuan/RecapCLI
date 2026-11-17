@@ -264,16 +264,24 @@ class ApprovalMenu(OptionList):
 
 
 class ToolProgress(Static):
-    """同一轮的工具调用逐行列出，太长时只留最近几条和有问题的；末行是当前动作或摘要。"""
+    """时间线上的一段：连续的只读工具合成一行，编辑和命令各占一行；运行中的模型请求显示转圈。
+
+    一轮里可能有好几段：差异、命令输出、待办插在中间时，后面的工具另起一段，保证顺序和发生顺序一致。
+    """
 
     FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     INDEX_TOOLS = {"search_code_index", "search_symbols"}
+    READ_TOOLS = {"read_file", "find_files", "list_directory", "search_text", "search_symbols", "search_code_index",
+                  "repository_map", "find_references", "load_skill", "read_url", "web_search", "command_status",
+                  "todo_write"}
+    MAX_GROUP_ITEMS = 4
     MAX_VISIBLE_TOOLS = 8
     VERBS = {"read_file": "读取", "list_directory": "目录", "find_files": "查找", "search_text": "搜索",
              "search_symbols": "符号", "search_code_index": "检索", "repository_map": "地图",
              "find_references": "引用", "edit_file": "编辑", "edit_files": "批量编辑", "undo_edit": "撤销",
              "restore_file": "恢复", "run_command": "运行", "command_status": "查看命令", "command_input": "输入",
-             "stop_command": "停止", "web_search": "网页搜索", "read_url": "读取网页"}
+             "stop_command": "停止", "web_search": "网页搜索", "read_url": "读取网页", "load_skill": "技能",
+             "todo_write": "待办"}
     PROBLEMS = {"failed", "warning", "unknown", "skipped"}
 
     def __init__(self):
@@ -288,32 +296,48 @@ class ToolProgress(Static):
         self._timer = self.set_interval(0.12, self._animate)
         self._redraw()
 
+    def running_tool(self, role=""):
+        return next((item for item in self.rows
+                     if item["role"] == role and item["kind"] == "tool" and item["state"] == "running"), None)
+
     def observe(self, message, role=""):
         event = message.removeprefix(f"[{role}] ") if role else message
         if event.startswith("[模型]"):
             self.complete_request(role)
             self.rows.append({"label": event.removeprefix("[模型]").strip(), "role": role,
                               "kind": "request", "state": "running", "started": time.monotonic(),
-                              "duration": None, "detail": ""})
+                              "duration": None, "detail": "", "stat": None})
         elif event.startswith("[工具]"):
             self.complete_request(role)
             self.rows.append({"label": event.removeprefix("[工具]").strip(), "role": role,
                               "kind": "tool", "state": "running", "started": time.monotonic(), "duration": None,
-                              "detail": ""})
+                              "detail": "", "stat": None})
         elif event.startswith("[结果]"):
-            row = next((item for item in self.rows
-                        if item["role"] == role and item["kind"] == "tool" and item["state"] == "running"), None)
+            row = self.running_tool(role)
             if row is None:
                 return False
             result = event.removeprefix("[结果]").strip()
             state = "failed" if result.startswith("失败") else "skipped" if result.startswith("未执行") else "done"
             if "退出码 " in result and result.rsplit("退出码 ", 1)[1] != "0":
                 state = "warning"
-            row.update(state=state, duration=time.monotonic() - row["started"],
-                       detail="" if result == "成功" else result)
+            # 成功时保留已有说明（例如“已修改 a.py”）；有问题时换成结果原因。
+            detail = row["detail"] if result == "成功" or state == "done" and "退出码" in result else result
+            row.update(state=state, duration=time.monotonic() - row["started"], detail=detail)
         else:
             return False
         self.content_text += (self.rows[-1]["label"] if event.startswith("[模型]") else message) + "\n"
+        self._redraw()
+        return True
+
+    def annotate(self, role, *, detail=None, stat=None):
+        """把操作摘要或差异增删数挂到正在运行的那个工具上；没有可挂的返回 False。"""
+        row = self.running_tool(role)
+        if row is None:
+            return False
+        if detail is not None:
+            row["detail"] = detail
+        if stat is not None:
+            row["stat"] = stat
         self._redraw()
         return True
 
@@ -333,44 +357,73 @@ class ToolProgress(Static):
         self._frame = (self._frame + 1) % len(self.FRAMES)
         self._redraw()
 
+    @classmethod
+    def _is_quiet(cls, row):
+        """顺利完成的只读工具：可以和相邻的同类合成一行。"""
+        return row["state"] == "done" and row["label"].split(" · ", 1)[0] in cls.READ_TOOLS and not row["role"]
+
+    def _steps(self, tools):
+        """把连续的安静工具合成一组；其余每个工具单独一步。"""
+        steps = []
+        for row in tools:
+            if self._is_quiet(row) and steps and isinstance(steps[-1], list):
+                steps[-1].append(row)
+            else:
+                steps.append([row] if self._is_quiet(row) else row)
+        return steps
+
     def _redraw(self):
         running = any(row["state"] == "running" for row in self.rows)
         if self._timer is not None:
             self._timer.resume() if running else self._timer.pause()
         tools = [row for row in self.rows if row["kind"] == "tool"]
-        # 没用工具的一轮不需要过程信息，回答本身就够了。
+        # 没用工具的一段不需要过程信息，回答本身就够了。
         self.display = bool(tools) or running
         if not self.rows:
             self.update("")
             return
-        requests = sum(row["kind"] == "request" for row in self.rows)
-        reads = sum(row["label"].split(" ", 1)[0] in {"read_file", "find_files", "list_directory"} for row in tools)
-        searches = sum(row["label"].split(" ", 1)[0] in self.INDEX_TOOLS for row in tools)
-        parts = ([f"模型请求 {requests} 次"] if requests else []) + [f"工具 {len(tools)} 次"]
-        if reads:
-            parts.append(f"读取 {reads}")
-        if searches:
-            parts.append(f"搜索 {searches}")
         text = Text(no_wrap=False)
-        recent = len(tools) - self.MAX_VISIBLE_TOOLS
-        shown = [row for index, row in enumerate(tools) if index >= recent or row["state"] in self.PROBLEMS]
-        if len(shown) < len(tools):
-            text.append(f"… 还有 {len(tools) - len(shown)} 次工具调用，Ctrl+G 查看任务详情\n", style=PALETTE["muted"])
-        for row in shown:
-            self._tool_line(text, row)
+        text.append("┊", style=PALETTE["faint"])
+        steps = self._steps(tools)
+        hidden = 0
+        if len(steps) > self.MAX_VISIBLE_TOOLS:
+            keep = len(steps) - self.MAX_VISIBLE_TOOLS
+            hidden = sum(1 for index, step in enumerate(steps)
+                         if index < keep and (isinstance(step, list) or step["state"] not in self.PROBLEMS))
+            steps = [step for index, step in enumerate(steps)
+                     if index >= keep or not isinstance(step, list) and step["state"] in self.PROBLEMS]
+        if hidden:
+            text.append(f"\n… 还有 {hidden} 步，Ctrl+G 查看任务详情", style=PALETTE["muted"])
+        for step in steps:
+            text.append("\n")
+            if isinstance(step, list):
+                self._group_line(text, step)
+            else:
+                self._tool_line(text, step)
         request = next((row for row in reversed(self.rows)
                         if row["kind"] == "request" and row["state"] == "running"), None)
         if request is not None:
-            text.append(self.FRAMES[self._frame] + " ", style=PALETTE["accent"])
+            text.append("\n" + self.FRAMES[self._frame] + " ", style=PALETTE["accent"])
             if request["role"]:
                 text.append(request["role"] + " · ", style=PALETTE["muted"])
-            text.append(request["label"] + "\n")
-        if running:
-            text.append("  └ " + " · ".join(parts), style=PALETTE["muted"])
-        else:
-            elapsed = time.monotonic() - self._started
-            text.append("  └ " + " · ".join(parts) + f" · {elapsed:.1f}s", style=PALETTE["muted"])
+            text.append(request["label"], style=PALETTE["muted"])
         self.update(text)
+
+    def _short(self, row):
+        name, _, target = row["label"].partition(" · ")
+        target = target.replace("\\", "/").rsplit("/", 1)[-1]
+        return self.VERBS.get(name, name) + (" " + target if target else "")
+
+    def _group_line(self, text, rows):
+        text.append("● ", style=PALETTE["online"])
+        items = [self._short(row) for row in rows]
+        shown = " · ".join(items[:self.MAX_GROUP_ITEMS])
+        if len(items) > self.MAX_GROUP_ITEMS:
+            shown += f" 等 {len(items)} 项"
+        text.append(shown, style=PALETTE["muted"])
+        duration = sum(row["duration"] or 0 for row in rows)
+        if duration >= 1:
+            text.append(f"  {duration:.1f}s", style=PALETTE["faint"])
 
     def _tool_line(self, text, row):
         state = row["state"]
@@ -383,12 +436,15 @@ class ToolProgress(Static):
         text.append(self.VERBS.get(name, name))
         if target:
             text.append("  " + target, style=PALETTE["muted"])
+        if row["stat"]:
+            added, removed = row["stat"]
+            text.append(f"  +{added}", style=PALETTE["online"])
+            text.append(f" -{removed}", style=PALETTE["error"])
         if row["duration"] is not None and row["duration"] >= 1:
-            text.append(f" · {row['duration']:.1f}s", style=PALETTE["muted"])
+            text.append(f"  {row['duration']:.1f}s", style=PALETTE["faint"])
         if row["detail"]:
-            text.append("\n  └ ", style=PALETTE["muted"])
+            text.append("\n┊ └ ", style=PALETTE["faint"])
             text.append(row["detail"], style=PALETTE["muted"] if state == "done" else color)
-        text.append("\n")
 
 
 class GradientLogo(Static):

@@ -113,10 +113,41 @@ class ChatInteractionTests(unittest.IsolatedAsyncioTestCase):
                 app.driver.presenter.event(message)
             await pilot.pause()
             shown = rendered_text(app._progress_widget)
-            self.assertIn("模型请求 1 次", shown)
-            self.assertIn("工具 3 次", shown)
-            self.assertIn("README.md", shown)
-            self.assertIn("pyproject.toml", shown)
+            # 顺利完成的只读工具合成时间线上的一行。
+            self.assertIn("读取 README.md · 读取 pyproject.toml · 符号", shown)
+            self.assertEqual(sum("●" in line for line in shown.splitlines()), 1)
+            app._unlock()
+
+    async def test_timeline_keeps_diff_and_output_in_order(self):
+        from recapcli.core import events
+        app = self.app()
+        async with app.run_test(size=(100, 40)) as pilot:
+            app._lock()
+            app.event_update("[模型] 第 1 次请求")
+            app.event_update(events.tool_start("read_file", "a.py"))
+            app.event_update(events.tool_result("[结果] 成功", ok=True))
+            app.event_update(events.tool_start("edit_file", "a.py"))
+            app.event_update(events.operation("已修改 a.py"))
+            app.event_update(events.diff("--- a/a.py\n+++ b/a.py\n@@ -1 +1,2 @@\n-x\n+y\n+z"))
+            app.event_update(events.tool_result("[结果] 成功", ok=True))
+            app.event_update(events.tool_start("run_command", "python -m unittest"))
+            app.event_update(events.command_output("ok"))
+            app.event_update(events.tool_result("[结果] 命令已结束，退出码 1", ok=True, returncode=1))
+            await pilot.pause()
+            children = list(app.query_one("#transcript").children)
+            kinds = [("diff" if "diff-block" in child.classes else "output" if "output-block" in child.classes
+                      else "step" if "progress-turn" in child.classes else "other") for child in children]
+            self.assertEqual(kinds, ["step", "diff", "step", "output"])
+            first, second = app._turn_steps
+            edit = first.rows[-1]
+            self.assertEqual((edit["stat"], edit["detail"], edit["state"]), ((2, 1), "已修改 a.py", "done"))
+            self.assertIn("+2 -1", rendered_text(first))
+            self.assertIn("已修改 a.py", rendered_text(first))
+            self.assertEqual(second.rows[-1]["state"], "warning")  # 结果晚于输出到达，仍记到运行它的那一步
+            self.assertNotIn("[操作]", transcript(app))
+            app._refresh_status()
+            await pilot.pause()
+            self.assertIn("3 / 100 次", rendered_text(app.query_one("#task-inspector")))
             app._unlock()
 
     async def test_tool_progress_distinguishes_success_failure_and_unknown_outcomes(self):

@@ -117,9 +117,10 @@ class StatusBarMixin:
         if len(files) > 6:
             file_text += f"\n还有 {len(files) - 6} 个 · Ctrl+G 查看"
         requests, tools = task.requests, 0
-        if self._progress_widget is not None:
-            requests = max(requests, sum(row["kind"] == "request" for row in self._progress_widget.rows))
-            tools = sum(row["kind"] == "tool" for row in self._progress_widget.rows)
+        rows = self._turn_rows()
+        if rows:
+            requests = max(requests, sum(row["kind"] == "request" for row in rows))
+            tools = sum(row["kind"] == "tool" for row in rows)
         limits = self.options.limits or AgentLimits()
         if self._busy and self._busy_since is not None:
             elapsed = time.monotonic() - self._busy_since

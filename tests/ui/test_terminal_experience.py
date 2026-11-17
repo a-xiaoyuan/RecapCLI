@@ -87,19 +87,32 @@ class DiffRenderingTests(unittest.TestCase):
 
 
 class ToolLinesTests(unittest.TestCase):
-    def test_long_turn_keeps_recent_tools_and_every_failure(self):
+    def test_quiet_reads_merge_and_failures_stay_separate(self):
         progress = ToolProgress()
         with patch.object(progress, "update") as update:
             for index in range(12):
-                progress.observe(f"[工具] read_file · f{index}.py")
+                progress.observe(f"[工具] read_file · src/f{index}.py")
                 progress.observe("[结果] 失败：不存在" if index == 0 else "[结果] 成功")
+        lines = update.call_args.args[0].plain.split("\n")
+        self.assertEqual(lines[0], "┊")
+        self.assertTrue(lines[1].startswith("✗ 读取  src/f0.py"))
+        self.assertEqual(lines[2], "┊ └ 失败：不存在")
+        self.assertEqual(lines[3], "● 读取 f1.py · 读取 f2.py · 读取 f3.py · 读取 f4.py 等 11 项")
+        self.assertEqual(len(lines), 4)
+
+    def test_many_steps_hide_the_oldest_but_keep_problems(self):
+        progress = ToolProgress()
+        with patch.object(progress, "update") as update:
+            progress.observe("[工具] run_command · bad")
+            progress.observe("[结果] 失败：坏了")
+            for index in range(10):
+                progress.observe(f"[工具] edit_file · f{index}.py")
+                progress.observe("[结果] 成功")
         shown = update.call_args.args[0].plain
-        self.assertIn("f0.py", shown)
-        self.assertIn("不存在", shown)
-        self.assertIn("f11.py", shown)
-        self.assertNotIn("f2.py", shown)
-        self.assertIn("还有 3 次工具调用", shown)
-        self.assertIn("工具 12 次", shown)
+        self.assertIn("坏了", shown)
+        self.assertIn("还有 2 步", shown)
+        self.assertNotIn("f1.py", shown)
+        self.assertIn("f9.py", shown)
 
 
 class WorkspaceFilesTests(unittest.TestCase):
