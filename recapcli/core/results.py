@@ -33,6 +33,7 @@ class TurnResult:
     status: str = "returned"
     stop_reason: str = "模型已返回回答；任务验收未验证"
     summary: dict | None = None
+    outcome: object | None = None
 
 
 class TraceError(RuntimeError):

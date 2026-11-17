@@ -4,7 +4,6 @@ from ..tools.commands import command_status
 from .acceptance import MAX_ACCEPTANCE_ROUNDS, run_acceptance
 from .auto_verify import MAX_VERIFY_ROUNDS, run_verification
 from .hooks import MAX_STOP_BLOCKS
-from .results import TurnResult
 
 
 class EndChecks:
@@ -70,7 +69,7 @@ class EndChecks:
             run.trace("verification_pending", record_ids=pending, reason=reason)
             ctx.on_event(f"[验证] {reason}")
             if final_request or self.pending_rounds >= MAX_VERIFY_ROUNDS:
-                return run.incomplete(answer, reason)
+                return run.incomplete(answer, reason, verification="pending")
             return self._continue(f"{reason}。请用 command_status 核对这些命令：" + "、".join(pending))
         if ctx.hooks is not None and ctx.role is None:
             reason = ctx.hooks.run(run, "stop", {"answer": answer, "edited": run.edited})
@@ -83,13 +82,13 @@ class EndChecks:
             label = " ".join(ctx.verify_command)
             if ctx.budget.time_low():
                 ctx.on_event("[验证] 时间不足，未运行")
-                return run.incomplete(answer, f"时间不足，自动验证未运行（{label}）")
+                return run.incomplete(answer, f"时间不足，自动验证未运行（{label}）", verification="not_run")
             self.verified, feedback = run_verification(run)
             self.verify_dirty = not self.verified
             if not self.verified:
                 self.verify_failures += 1
                 if final_request or self.verify_failures >= MAX_VERIFY_ROUNDS:
-                    return run.incomplete(answer, f"自动验证未通过（{label}）")
+                    return run.incomplete(answer, f"自动验证未通过（{label}）", verification="failed")
                 return self._continue(feedback)
         acceptance_note = ""
         if ctx.acceptance is not None:
@@ -98,11 +97,9 @@ class EndChecks:
             passed, label, feedback, not_run = run_acceptance(run, self.acceptance_rounds)
             if not passed:
                 if final_request or not_run or self.acceptance_rounds >= MAX_ACCEPTANCE_ROUNDS:
-                    return run.incomplete(answer, label)
+                    return run.incomplete(answer, label, acceptance="failed")
                 return self._continue(f"{label}。请修复未通过项，再给出最终答复。\n{feedback}")
             acceptance_note = f"；{label}"
         if final_request and run.forced_reason and run.local_tool_calls > 0 and not run.read_summary_forced:
             return run.incomplete(answer, run.forced_reason)
-        checked = "；自动验证通过" if self.verified else ""
-        manual = "人工验收未登记" if acceptance_note else "任务验收未验证"
-        return TurnResult(answer, ctx.turn, "returned", f"模型已返回回答{checked}{acceptance_note}；{manual}", run.new_summary)
+        return run.returned(answer, acceptance_note=acceptance_note)

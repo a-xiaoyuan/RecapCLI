@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, replace
 import json
-import re
 from typing import Any, Callable
 
 from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
@@ -10,12 +9,12 @@ from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from ..llm.protocols import assistant_record
 from ..llm.streaming import IncompleteStreamError
 from ..tools import tool_definitions
-from .acceptance import acceptance_label
 from .budget import BudgetExhausted, SKIPPED_RESULT
 from .compaction import finish_compaction, prepare_compaction, summary_text
 from .context import MAX_HISTORY_MESSAGES, TokenMeter, json_tokens, select_history
 from .end_checks import EndChecks
 from .model_call import COMPACT_RESERVE, request_model
+from .outcome import TerminalOutcome, finish_outcome, judge_claim
 from .planning import PlanFormatError
 from .results import (TraceError, TurnResult, clear_old_tool_results, close_turn, context_overflow,
                       fallback_answer, has_tool_results, is_tool_call_text)
@@ -41,9 +40,6 @@ TOOL_TEXT_CORRECTION = ("上一条输出是无效的工具调用文本。现在�
 FINAL_SUMMARY_INSTRUCTION = ("现在停止读取，不要调用任何工具。请直接基于已读内容和已有工具结果，"
                              "用自然语言回答用户最初的问题。")
 PLANNER_FINAL_INSTRUCTION = "仅返回要求的计划 JSON，不调用工具，不执行计划。"
-# 回答里声称已经改好的说法；可写任务没写过文件时用来提示“改动并未写入”。
-CHANGE_CLAIM = re.compile(r"已(?:经)?(?:完成|修改|实现|修复|更新|添加|增加|改动|新增)|改动如下|修改如下")
-UNBACKED_CLAIM_NOTE = "> [核对] 本轮没有通过编辑工具修改任何文件，上面描述的改动并未写入工作区。"
 
 
 def model_failure_reason(error):
@@ -163,11 +159,34 @@ class TurnRunner:
         total = self.meter.count([self.system_message(), *messages, *([placeholder] * pending_results), self.final_message])
         return total + self.definition_tokens <= self.window
 
-    def incomplete(self, answer, reason):
-        if self.ctx.acceptance is not None and not self.end_checks.acceptance_current:
-            reason += "；" + acceptance_label(0, 0, len(self.ctx.acceptance.checks))
-        manual = "人工验收未登记" if self.ctx.acceptance is not None else "任务验收未验证"
-        return TurnResult(answer, self.ctx.turn, "incomplete", f"{reason}；{manual}", self.new_summary)
+    def _acceptance_state(self, acceptance):
+        if acceptance is not None:
+            return acceptance
+        if self.ctx.acceptance is None:
+            return "absent"
+        if not self.end_checks.acceptance_current:
+            return "not_run"
+        return "open"
+
+    def _result(self, outcome):
+        return TurnResult(outcome.answer, self.ctx.turn, outcome.status, outcome.stop_reason,
+                          self.new_summary, outcome)
+
+    def incomplete(self, answer, reason, *, verification="absent", acceptance=None):
+        if verification == "absent" and self.end_checks.verified:
+            verification = "passed"
+        checks = self.ctx.acceptance.checks if self.ctx.acceptance is not None else ()
+        outcome = finish_outcome(
+            answer, "incomplete", reason, files_written=tuple(self.edited), verification=verification,
+            acceptance=self._acceptance_state(acceptance), acceptance_total=len(checks))
+        return self._result(outcome)
+
+    def returned(self, answer, *, acceptance_note=""):
+        outcome = finish_outcome(
+            answer, "returned", "", files_written=tuple(self.edited),
+            verification="passed" if self.end_checks.verified else "absent",
+            acceptance="passed" if acceptance_note else "absent", acceptance_note=acceptance_note)
+        return self._result(outcome)
 
     def finish_incomplete(self, reason, correction=None):
         """预算用完：先尝试不带工具的汇总；模型输出工具文本时再纠正一次，最后用事实兜底。"""
@@ -581,16 +600,28 @@ class TurnRunner:
             self.trace("checkpoint", id=checkpoint["id"], files=sorted(checkpoint["files"]))
         return self.mark_unbacked_claim(result)
 
+    def _claim_applies(self):
+        ctx = self.ctx
+        return ctx.mode == "react" and ctx.role is None and ctx.planner is None and self._push_edit_phase()
+
     def mark_unbacked_claim(self, result):
         """可写任务的回答声称已改动，但本轮没有用编辑工具写过文件：如实标注，不改终态。"""
-        ctx = self.ctx
-        if (ctx.mode != "react" or ctx.role is not None or ctx.planner is not None or not self._push_edit_phase()
-                or not result.answer or not CHANGE_CLAIM.search(result.answer)):
+        files = tuple(result.outcome.files_written) if isinstance(result.outcome, TerminalOutcome) else tuple(self.edited)
+        claim, answer, reason = judge_claim(result.answer, result.stop_reason, claim_applies=self._claim_applies(),
+                                            files_written=files)
+        previous = result.outcome if isinstance(result.outcome, TerminalOutcome) else None
+        if claim == "unbacked" and not (previous is not None and previous.claim == "unbacked"):
+            self.trace("unbacked_change_claim", status=result.status)
+            self.ctx.on_event("[核对] 回答声称已修改，但本轮没有通过编辑工具写入文件")
+        if previous is None and answer == result.answer and reason == result.stop_reason:
             return result
-        self.trace("unbacked_change_claim", status=result.status)
-        ctx.on_event("[核对] 回答声称已修改，但本轮没有通过编辑工具写入文件")
-        return replace(result, answer=result.answer.rstrip() + "\n\n" + UNBACKED_CLAIM_NOTE,
-                       stop_reason=result.stop_reason + "；回答声称已修改，但本轮未通过编辑工具写入文件")
+        outcome = TerminalOutcome(
+            result.status, reason, answer, files,
+            previous.verification if previous is not None else "absent",
+            previous.acceptance if previous is not None else "absent", claim)
+        if previous == outcome and answer == result.answer and reason == result.stop_reason:
+            return result
+        return replace(result, answer=answer, stop_reason=reason, outcome=outcome)
 
     def _run_turn(self):
         ctx = self.ctx
