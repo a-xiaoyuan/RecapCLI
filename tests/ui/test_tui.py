@@ -735,6 +735,32 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.query_one("#welcome").display)
         turn.assert_not_called()
 
+    async def test_ctrl_k_palette_inserts_and_runs(self):
+        from textual.widgets import Input
+        from recapcli.tui.palette import CommandPaletteScreen
+        app = self._app(self._state())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+k")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, CommandPaletteScreen)
+            app.screen.query_one("#palette-filter", Input).value = "help"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertEqual(len(app.screen_stack), 1)
+            self.assertEqual(app.query_one("#prompt").text, "/help ")
+            await pilot.press("ctrl+k")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertEqual(len(app.screen_stack), 1)
+            app._lock()
+            await pilot.press("ctrl+k")
+            await pilot.pause()
+            self.assertEqual(len(app.screen_stack), 1)  # 运行中不打开
+            app._unlock()
+
     async def test_inspector_shows_tool_and_time_budget(self):
         from recapcli.core import events
         app = self._app(self._state())

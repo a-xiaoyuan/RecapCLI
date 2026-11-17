@@ -45,6 +45,7 @@ KEYS = """Enter 发送 · Shift+Enter / Ctrl+J 换行
 @ 补全项目文件路径 · 审批时 ↑↓ 选择、Enter 确认、数字键直选
 Esc 停止本轮 · Ctrl+Q 保存退出（忙时等待在途操作返回）
 Ctrl+G 任务详情与用量 · Ctrl+L 清屏
+Ctrl+K 命令面板（搜索命令、会话、技能） · Ctrl+O 展开或收起折叠的差异和输出
 Ctrl+A 全选输入；输入为空时全选对话 · Ctrl+C 复制
 Ctrl+End 回到底部 · Alt+PageUp / PageDown 翻阅历史
 F2 选择模型 · F3 模型设置"""

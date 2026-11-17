@@ -75,10 +75,16 @@ StatusScreen { align: center middle; background: ansi_default; }
 #status-body { height: auto; }
 
 /* 设置弹窗：固定列宽上限，字段内部滚动，操作按钮使用单行。 */
-ModelPickerScreen, ModelConfigScreen { align: center middle; background: ansi_default; }
+ModelPickerScreen, ModelConfigScreen, CommandPaletteScreen { align: center middle; background: ansi_default; }
 .settings-dialog { width: 68; max-width: 92%; height: 24; max-height: 90%; border: round #a6adc8; padding: 1 2;
                    background: ansi_default; scrollbar-color: #a6adc8; scrollbar-background: ansi_default; }
-ModelPickerScreen .settings-dialog { height: auto; }
+ModelPickerScreen .settings-dialog, CommandPaletteScreen .settings-dialog { height: auto; }
+CommandPaletteScreen .settings-dialog { width: 84; }
+#palette-filter { margin-bottom: 1; }
+#palette-options { height: auto; min-height: 1; max-height: 9; margin: 0; scrollbar-size-vertical: 1; background: ansi_default; border: none; }
+#palette-options > .option-list--option { padding: 0 1; color: ansi_default; }
+#palette-options > .option-list--option-highlighted { background: ansi_default; color: ansi_default; text-style: bold reverse; }
+#palette-count { height: 1; margin-top: 1; color: #a6adc8; }
 .dialog-title { height: 1; margin-bottom: 0; text-style: bold; }
 .dialog-note { height: auto; margin-top: 1; margin-bottom: 0; color: #a6adc8; }
 .dialog-scroll { height: 1fr; padding-right: 1; scrollbar-size-vertical: 1; }

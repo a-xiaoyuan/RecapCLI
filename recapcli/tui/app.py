@@ -26,6 +26,7 @@ from .status import TaskStatus
 from .theme import PALETTE
 from .widgets import (ApprovalMenu, CommandMenu, ConversationView, FoldableLine, GlyphButton, GradientLogo,
                       PromptInput, StatusScreen)
+from .palette import CommandPaletteScreen, palette_entries
 from .settings import ModelConfigScreen, ModelPickerScreen
 from ..base.version import project_version
 from ..ui.terminal_ui import clean_output
@@ -96,6 +97,7 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
                 Binding("ctrl+c", "copy", "复制", show=False),
                 Binding("ctrl+g", "show_status", "详情", priority=True),
                 Binding("escape", "cancel_turn", "停止本轮", priority=True),
+                Binding("ctrl+k", "command_palette", "命令面板", priority=True),
                 Binding("ctrl+o", "toggle_fold", "展开折叠", priority=True),
                 Binding("ctrl+end", "jump_latest", "回到底部", priority=True),
                 Binding("alt+pageup", "history_up", "上翻历史", priority=True),
@@ -452,6 +454,25 @@ class RecapShell(TranscriptMixin, StatusBarMixin, CommandInputMixin, ApprovalPan
 
     def action_jump_latest(self):
         self._follow_latest(force=True)
+
+    def action_command_palette(self):
+        if len(self.screen_stack) > 1 or self._busy or self._approval:
+            return
+        self._hide_commands()
+        self.push_screen(CommandPaletteScreen(palette_entries(self.state.workspace)), self._palette_done)
+
+    def _palette_done(self, result):
+        if not result:
+            return
+        action, text = result
+        prompt = self.query_one("#prompt", PromptInput)
+        if action == "submit":
+            self._submit_value(text)
+        else:
+            self.dismiss_command_menu(text)
+            prompt.load_text(text)
+            prompt.move_cursor(prompt.document.end)
+        prompt.focus()
 
     def action_toggle_fold(self):
         """展开或收起最近一个被折叠的长差异 / 命令输出。"""
