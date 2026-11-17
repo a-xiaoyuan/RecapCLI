@@ -735,6 +735,26 @@ class ShellTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(app.query_one("#welcome").display)
         turn.assert_not_called()
 
+    async def test_inspector_shows_tool_and_time_budget(self):
+        from recapcli.core import events
+        app = self._app(self._state())
+        async with app.run_test(size=(144, 40)) as pilot:
+            await pilot.pause()
+            self.assertIn("尚未开始", rendered_text(app.query_one("#task-inspector")))
+            app._lock()
+            app.event_update("[模型] 请求模型")
+            for index in range(3):
+                app.event_update(events.tool_start("read_file", f"f{index}.py"))
+            await pilot.pause()
+            app._refresh_status()
+            await pilot.pause()
+            shown = rendered_text(app.query_one("#task-inspector"))
+            self.assertIn("工具调用", shown)
+            self.assertIn("3 / 100 次", shown)
+            self.assertIn("执行时间", shown)
+            self.assertIn("/ 30m00s", shown)
+            app._unlock()
+
     async def test_long_diff_event_is_folded_and_ctrl_o_expands(self):
         from recapcli.core import events
         app = self._app(self._state())

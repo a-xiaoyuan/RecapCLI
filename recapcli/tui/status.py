@@ -43,6 +43,18 @@ def usage_text(task):
                       "合计  " + token_count(task.usage.get("total_tokens"))))
 
 
+def duration_text(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60}m{seconds % 60:02d}s" if seconds >= 60 else f"{seconds}s"
+
+
+def budget_text(used, limit, *, seconds=False):
+    """预算用量，如“12 / 100 次”或“1m05s / 30m00s”；上限无效时只写已用。"""
+    if seconds:
+        return f"{duration_text(used)} / {duration_text(limit)}" if limit else duration_text(used)
+    return f"{used} / {limit} 次" if limit else f"{used} 次"
+
+
 def task_text(task, *, busy=False, approval=False):
     if approval:
         return "等待审批"

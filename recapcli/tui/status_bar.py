@@ -5,9 +5,10 @@ from rich.text import Text
 from textual.widgets import Static
 
 from ..application.changes import change_report, commands_summary, files_summary, git_summary
+from ..core.agent import AgentLimits
 from ..core.project_rules import project_rules_description
 from ..ui.terminal_ui import clean_output
-from .status import TaskStatus, task_text, usage_text
+from .status import TaskStatus, budget_text, task_text, usage_text
 from .theme import PALETTE, gradient_text, progress_bar
 from .widgets import StatusScreen
 
@@ -115,21 +116,33 @@ class StatusBarMixin:
         file_text = "\n".join(files[:6]) if files else "暂无本轮编辑"
         if len(files) > 6:
             file_text += f"\n还有 {len(files) - 6} 个 · Ctrl+G 查看"
-        requests = task.requests
+        requests, tools = task.requests, 0
         if self._progress_widget is not None:
             requests = max(requests, sum(row["kind"] == "request" for row in self._progress_widget.rows))
+            tools = sum(row["kind"] == "tool" for row in self._progress_widget.rows)
+        limits = self.options.limits or AgentLimits()
+        if self._busy and self._busy_since is not None:
+            elapsed = time.monotonic() - self._busy_since
+        else:
+            elapsed = task.duration or 0
+        started = bool(task.task_id or requests)
         body = Text()
-        for title, content in (
-            ("本轮任务", task_text(task, busy=self._busy, approval=self._approval)),
-            ("执行模式", self.options.mode + " · " + mode),
-            ("模型请求", f"{requests} / {self.options.max_steps} 次" if task.task_id or requests else "尚未开始"),
-            ("Token 用量", usage_text(task) if task.task_id else "尚无任务用量"),
-            ("本轮编辑", file_text),
+        for title, content, used, limit in (
+            ("本轮任务", task_text(task, busy=self._busy, approval=self._approval), None, None),
+            ("执行模式", self.options.mode + " · " + mode, None, None),
+            ("模型请求", budget_text(requests, self.options.max_steps) if started else "尚未开始",
+             requests, self.options.max_steps),
+            ("工具调用", budget_text(tools, limits.max_tool_calls) if started else "尚未开始",
+             tools, limits.max_tool_calls),
+            ("执行时间", budget_text(elapsed, limits.max_seconds, seconds=True) if started else "尚未开始",
+             elapsed, limits.max_seconds),
+            ("Token 用量", usage_text(task) if task.task_id else "尚无任务用量", None, None),
+            ("本轮编辑", file_text, None, None),
         ):
             body.append(title + "\n", style="bold " + PALETTE["accent"])
             body.append(clean_output(content) + "\n", style=PALETTE["muted"])
-            if title == "模型请求":
-                body.append_text(progress_bar(requests, self.options.max_steps, 24))
+            if limit:
+                body.append_text(progress_bar(used if started else 0, limit, 24))
                 body.append("\n")
             body.append("\n")
         body.append("Ctrl+G 查看完整详情", style=PALETTE["faint"])
